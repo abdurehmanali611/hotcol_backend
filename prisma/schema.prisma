@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model user {
+  id Int @id @default(autoincrement())
+  UserName String @unique
+  Password String
+  HotelName String
+  Role String
+  LogoUrl String?
+}
+
+model Item {
+  id Int @id @default(autoincrement())
+  name String
+  price Float
+  category String
+  type String
+  HotelName String
+  imageUrl String
+  createdAt DateTime @default(now())
+}
+
+model cashouts {
+  id Int @id @default(autoincrement())
+  Amount Int
+  Reason Json
+  HotelName String
+  createdAt DateTime @default(now())
+}
+
+model Order {
+  id Int @id @default(autoincrement())
+  title String
+  imageUrl String
+  tableNo Int
+  category String
+  type String
+  orderAmount Int
+  HotelName String
+  price Float
+  waiterName String
+  status String?
+  payment String?
+  withBank Boolean?
+  createdAt DateTime @default(now())
+}
+model waiter {
+  id Int @id @default(autoincrement())
+  name String 
+  HotelName String
+  sex String
+  age Int
+  experience Int
+  phoneNumber String
+  price Json
+  tablesServed Json
+  payment Json
+  createdAt DateTime @default(now())
+}
+
+model table {
+  id Int @id @default(autoincrement())
+  tableNo Int
+  capacity Int
+  price Json
+  payment Json
+  HotelName String
+  createdAt DateTime @default(now())
+}
