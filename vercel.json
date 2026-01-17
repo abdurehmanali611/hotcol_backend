@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "graphql.js": {
+      "maxDuration": 10
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/graphql",
+      "destination": "/api/graphql"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/graphql"
+    }
+  ]
+}
