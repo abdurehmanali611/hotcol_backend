@@ -1,6 +1,6 @@
 // api/graphql.js
 import { ApolloServer, gql } from "apollo-server-micro";
-import { PrismaClient } from "./generated/prisma/index.js";
+import { PrismaClient } from "../generated/prisma/index.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { GraphQLJSON } from "graphql-scalars";
