@@ -170,6 +170,7 @@ const typeDefs = gql`
       price: Float!
       type: String!
       imageUrl: String!
+      HotelName: String!
     ): Item!
     UpdateStatus(id: Int!, status: String): Order!
     CreateWaiter(
@@ -185,14 +186,12 @@ const typeDefs = gql`
       id: Int!
       payment: JSON!
       price: JSON!
-      HotelName: String!
     ): table!
     UpdatePaymentWaiter(
       id: Int!
       payment: JSON!
       price: JSON!
       tablesServed: JSON!
-      HotelName: String!
     ): waiter!
     DeleteWaiter(id: Int!): waiter!
     DeleteTable(id: Int!): table!
@@ -203,13 +202,11 @@ const typeDefs = gql`
       sex: String!
       experience: Int!
       phoneNumber: String!
-      HotelName: String!
     ): waiter!
     UpdateTable(
       id: Int!
       tableNo: Int!
       capacity: Int!
-      HotelName: String!
     ): table!
     BatchOrderCreation(orders: [OrderInput!]!): [Order!]!
   }
@@ -574,23 +571,23 @@ const resolvers = {
     },
     UpdatePaymentWaiter: async (
       _,
-      { HotelName, payment, price, tablesServed, id },
+      { payment, price, tablesServed, id },
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.waiter.update({
-        where: { HotelName: HotelName, id: id },
+        where: { id: id },
         data: { payment: payment, price: price, tablesServed: tablesServed },
       });
     },
     UpdatePaymentTable: async (
       _,
-      { id, payment, price, HotelName },
+      { id, payment, price },
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.table.update({
-        where: { id: id, HotelName: HotelName },
+        where: { id: id },
         data: { payment: payment, price: price },
       });
     },
@@ -608,12 +605,12 @@ const resolvers = {
     },
     UpdateWaiter: async (
       _,
-      { id, name, HotelName, age, sex, experience, phoneNumber },
+      { id, name, age, sex, experience, phoneNumber },
       context
     ) => {
       if (!context.user) throw new Error("Not authenticated");
       return await prisma.waiter.update({
-        where: { id: id, HotelName: HotelName },
+        where: { id: id },
         data: {
           name: name,
           age: age,
@@ -623,10 +620,10 @@ const resolvers = {
         },
       });
     },
-    UpdateTable: async (_, { id, tableNo, capacity, HotelName }, context) => {
+    UpdateTable: async (_, { id, tableNo, capacity }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.table.update({
-        where: { id: id, HotelName: HotelName },
+        where: { id: id },
         data: { tableNo: tableNo, capacity: capacity },
       });
     },
