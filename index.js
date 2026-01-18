@@ -170,7 +170,6 @@ const typeDefs = gql`
       price: Float!
       type: String!
       imageUrl: String!
-      HotelName: String!
     ): Item!
     UpdateStatus(id: Int!, status: String): Order!
     CreateWaiter(
@@ -518,7 +517,7 @@ const resolvers = {
     },
     UpdateItem: async (
       _,
-      { id, name, category, price, imageUrl, HotelName, type },
+      { id, name, category, price, imageUrl, type },
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
