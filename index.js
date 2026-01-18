@@ -524,7 +524,7 @@ const resolvers = {
       if (!context.user) throw new Error("Not Authenticated");
       try {
         const updated = await prisma.item.update({
-          where: { id: parseInt(id), HotelName: HotelName },
+          where: { id: parseInt(id) },
           data: { name, price, category, type, imageUrl },
         });
         return updated;
