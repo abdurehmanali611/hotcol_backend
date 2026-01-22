@@ -68,7 +68,6 @@ const typeDefs = gql`
     tableNo: Int!
     waiterName: String!
     orderAmount: Int!
-    HotelName: String!
     category: String!
     type: String!
     price: Float!
@@ -102,19 +101,19 @@ const typeDefs = gql`
   }
 
   type Query {
-    users(HotelName: String): [User!]!
-    items(HotelName: String): [Item!]!
-    orders(HotelName: String): [Order!]!
+    users: [User!]!
+    items: [Item!]!
+    orders: [Order!]!
     me: User
-    waiters(HotelName: String): [waiter!]!
-    tables(HotelName: String): [table!]!
-    cashouts(HotelName: String): [cashouts!]!
+    waiters: [waiter!]!
+    tables: [table!]!
+    cashouts: [cashouts!]!
   }
 
   type Mutation {
     Login(UserName: String!, Password: String!): AuthPayload!
     verifyAdminPassword(HotelName: String!, passwordInput: String!): Boolean
-    UpdateAdminCredential(Password: String!, HotelName: String!): User!
+    UpdateAdminCredential(Password: String!): User!
     CreateAdmin(
       UserName: String!
       Password: String!
@@ -125,12 +124,10 @@ const typeDefs = gql`
     CreateCashout(
       Amount: Int!
       Reason: JSON
-      HotelName: String!
     ): cashouts!
     UpdateCredential(
       UserName: String!
       Password: String!
-      HotelName: String!
       Role: String!
     ): User!
     CreateCredential(
@@ -143,7 +140,6 @@ const typeDefs = gql`
     CreateItem(
       name: String!
       price: Float!
-      HotelName: String!
       type: String!
       category: String!
       imageUrl: String!
@@ -155,7 +151,6 @@ const typeDefs = gql`
       waiterName: String!
       orderAmount: Int!
       status: String
-      HotelName: String!
       payment: String
       category: String!
       type: String!
@@ -170,18 +165,16 @@ const typeDefs = gql`
       price: Float!
       type: String!
       imageUrl: String!
-      HotelName: String!
     ): Item!
     UpdateStatus(id: Int!, status: String): Order!
     CreateWaiter(
       name: String!
-      HotelName: String!
       age: Int!
       sex: String!
       experience: Int!
       phoneNumber: String!
     ): waiter!
-    CreateTable(tableNo: Int!, HotelName: String!, capacity: Int!): table!
+    CreateTable(tableNo: Int!, capacity: Int!): table!
     UpdatePaymentTable(
       id: Int!
       payment: JSON!
@@ -226,22 +219,22 @@ const authenticate = (req) => {
 const resolvers = {
   JSON: GraphQLJSON,
   Query: {
-    users: async (_, { HotelName }, context) => {
+    users: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.user.findMany({
-        where: { HotelName: HotelName },
+        where: { HotelName: context.user.HotelName },
       });
     },
-    items: async (_, { HotelName }, context) => {
+    items: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.item.findMany({
-        where: { HotelName: HotelName },
+        where: { HotelName: context.user.HotelName },
       });
     },
-    orders: async (_, { HotelName }, context) => {
+    orders: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.order.findMany({
-        where: { HotelName: HotelName },
+        where: { HotelName: context.user.HotelName },
       });
     },
     me: async (_, __, context) => {
@@ -257,25 +250,25 @@ const resolvers = {
         },
       });
     },
-    waiters: async (_, { HotelName }, context) => {
+    waiters: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.waiter.findMany({
-        where: { HotelName: HotelName },
+        where: { HotelName: context.user.HotelName },
       });
     },
-    tables: async (_, { HotelName }, context) => {
+    tables: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.table.findMany({
-        where: { HotelName: HotelName },
+        where: { HotelName: context.user.HotelName },
       });
     },
-    cashouts: async (_, {HotelName}, context) => {
+    cashouts: async (_, __, context) => {
   if (!context.user) {
     throw new Error("Not Authenticated");
   }
   
   try {
-    const whereClause = HotelName ? { HotelName: HotelName } : { HotelName: context.user.HotelName };
+    const whereClause = { HotelName: context.user.HotelName };
     
     const results = await prisma.cashouts.findMany({
       where: whereClause,
@@ -306,12 +299,12 @@ const resolvers = {
     },
     CreateCashout: async (
       _,
-      { Amount, Reason, HotelName },
+      { Amount, Reason },
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.cashouts.create({
-        data: { Amount, Reason, HotelName },
+        data: { Amount, Reason, HotelName: context.user.HotelName },
       });
     },
     Login: async (_, { UserName, Password }) => {
@@ -383,7 +376,7 @@ const resolvers = {
                 tableNo: orderData.tableNo,
                 waiterName: orderData.waiterName,
                 orderAmount: orderData.orderAmount,
-                HotelName: orderData.HotelName,
+                HotelName: context.user.HotelName,
                 status: orderData.status || null,
                 payment: orderData.payment || "Unpaid",
                 category: orderData.category,
@@ -399,13 +392,13 @@ const resolvers = {
         throw error;
       }
     },
-    UpdateAdminCredential: async (_, { Password, HotelName }, context) => {
+    UpdateAdminCredential: async (_, { Password }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
 
       const hashedPassword = await bcrypt.hash(Password, 12);
 
       const admin = await prisma.user.findFirst({
-        where: { HotelName: HotelName, Role: "Admin" },
+        where: { HotelName: context.user.HotelName, Role: "Admin" },
       });
 
       if (!admin) throw new Error("Admin not found");
@@ -418,7 +411,7 @@ const resolvers = {
 
     UpdateCredential: async (
       _,
-      { UserName, Password, HotelName, Role },
+      { UserName, Password, Role },
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -427,7 +420,7 @@ const resolvers = {
 
       const user = await prisma.user.findFirst({
         where: {
-          HotelName: HotelName,
+          HotelName: context.user.HotelName,
           Role: Role,
         },
       });
@@ -444,7 +437,7 @@ const resolvers = {
     },
     CreateItem: async (
       _,
-      { name, price, category, imageUrl, HotelName, type },
+      { name, price, category, imageUrl, type },
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -455,7 +448,7 @@ const resolvers = {
           category,
           type,
           imageUrl,
-          HotelName,
+          HotelName: context.user.HotelName,
         },
       });
     },
@@ -471,7 +464,6 @@ const resolvers = {
         category,
         type,
         price,
-        HotelName,
         orderAmount,
       },
       context
@@ -486,7 +478,7 @@ const resolvers = {
             waiterName,
             orderAmount,
             status,
-            HotelName,
+            HotelName: context.user.HotelName,
             payment,
             category,
             type,
@@ -501,6 +493,12 @@ const resolvers = {
     },
     UpdatePayment: async (_, { id, payment, withBank }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const order = await prisma.order.findUnique({
+        where: { id: id },
+      });
+      if (!order || order.HotelName !== context.user.HotelName) {
+        throw new Error("Order not found or not authorized");
+      }
       return await prisma.order.update({
         where: { id: id },
         data: { payment: payment, withBank: withBank },
@@ -508,6 +506,12 @@ const resolvers = {
     },
     DeleteItem: async (_, { id }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const item = await prisma.item.findUnique({
+        where: { id: id },
+      });
+      if (!item || item.HotelName !== context.user.HotelName) {
+        throw new Error("Item not found or not authorized");
+      }
       return await prisma.item.delete({
         where: { id: id },
       });
@@ -519,8 +523,14 @@ const resolvers = {
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       try {
+        const item = await prisma.item.findUnique({
+          where: { id: id },
+        });
+        if (!item || item.HotelName !== context.user.HotelName) {
+          throw new Error("Item not found or not authorized");
+        }
         const updated = await prisma.item.update({
-          where: { id: parseInt(id) },
+          where: { id: id },
           data: { name, price, category, type, imageUrl },
         });
         return updated;
@@ -530,6 +540,12 @@ const resolvers = {
     },
     UpdateStatus: async (_, { id, status }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const order = await prisma.order.findUnique({
+        where: { id: id },
+      });
+      if (!order || order.HotelName !== context.user.HotelName) {
+        throw new Error("Order not found or not authorized");
+      }
       return await prisma.order.update({
         where: { id: id },
         data: {
@@ -539,14 +555,14 @@ const resolvers = {
     },
     CreateWaiter: async (
       _,
-      { name, HotelName, age, sex, experience, phoneNumber },
+      { name, age, sex, experience, phoneNumber },
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.waiter.create({
         data: {
           name,
-          HotelName,
+          HotelName: context.user.HotelName,
           age,
           sex,
           experience,
@@ -557,12 +573,12 @@ const resolvers = {
         },
       });
     },
-    CreateTable: async (_, { tableNo, HotelName, capacity }, context) => {
+    CreateTable: async (_, { tableNo, capacity }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.table.create({
         data: {
           tableNo,
-          HotelName,
+          HotelName: context.user.HotelName,
           capacity,
           price: [],
           payment: [],
@@ -575,6 +591,12 @@ const resolvers = {
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const waiter = await prisma.waiter.findUnique({
+        where: { id: id },
+      });
+      if (!waiter || waiter.HotelName !== context.user.HotelName) {
+        throw new Error("Waiter not found or not authorized");
+      }
       return await prisma.waiter.update({
         where: { id: id },
         data: { payment: payment, price: price, tablesServed: tablesServed },
@@ -586,6 +608,12 @@ const resolvers = {
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const table = await prisma.table.findUnique({
+        where: { id: id },
+      });
+      if (!table || table.HotelName !== context.user.HotelName) {
+        throw new Error("Table not found or not authorized");
+      }
       return await prisma.table.update({
         where: { id: id },
         data: { payment: payment, price: price },
@@ -593,12 +621,24 @@ const resolvers = {
     },
     DeleteWaiter: async (_, { id }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const waiter = await prisma.waiter.findUnique({
+        where: { id: id },
+      });
+      if (!waiter || waiter.HotelName !== context.user.HotelName) {
+        throw new Error("Waiter not found or not authorized");
+      }
       return await prisma.waiter.delete({
         where: { id: id },
       });
     },
     DeleteTable: async (_, { id }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const table = await prisma.table.findUnique({
+        where: { id: id },
+      });
+      if (!table || table.HotelName !== context.user.HotelName) {
+        throw new Error("Table not found or not authorized");
+      }
       return await prisma.table.delete({
         where: { id: id },
       });
@@ -609,6 +649,12 @@ const resolvers = {
       context
     ) => {
       if (!context.user) throw new Error("Not authenticated");
+      const waiter = await prisma.waiter.findUnique({
+        where: { id: id },
+      });
+      if (!waiter || waiter.HotelName !== context.user.HotelName) {
+        throw new Error("Waiter not found or not authorized");
+      }
       return await prisma.waiter.update({
         where: { id: id },
         data: {
@@ -622,6 +668,12 @@ const resolvers = {
     },
     UpdateTable: async (_, { id, tableNo, capacity }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const table = await prisma.table.findUnique({
+        where: { id: id },
+      });
+      if (!table || table.HotelName !== context.user.HotelName) {
+        throw new Error("Table not found or not authorized");
+      }
       return await prisma.table.update({
         where: { id: id },
         data: { tableNo: tableNo, capacity: capacity },
