@@ -69,6 +69,7 @@ const typeDefs = gql`
     waiterName: String!
     orderAmount: Int!
     category: String!
+    HotelName: String!
     type: String!
     price: Float!
     status: String
@@ -155,6 +156,7 @@ const typeDefs = gql`
       category: String!
       type: String!
       price: Float!
+      HotelName: String!
     ): Order!
     UpdatePayment(id: Int!, payment: String, withBank: Boolean): Order!
     DeleteItem(id: Int!): Item!
