@@ -175,7 +175,7 @@ const typeDefs = gql`
       phoneNumber: String!
       HotelName: String!
     ): waiter!
-    CreateTable(tableNo: Int!, capacity: Int!): table!
+    CreateTable(tableNo: Int!, capacity: Int!, HotelName: String!): table!
     UpdatePaymentTable(
       id: Int!
       payment: JSON!
