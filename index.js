@@ -173,6 +173,7 @@ const typeDefs = gql`
       sex: String!
       experience: Int!
       phoneNumber: String!
+      HotelName: String!
     ): waiter!
     CreateTable(tableNo: Int!, capacity: Int!): table!
     UpdatePaymentTable(
