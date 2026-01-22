@@ -566,10 +566,7 @@ const resolvers = {
           age,
           sex,
           experience,
-          phoneNumber,
-          price: [],
-          tablesServed: [],
-          payment: [],
+          phoneNumber
         },
       });
     },
@@ -579,9 +576,7 @@ const resolvers = {
         data: {
           tableNo,
           HotelName: context.user.HotelName,
-          capacity,
-          price: [],
-          payment: [],
+          capacity
         },
       });
     },
