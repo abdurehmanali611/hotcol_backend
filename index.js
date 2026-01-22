@@ -567,7 +567,10 @@ const resolvers = {
           age,
           sex,
           experience,
-          phoneNumber
+          phoneNumber,
+          price: {},
+          tablesServed: {},
+          payment: {},
         },
       });
     },
@@ -577,7 +580,9 @@ const resolvers = {
         data: {
           tableNo,
           HotelName: context.user.HotelName,
-          capacity
+          capacity,
+          price: {},
+          payment: {},
         },
       });
     },
