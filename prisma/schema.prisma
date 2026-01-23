@@ -30,8 +30,11 @@ model Item {
 
 model cashouts {
   id Int @id @default(autoincrement())
-  Amount Int
-  Reason Json
+  items Json
+  prices Json
+  measuredBy Json
+  requiredAmount Json
+  totalCalc Float
   HotelName String
   createdAt DateTime @default(now())
 }

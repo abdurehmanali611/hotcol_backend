@@ -39,8 +39,11 @@ const typeDefs = gql`
 
   type cashouts {
     id: Int!
-    Amount: Int!
-    Reason: JSON
+    items: JSON
+    prices: JSON
+    measuredBy: JSON
+    requiredAmount: JSON
+    totalCalc: Float!
     HotelName: String!
     createdAt: Float!
   }
@@ -123,14 +126,13 @@ const typeDefs = gql`
       LogoUrl: String!
     ): User!
     CreateCashout(
-      Amount: Int!
-      Reason: JSON
+      items: JSON
+      prices: JSON
+      measuredBy: JSON
+      requiredAmount: JSON
+      totalCalc: Float!
     ): cashouts!
-    UpdateCredential(
-      UserName: String!
-      Password: String!
-      Role: String!
-    ): User!
+    UpdateCredential(UserName: String!, Password: String!, Role: String!): User!
     CreateCredential(
       UserName: String!
       Password: String!
@@ -178,11 +180,7 @@ const typeDefs = gql`
       HotelName: String!
     ): waiter!
     CreateTable(tableNo: Int!, capacity: Int!, HotelName: String!): table!
-    UpdatePaymentTable(
-      id: Int!
-      payment: JSON!
-      price: JSON!
-    ): table!
+    UpdatePaymentTable(id: Int!, payment: JSON!, price: JSON!): table!
     UpdatePaymentWaiter(
       id: Int!
       payment: JSON!
@@ -199,11 +197,7 @@ const typeDefs = gql`
       experience: Int!
       phoneNumber: String!
     ): waiter!
-    UpdateTable(
-      id: Int!
-      tableNo: Int!
-      capacity: Int!
-    ): table!
+    UpdateTable(id: Int!, tableNo: Int!, capacity: Int!): table!
     BatchOrderCreation(orders: [OrderInput!]!): [Order!]!
   }
 `;
@@ -266,27 +260,27 @@ const resolvers = {
       });
     },
     cashouts: async (_, __, context) => {
-  if (!context.user) {
-    throw new Error("Not Authenticated");
-  }
-  
-  try {
-    const whereClause = { HotelName: context.user.HotelName };
-    
-    const results = await prisma.cashouts.findMany({
-      where: whereClause,
-    });
-    
-    return results;
-  } catch (error) {
-    throw error;
-  }
-}
+      if (!context.user) {
+        throw new Error("Not Authenticated");
+      }
+
+      try {
+        const whereClause = { HotelName: context.user.HotelName };
+
+        const results = await prisma.cashouts.findMany({
+          where: whereClause,
+        });
+
+        return results;
+      } catch (error) {
+        throw error;
+      }
+    },
   },
   Mutation: {
     CreateAdmin: async (
       _,
-      { UserName, Password, Role, HotelName, LogoUrl }
+      { UserName, Password, Role, HotelName, LogoUrl },
     ) => {
       const existingUser = await prisma.user.findUnique({
         where: { UserName: UserName, HotelName: HotelName },
@@ -302,12 +296,19 @@ const resolvers = {
     },
     CreateCashout: async (
       _,
-      { Amount, Reason },
-      context
+      { items, prices, measuredBy, requiredAmount, totalCalc },
+      context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.cashouts.create({
-        data: { Amount, Reason, HotelName: context.user.HotelName },
+        data: {
+          items,
+          prices,
+          measuredBy,
+          requiredAmount,
+          totalCalc,
+          HotelName: context.user.HotelName,
+        },
       });
     },
     Login: async (_, { UserName, Password }) => {
@@ -325,7 +326,7 @@ const resolvers = {
           HotelName: user.HotelName,
         },
         JWT_Secret,
-        { expiresIn: "1d" }
+        { expiresIn: "1d" },
       );
       return {
         token,
@@ -349,7 +350,7 @@ const resolvers = {
     },
     CreateCredential: async (
       _,
-      { UserName, Password, Role, HotelName, LogoUrl }
+      { UserName, Password, Role, HotelName, LogoUrl },
     ) => {
       const existingUser = await prisma.user.findUnique({
         where: { UserName: UserName },
@@ -357,7 +358,7 @@ const resolvers = {
 
       if (existingUser) {
         throw new Error(
-          "Username already exists. Please choose a different username."
+          "Username already exists. Please choose a different username.",
         );
       }
 
@@ -386,8 +387,8 @@ const resolvers = {
                 type: orderData.type,
                 price: orderData.price,
               },
-            })
-          )
+            }),
+          ),
         );
 
         return createdOrders;
@@ -412,11 +413,7 @@ const resolvers = {
       });
     },
 
-    UpdateCredential: async (
-      _,
-      { UserName, Password, Role },
-      context
-    ) => {
+    UpdateCredential: async (_, { UserName, Password, Role }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
 
       const hashedPassword = await bcrypt.hash(Password, 12);
@@ -441,7 +438,7 @@ const resolvers = {
     CreateItem: async (
       _,
       { name, price, category, imageUrl, type },
-      context
+      context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.item.create({
@@ -469,7 +466,7 @@ const resolvers = {
         price,
         orderAmount,
       },
-      context
+      context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       try {
@@ -522,7 +519,7 @@ const resolvers = {
     UpdateItem: async (
       _,
       { id, name, category, price, imageUrl, type },
-      context
+      context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       try {
@@ -559,7 +556,7 @@ const resolvers = {
     CreateWaiter: async (
       _,
       { name, age, sex, experience, phoneNumber },
-      context
+      context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.waiter.create({
@@ -591,7 +588,7 @@ const resolvers = {
     UpdatePaymentWaiter: async (
       _,
       { payment, price, tablesServed, id },
-      context
+      context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       const waiter = await prisma.waiter.findUnique({
@@ -605,11 +602,7 @@ const resolvers = {
         data: { payment: payment, price: price, tablesServed: tablesServed },
       });
     },
-    UpdatePaymentTable: async (
-      _,
-      { id, payment, price },
-      context
-    ) => {
+    UpdatePaymentTable: async (_, { id, payment, price }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       const table = await prisma.table.findUnique({
         where: { id: id },
@@ -649,7 +642,7 @@ const resolvers = {
     UpdateWaiter: async (
       _,
       { id, name, age, sex, experience, phoneNumber },
-      context
+      context,
     ) => {
       if (!context.user) throw new Error("Not authenticated");
       const waiter = await prisma.waiter.findUnique({
