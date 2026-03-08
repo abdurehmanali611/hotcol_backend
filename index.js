@@ -567,9 +567,10 @@ const resolvers = {
           sex,
           experience,
           phoneNumber,
-          price: {},
-          tablesServed: {},
-          payment: {},
+          // initialise as arrays instead of empty objects
+          price: [],
+          tablesServed: [],
+          payment: [],
         },
       });
     },
@@ -580,8 +581,8 @@ const resolvers = {
           tableNo,
           HotelName: context.user.HotelName,
           capacity,
-          price: {},
-          payment: {},
+          price: [], // default empty array
+          payment: [], // default empty array
         },
       });
     },
@@ -597,9 +598,21 @@ const resolvers = {
       if (!waiter || waiter.HotelName !== context.user.HotelName) {
         throw new Error("Waiter not found or not authorized");
       }
+      // combine existing arrays with new values so we don't overwrite
+      const existingPayment = Array.isArray(waiter.payment)
+        ? waiter.payment
+        : [];
+      const existingPrice = Array.isArray(waiter.price) ? waiter.price : [];
+      const existingTables = Array.isArray(waiter.tablesServed)
+        ? waiter.tablesServed
+        : [];
       return await prisma.waiter.update({
         where: { id: id },
-        data: { payment: payment, price: price, tablesServed: tablesServed },
+        data: {
+          payment: { set: [...existingPayment, ...payment] },
+          price: { set: [...existingPrice, ...price] },
+          tablesServed: { set: [...existingTables, ...tablesServed] },
+        },
       });
     },
     UpdatePaymentTable: async (_, { id, payment, price }, context) => {
@@ -610,9 +623,14 @@ const resolvers = {
       if (!table || table.HotelName !== context.user.HotelName) {
         throw new Error("Table not found or not authorized");
       }
+      const existingPayment = Array.isArray(table.payment) ? table.payment : [];
+      const existingPrice = Array.isArray(table.price) ? table.price : [];
       return await prisma.table.update({
         where: { id: id },
-        data: { payment: payment, price: price },
+        data: {
+          payment: { set: [...existingPayment, ...payment] },
+          price: { set: [...existingPrice, ...price] },
+        },
       });
     },
     DeleteWaiter: async (_, { id }, context) => {
