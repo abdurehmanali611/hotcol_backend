@@ -53,6 +53,9 @@ model Order {
   status      String?
   payment     String?
   withBank    Boolean?
+  credit      Boolean?
+  credittorName String?
+  creditAmount  Float?
   createdAt   DateTime @default(now())
 }
 
@@ -78,4 +81,44 @@ model table {
   payment   Json     @default("[]")
   HotelName String
   createdAt DateTime @default(now())
+}
+
+model creditLevel {
+  id           Int      @id @default(autoincrement())
+  level        String
+  requiredAmount Float
+  timeInterval  Int
+  timeFrame       String
+  HotelName    String
+}
+
+model pityCash {
+  id        Int      @id @default(autoincrement())
+  amount    Float
+  startDate DateTime
+  endDate   DateTime
+  HotelName String
+}
+
+model CreditRegistration {
+  id           Int      @id @default(autoincrement())
+  name         String
+  sex          String
+  creditLevel  String
+  phoneNumber  String
+  amount       Float
+  registrationDate DateTime @default(now())
+  HotelName    String
+}
+
+model ItemRegistration {
+  id        Int      @id @default(autoincrement())
+  name      String
+  level     String
+  buyingDate DateTime @default(now())
+  expireDate DateTime
+  amount    Int
+  measuredBy String
+  price     Float
+  HotelName String
 }

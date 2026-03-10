@@ -76,6 +76,9 @@ const typeDefs = gql`
     type: String!
     price: Float!
     status: String
+    credit: Boolean
+    credittorName: String
+    creditAmount: Float
     payment: String
   }
 
@@ -104,6 +107,46 @@ const typeDefs = gql`
     createdAt: Float!
   }
 
+  type creditLevel {
+    id: Int!
+    level: String!
+    requiredAmount: Float!
+    timeInterval: Int!
+    timeFrame: String!
+    HotelName: String!
+  }
+
+  type pityCash {
+    id: Int!
+    amount: Float!
+    startDate: DateTime!
+    endDate: DateTime!
+    HotelName: String!
+  }
+
+  type CreditRegistration {
+    id: Int!
+    name: String!
+    sex: String!
+    creditLevel: String!
+    phoneNumber: String!
+    amount: Float!
+    registrationDate: DateTime!
+    HotelName: String!
+  }
+
+  type ItemRegistration {
+    id: Int!
+    name: String!
+    level: String!
+    buyingDate: DateTime!
+    expireDate: DateTime!
+    amount: Int!
+    measuredBy: String!
+    price: Float!
+    HotelName: String!
+  }
+
   type Query {
     users: [User!]!
     items: [Item!]!
@@ -112,6 +155,10 @@ const typeDefs = gql`
     waiters: [waiter!]!
     tables: [table!]!
     cashouts: [cashouts!]!
+    creditLevel: [creditLevel!]!
+    pityCash: [pityCash!]!
+    CreditRegistration: [CreditRegistration!]!
+    ItemRegistration: [ItemRegistration!]!
   }
 
   type Mutation {
