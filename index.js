@@ -211,7 +211,14 @@ const typeDefs = gql`
       price: Float!
       HotelName: String!
     ): Order!
-    UpdatePayment(id: Int!, payment: String, withBank: Boolean, credit: Boolean, credittorName: String, creditAmount: Float): Order!
+    UpdatePayment(
+      id: Int!
+      payment: String
+      withBank: Boolean
+      credit: Boolean
+      credittorName: String
+      creditAmount: Float
+    ): Order!
     DeleteItem(id: Int!): Item!
     UpdateItem(
       id: Int!
@@ -250,18 +257,74 @@ const typeDefs = gql`
     ): waiter!
     UpdateTable(id: Int!, tableNo: Int!, capacity: Int!): table!
     BatchOrderCreation(orders: [OrderInput!]!): [Order!]!
-    CreateCreditLevel(level: String!, requiredAmount: Float!, timeInterval: Int!, timeFrame: String!, HotelName: String!): creditLevel!
-    CreatePityCash(amount: Float!, startDate: DateTime!, endDate: DateTime!, HotelName: String!): pityCash!
-    CreditRegistration(name: String!, sex: String!, creditLevel: String!, phoneNumber: String!, amount: Float!, registrationDate: DateTime!, HotelName: String!): CreditRegistration!
-    ItemRegistration(name: String!, level: String!, buyingDate: DateTime!, expireDate: DateTime!, amount: Int!, measuredBy: String!, price: Float!, HotelName: String!): ItemRegistration!
+    CreateCreditLevel(
+      level: String!
+      requiredAmount: Float!
+      timeInterval: Int!
+      timeFrame: String!
+      HotelName: String!
+    ): creditLevel!
+    CreatePityCash(
+      amount: Float!
+      startDate: DateTime!
+      endDate: DateTime!
+      HotelName: String!
+    ): pityCash!
+    CreditRegistration(
+      name: String!
+      sex: String!
+      creditLevel: String!
+      phoneNumber: String!
+      amount: Float!
+      registrationDate: DateTime!
+      HotelName: String!
+    ): CreditRegistration!
+    ItemRegistration(
+      name: String!
+      level: String!
+      buyingDate: DateTime!
+      expireDate: DateTime!
+      amount: Int!
+      measuredBy: String!
+      price: Float!
+      HotelName: String!
+    ): ItemRegistration!
     DeleteCreditLevel(id: Int!): creditLevel!
     DeletePityCash(id: Int!): pityCash!
     DeleteCreditRegistration(id: Int!): CreditRegistration!
     DeleteItemRegistration(id: Int!): ItemRegistration!
-    UpdateCreditLevel(id: Int!, level: String!, requiredAmount: Float!, timeInterval: Int!, timeFrame: String!): creditLevel!
-    UpdatePityCash(id: Int!, amount: Float!, startDate: DateTime!, endDate: DateTime!): pityCash!
-    UpdateCreditRegistration(id: Int!, name: String!, sex: String!, creditLevel: String!, phoneNumber: String!, amount: Float!, registrationDate: DateTime!): CreditRegistration!
-    UpdateItemRegistration(id: Int!, name: String!, level: String!, buyingDate: DateTime!, expireDate: DateTime!, amount: Int!, measuredBy: String!, price: Float!): ItemRegistration!
+    UpdateCreditLevel(
+      id: Int!
+      level: String!
+      requiredAmount: Float!
+      timeInterval: Int!
+      timeFrame: String!
+    ): creditLevel!
+    UpdatePityCash(
+      id: Int!
+      amount: Float!
+      startDate: DateTime!
+      endDate: DateTime!
+    ): pityCash!
+    UpdateCreditRegistration(
+      id: Int!
+      name: String!
+      sex: String!
+      creditLevel: String!
+      phoneNumber: String!
+      amount: Float!
+      registrationDate: DateTime!
+    ): CreditRegistration!
+    UpdateItemRegistration(
+      id: Int!
+      name: String!
+      level: String!
+      buyingDate: DateTime!
+      expireDate: DateTime!
+      amount: Int!
+      measuredBy: String!
+      price: Float!
+    ): ItemRegistration!
   }
 `;
 
@@ -791,212 +854,212 @@ const resolvers = {
         data: { tableNo: tableNo, capacity: capacity },
       });
     },
-  },
-  CreateCreditLevel: async (
-    _,
-    { level, requiredAmount, timeInterval, timeFrame },
-    context,
-  ) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    return await prisma.creditLevel.create({
-      data: {
-        level,
-        requiredAmount,
-        timeInterval,
-        timeFrame,
-        HotelName: context.user.HotelName,
-      },
-    });
-  },
-  CreatePityCash: async (_, { amount, startDate, endDate }, context) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    return await prisma.pityCash.create({
-      data: {
-        amount,
-        startDate,
-        endDate,
-        HotelName: context.user.HotelName,
-      },
-    });
-  },
-  CreateCreditRegistration: async (
-    _,
-    { name, sex, creditLevel, phoneNumber, amount, registrationDate },
-    context,
-  ) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    return await prisma.creditRegistration.create({
-      data: {
-        name,
-        sex,
-        creditLevel,
-        phoneNumber,
-        amount,
-        registrationDate,
-        HotelName: context.user.HotelName,
-      },
-    });
-  },
-  CreateItemRegistration: async (
-    _,
-    { name, level, buyingDate, expireDate, amount, measuredBy, price },
-    context,
-  ) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    return await prisma.itemRegistration.create({
-      data: {
-        name,
-        level,
-        buyingDate,
-        expireDate,
-        amount,
-        measuredBy,
-        price,
-        HotelName: context.user.HotelName,
-      },
-    });
-  },
-  DeleteCreditLevel: async (_, { id }, context) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    const creditLevel = await prisma.creditLevel.findUnique({
-      where: { id: id },
-    });
-    if (!creditLevel || creditLevel.HotelName !== context.user.HotelName) {
-      throw new Error("Credit Level not found or not authorized");
-    }
-    return await prisma.creditLevel.delete({
-      where: { id: id },
-    });
-  },
-  DeletePityCash: async (_, { id }, context) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    const pityCash = await prisma.pityCash.findUnique({
-      where: { id: id },
-    });
-    if (!pityCash || pityCash.HotelName !== context.user.HotelName) {
-      throw new Error("Pity Cash not found or not authorized");
-    }
-    return await prisma.pityCash.delete({
-      where: { id: id },
-    });
-  },
-  DeleteCreditRegistration: async (_, { id }, context) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    const creditRegistration = await prisma.creditRegistration.findUnique({
-      where: { id: id },
-    });
-    if (
-      !creditRegistration ||
-      creditRegistration.HotelName !== context.user.HotelName
-    ) {
-      throw new Error("Credit Registration not found or not authorized");
-    }
-    return await prisma.creditRegistration.delete({
-      where: { id: id },
-    });
-  },
-  DeleteItemRegistration: async (_, { id }, context) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    const itemRegistration = await prisma.itemRegistration.findUnique({
-      where: { id: id },
-    });
-    if (
-      !itemRegistration ||
-      itemRegistration.HotelName !== context.user.HotelName
-    ) {
-      throw new Error("Item Registration not found or not authorized");
-    }
-    return await prisma.itemRegistration.delete({
-      where: { id: id },
-    });
-  },
-  UpdateCreditLevel: async (
-    _,
-    { id, level, requiredAmount, timeInterval, timeFrame },
-    context,
-  ) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    const creditLevel = await prisma.creditLevel.findUnique({
-      where: { id: id },
-    });
-    if (!creditLevel || creditLevel.HotelName !== context.user.HotelName) {
-      throw new Error("Credit Level not found or not authorized");
-    }
-    return await prisma.creditLevel.update({
-      where: { id: id },
-      data: {
-        level,
-        requiredAmount,
-        timeInterval,
-        timeFrame,
-      },
-    });
-  },
-  UpdatePityCash: async (_, { id, amount, startDate, endDate }, context) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    const pityCash = await prisma.pityCash.findUnique({
-      where: { id: id },
-    });
-    if (!pityCash || pityCash.HotelName !== context.user.HotelName) {
-      throw new Error("Pity Cash not found or not authorized");
-    }
-    return await prisma.pityCash.update({
-      where: { id: id },
-      data: {
-        amount,
-        startDate,
-        endDate,
-      },
-    });
-  },
-  UpdateCreditRegistration: async (
-    _,
-    { id, name, sex, creditLevel, phoneNumber, amount, registrationDate },
-    context,
-  ) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    const creditReg = await prisma.creditRegistration.findUnique({
-      where: { id: id },
-    });
-    if (!creditReg || creditReg.HotelName !== context.user.HotelName) {
-      throw new Error("Credit Registration not found or not authorized");
-    }
-    return await prisma.creditRegistration.update({
-      where: { id: id },
-      data: {
-        name,
-        sex,
-        creditLevel,
-        phoneNumber,
-        amount,
-        registrationDate,
-      },
-    });
-  },
-  UpdateItemRegistration: async (
-    _,
-    { id, name, level, buyingDate, expireDate, amount, measuredBy, price },
-    context,
-  ) => {
-    if (!context.user) throw new Error("Not Authenticated");
-    const itemReg = await prisma.itemRegistration.findUnique({
-      where: { id: id },
-    });
-    if (!itemReg || itemReg.HotelName !== context.user.HotelName) {
-      throw new Error("Item Registration not found or not authorized");
-    }
-    return await prisma.itemRegistration.update({
-      where: { id: id },
-      data: {
-        name,
-        level,
-        buyingDate,
-        expireDate,
-        amount,
-        measuredBy,
-        price,
-      },
-    });
+    CreateCreditLevel: async (
+      _,
+      { level, requiredAmount, timeInterval, timeFrame },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.creditLevel.create({
+        data: {
+          level,
+          requiredAmount,
+          timeInterval,
+          timeFrame,
+          HotelName: context.user.HotelName,
+        },
+      });
+    },
+    CreatePityCash: async (_, { amount, startDate, endDate }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.pityCash.create({
+        data: {
+          amount,
+          startDate,
+          endDate,
+          HotelName: context.user.HotelName,
+        },
+      });
+    },
+    CreateCreditRegistration: async (
+      _,
+      { name, sex, creditLevel, phoneNumber, amount, registrationDate },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.creditRegistration.create({
+        data: {
+          name,
+          sex,
+          creditLevel,
+          phoneNumber,
+          amount,
+          registrationDate,
+          HotelName: context.user.HotelName,
+        },
+      });
+    },
+    CreateItemRegistration: async (
+      _,
+      { name, level, buyingDate, expireDate, amount, measuredBy, price },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.itemRegistration.create({
+        data: {
+          name,
+          level,
+          buyingDate,
+          expireDate,
+          amount,
+          measuredBy,
+          price,
+          HotelName: context.user.HotelName,
+        },
+      });
+    },
+    DeleteCreditLevel: async (_, { id }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const creditLevel = await prisma.creditLevel.findUnique({
+        where: { id: id },
+      });
+      if (!creditLevel || creditLevel.HotelName !== context.user.HotelName) {
+        throw new Error("Credit Level not found or not authorized");
+      }
+      return await prisma.creditLevel.delete({
+        where: { id: id },
+      });
+    },
+    DeletePityCash: async (_, { id }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const pityCash = await prisma.pityCash.findUnique({
+        where: { id: id },
+      });
+      if (!pityCash || pityCash.HotelName !== context.user.HotelName) {
+        throw new Error("Pity Cash not found or not authorized");
+      }
+      return await prisma.pityCash.delete({
+        where: { id: id },
+      });
+    },
+    DeleteCreditRegistration: async (_, { id }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const creditRegistration = await prisma.creditRegistration.findUnique({
+        where: { id: id },
+      });
+      if (
+        !creditRegistration ||
+        creditRegistration.HotelName !== context.user.HotelName
+      ) {
+        throw new Error("Credit Registration not found or not authorized");
+      }
+      return await prisma.creditRegistration.delete({
+        where: { id: id },
+      });
+    },
+    DeleteItemRegistration: async (_, { id }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const itemRegistration = await prisma.itemRegistration.findUnique({
+        where: { id: id },
+      });
+      if (
+        !itemRegistration ||
+        itemRegistration.HotelName !== context.user.HotelName
+      ) {
+        throw new Error("Item Registration not found or not authorized");
+      }
+      return await prisma.itemRegistration.delete({
+        where: { id: id },
+      });
+    },
+    UpdateCreditLevel: async (
+      _,
+      { id, level, requiredAmount, timeInterval, timeFrame },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const creditLevel = await prisma.creditLevel.findUnique({
+        where: { id: id },
+      });
+      if (!creditLevel || creditLevel.HotelName !== context.user.HotelName) {
+        throw new Error("Credit Level not found or not authorized");
+      }
+      return await prisma.creditLevel.update({
+        where: { id: id },
+        data: {
+          level,
+          requiredAmount,
+          timeInterval,
+          timeFrame,
+        },
+      });
+    },
+    UpdatePityCash: async (_, { id, amount, startDate, endDate }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const pityCash = await prisma.pityCash.findUnique({
+        where: { id: id },
+      });
+      if (!pityCash || pityCash.HotelName !== context.user.HotelName) {
+        throw new Error("Pity Cash not found or not authorized");
+      }
+      return await prisma.pityCash.update({
+        where: { id: id },
+        data: {
+          amount,
+          startDate,
+          endDate,
+        },
+      });
+    },
+    UpdateCreditRegistration: async (
+      _,
+      { id, name, sex, creditLevel, phoneNumber, amount, registrationDate },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const creditReg = await prisma.creditRegistration.findUnique({
+        where: { id: id },
+      });
+      if (!creditReg || creditReg.HotelName !== context.user.HotelName) {
+        throw new Error("Credit Registration not found or not authorized");
+      }
+      return await prisma.creditRegistration.update({
+        where: { id: id },
+        data: {
+          name,
+          sex,
+          creditLevel,
+          phoneNumber,
+          amount,
+          registrationDate,
+        },
+      });
+    },
+    UpdateItemRegistration: async (
+      _,
+      { id, name, level, buyingDate, expireDate, amount, measuredBy, price },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const itemReg = await prisma.itemRegistration.findUnique({
+        where: { id: id },
+      });
+      if (!itemReg || itemReg.HotelName !== context.user.HotelName) {
+        throw new Error("Item Registration not found or not authorized");
+      }
+      return await prisma.itemRegistration.update({
+        where: { id: id },
+        data: {
+          name,
+          level,
+          buyingDate,
+          expireDate,
+          amount,
+          measuredBy,
+          price,
+        },
+      });
+    },
   },
 };
 
