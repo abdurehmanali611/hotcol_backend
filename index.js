@@ -4,13 +4,14 @@ import cors from "cors";
 import { PrismaClient } from "./generated/prisma/index.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { GraphQLJSON } from "graphql-scalars";
+import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
 
 const prisma = new PrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
 
 const typeDefs = gql`
   scalar JSON
+  scalar DateTime
 
   type User {
     id: Int!
@@ -34,7 +35,7 @@ const typeDefs = gql`
     category: String!
     type: String!
     imageUrl: String!
-    createdAt: String!
+    createdAt: DateTime!
   }
 
   type cashouts {
@@ -45,7 +46,7 @@ const typeDefs = gql`
     requiredAmount: JSON
     totalCalc: Float!
     HotelName: String!
-    createdAt: Float!
+    createdAt: DateTime!
   }
 
   type Order {
@@ -62,7 +63,10 @@ const typeDefs = gql`
     status: String
     payment: String
     withBank: Boolean
-    createdAt: Float!
+    credit: Boolean
+    credittorName: String
+    creditAmount: Float
+    createdAt: DateTime!
   }
 
   input OrderInput {
@@ -93,7 +97,7 @@ const typeDefs = gql`
     price: JSON
     tablesServed: JSON
     payment: JSON
-    createdAt: Float!
+    createdAt: DateTime!
   }
 
   type table {
@@ -104,7 +108,7 @@ const typeDefs = gql`
     price: JSON
     payment: JSON
     capacity: Int!
-    createdAt: Float!
+    createdAt: DateTime!
   }
 
   type creditLevel {
@@ -262,6 +266,7 @@ const authenticate = (req) => {
 
 const resolvers = {
   JSON: GraphQLJSON,
+  DateTime: DateTimeResolver,
   Query: {
     users: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
