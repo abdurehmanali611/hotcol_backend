@@ -250,11 +250,10 @@ const typeDefs = gql`
     ): waiter!
     UpdateTable(id: Int!, tableNo: Int!, capacity: Int!): table!
     BatchOrderCreation(orders: [OrderInput!]!): [Order!]!
-  }
-    CreateCreditLevel(level: String!, requiredAmount: Float!, timeInterval: Int!, timeFrame: String!): creditLevel!
-    CreatePityCash(amount: Float!, startDate: DateTime!, endDate: DateTime!): pityCash!
-    CreditRegistration(name: String!, sex: String!, creditLevel: String!, phoneNumber: String!, amount: Float!, registrationDate: DateTime!): CreditRegistration!
-    ItemRegistration(name: String!, level: String!, buyingDate: DateTime!, expireDate: DateTime!, amount: Int!, measuredBy: String!, price: Float!): ItemRegistration!
+    CreateCreditLevel(level: String!, requiredAmount: Float!, timeInterval: Int!, timeFrame: String!, HotelName: String!): creditLevel!
+    CreatePityCash(amount: Float!, startDate: DateTime!, endDate: DateTime!, HotelName: String!): pityCash!
+    CreditRegistration(name: String!, sex: String!, creditLevel: String!, phoneNumber: String!, amount: Float!, registrationDate: DateTime!, HotelName: String!): CreditRegistration!
+    ItemRegistration(name: String!, level: String!, buyingDate: DateTime!, expireDate: DateTime!, amount: Int!, measuredBy: String!, price: Float!, HotelName: String!): ItemRegistration!
     DeleteCreditLevel(id: Int!): creditLevel!
     DeletePityCash(id: Int!): pityCash!
     DeleteCreditRegistration(id: Int!): CreditRegistration!
@@ -263,7 +262,7 @@ const typeDefs = gql`
     UpdatePityCash(id: Int!, amount: Float!, startDate: DateTime!, endDate: DateTime!): pityCash!
     UpdateCreditRegistration(id: Int!, name: String!, sex: String!, creditLevel: String!, phoneNumber: String!, amount: Float!, registrationDate: DateTime!): CreditRegistration!
     UpdateItemRegistration(id: Int!, name: String!, level: String!, buyingDate: DateTime!, expireDate: DateTime!, amount: Int!, measuredBy: String!, price: Float!): ItemRegistration!
- 
+  }
 `;
 
 const authenticate = (req) => {
