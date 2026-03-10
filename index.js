@@ -881,7 +881,7 @@ const resolvers = {
         },
       });
     },
-    CreateCreditRegistration: async (
+    CreditRegistration: async (
       _,
       { name, sex, creditLevel, phoneNumber, amount, registrationDate },
       context,
@@ -899,7 +899,7 @@ const resolvers = {
         },
       });
     },
-    CreateItemRegistration: async (
+    ItemRegistration: async (
       _,
       { name, level, buyingDate, expireDate, amount, measuredBy, price },
       context,
