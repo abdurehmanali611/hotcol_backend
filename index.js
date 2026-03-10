@@ -211,7 +211,7 @@ const typeDefs = gql`
       price: Float!
       HotelName: String!
     ): Order!
-    UpdatePayment(id: Int!, payment: String, withBank: Boolean): Order!
+    UpdatePayment(id: Int!, payment: String, withBank: Boolean, credit: Boolean, credittorName: String, creditAmount: Float): Order!
     DeleteItem(id: Int!): Item!
     UpdateItem(
       id: Int!
@@ -543,7 +543,7 @@ const resolvers = {
         throw error;
       }
     },
-    UpdatePayment: async (_, { id, payment, withBank }, context) => {
+    UpdatePayment: async (_, { id, payment, withBank, credit, credittorName, creditAmount }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       const order = await prisma.order.findUnique({
         where: { id: id },
@@ -553,7 +553,7 @@ const resolvers = {
       }
       return await prisma.order.update({
         where: { id: id },
-        data: { payment: payment, withBank: withBank },
+        data: { payment: payment, withBank: withBank, credit: credit, credittorName: credittorName, creditAmount: creditAmount},
       });
     },
     DeleteItem: async (_, { id }, context) => {
