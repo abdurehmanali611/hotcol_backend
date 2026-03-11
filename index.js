@@ -214,7 +214,6 @@ const typeDefs = gql`
     UpdatePayment(id: Int!, payment: String, withBank: Boolean): Order!
     UpdateCredit(
       id: Int!
-      credit: Boolean
       credittorName: String
       creditAmount: Float
     ): Order!
@@ -659,7 +658,7 @@ const resolvers = {
     },
     UpdateCredit: async (
       _,
-      { id, credit, credittorName, creditAmount },
+      { id, credittorName, creditAmount },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -672,7 +671,7 @@ const resolvers = {
       return await prisma.order.update({
         where: { id: id },
         data: {
-          credit: credit,
+          credit: true,
           credittorName: credittorName,
           creditAmount: creditAmount,
         },
