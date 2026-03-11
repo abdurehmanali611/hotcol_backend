@@ -217,6 +217,8 @@ const typeDefs = gql`
       credittorName: String
       creditAmount: Float
     ): Order!
+    UpdatePityDeduction(id: Int!, amount: Float!): pityCash!
+    UpdateCreditRegistrantDeduction(id: Int!, amount: Float!): CreditRegistration!
     DeleteItem(id: Int!): Item!
     UpdateItem(
       id: Int!
@@ -687,6 +689,40 @@ const resolvers = {
       }
       return await prisma.item.delete({
         where: { id: id },
+      });
+    },
+    UpdatePityDeduction: async (_, { id, amount }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const pityCash = prisma.pityCash.findUnique({
+        where: { id: id },
+      });
+      if (!pityCash || pityCash.HotelName !== context.user.HotelName) {
+        throw new Error("Pity Cash not found or not authorized");
+      }
+      return prisma.pityCash.update({
+        where: { id: id },
+        data: {
+          amount: amount,
+        },
+      });
+    },
+    UpdateCreditRegistrantDeduction: async (
+      _,
+      { id, amount },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const creditReg = prisma.creditRegistration.findUnique({
+        where: { id: id },
+      });
+      if (!creditReg || creditReg.HotelName !== context.user.HotelName) {
+        throw new Error("Credit Registration not found or not authorized");
+      }
+      return prisma.creditRegistration.update({
+        where: { id: id },
+        data: {
+          amount: amount
+        },
       });
     },
     UpdateItem: async (
