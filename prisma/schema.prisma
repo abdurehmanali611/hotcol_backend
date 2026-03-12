@@ -109,6 +109,7 @@ model CreditRegistration {
   amount       Float
   timeInterval Int
   timeFrame    String
+  paidAmount   Float
   registrationDate DateTime @default(now())
   HotelName    String
 }

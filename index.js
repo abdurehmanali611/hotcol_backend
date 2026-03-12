@@ -137,6 +137,7 @@ const typeDefs = gql`
     amount: Float!
     timeInterval: Int!
     timeFrame: String!
+    paidAmount: Float!
     registrationDate: DateTime!
     HotelName: String!
   }
@@ -280,6 +281,7 @@ const typeDefs = gql`
       amount: Float!
       timeInterval: Int!
       timeFrame: String!
+      paidAmount: Float!
       registrationDate: DateTime!
       HotelName: String!
     ): CreditRegistration!
@@ -934,7 +936,7 @@ const resolvers = {
     },
     CreditRegistration: async (
       _,
-      { name, sex, creditLevel, phoneNumber, amount, timeInterval, timeFrame, registrationDate },
+      { name, sex, creditLevel, phoneNumber, amount, timeInterval, timeFrame, paidAmount, registrationDate },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -947,6 +949,7 @@ const resolvers = {
           amount,
           timeInterval,
           timeFrame,
+          paidAmount,
           registrationDate,
           HotelName: context.user.HotelName,
         },
