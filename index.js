@@ -318,6 +318,8 @@ const typeDefs = gql`
       sex: String!
       creditLevel: String!
       phoneNumber: String!
+      amount: Float!
+      paidAmount: Float!
       registrationDate: DateTime!
     ): CreditRegistration!
     UpdateItemRegistration(
@@ -1069,7 +1071,7 @@ const resolvers = {
     },
     UpdateCreditRegistration: async (
       _,
-      { id, name, sex, creditLevel, phoneNumber, registrationDate },
+      { id, name, sex, creditLevel, phoneNumber, amount, paidAmount, registrationDate },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -1086,6 +1088,8 @@ const resolvers = {
           sex,
           creditLevel,
           phoneNumber,
+          amount, 
+          paidAmount,
           registrationDate,
         },
       });
