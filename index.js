@@ -135,6 +135,8 @@ const typeDefs = gql`
     creditLevel: String!
     phoneNumber: String!
     amount: Float!
+    timeInterval: Int!
+    timeFrame: String!
     registrationDate: DateTime!
     HotelName: String!
   }
@@ -276,6 +278,8 @@ const typeDefs = gql`
       creditLevel: String!
       phoneNumber: String!
       amount: Float!
+      timeInterval: Int!
+      timeFrame: String!
       registrationDate: DateTime!
       HotelName: String!
     ): CreditRegistration!
@@ -312,7 +316,6 @@ const typeDefs = gql`
       sex: String!
       creditLevel: String!
       phoneNumber: String!
-      amount: Float!
       registrationDate: DateTime!
     ): CreditRegistration!
     UpdateItemRegistration(
@@ -931,7 +934,7 @@ const resolvers = {
     },
     CreditRegistration: async (
       _,
-      { name, sex, creditLevel, phoneNumber, amount, registrationDate },
+      { name, sex, creditLevel, phoneNumber, amount, timeInterval, timeFrame, registrationDate },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -942,6 +945,8 @@ const resolvers = {
           creditLevel,
           phoneNumber,
           amount,
+          timeInterval,
+          timeFrame,
           registrationDate,
           HotelName: context.user.HotelName,
         },
@@ -1061,7 +1066,7 @@ const resolvers = {
     },
     UpdateCreditRegistration: async (
       _,
-      { id, name, sex, creditLevel, phoneNumber, amount, registrationDate },
+      { id, name, sex, creditLevel, phoneNumber, registrationDate },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -1078,7 +1083,6 @@ const resolvers = {
           sex,
           creditLevel,
           phoneNumber,
-          amount,
           registrationDate,
         },
       });

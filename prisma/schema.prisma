@@ -107,6 +107,8 @@ model CreditRegistration {
   creditLevel  String
   phoneNumber  String
   amount       Float
+  timeInterval Int
+  timeFrame    String
   registrationDate DateTime @default(now())
   HotelName    String
 }
