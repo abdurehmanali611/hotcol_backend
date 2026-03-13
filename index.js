@@ -149,6 +149,9 @@ const typeDefs = gql`
     buyingDate: DateTime!
     expireDate: DateTime!
     amount: Int!
+    supplier: String!
+    status: String
+    statusBy: String
     measuredBy: String!
     price: Float!
     HotelName: String!
@@ -291,6 +294,9 @@ const typeDefs = gql`
       buyingDate: DateTime!
       expireDate: DateTime!
       amount: Int!
+      supplier: String!
+      status: String
+      statusBy: String
       measuredBy: String!
       price: Float!
       HotelName: String!
@@ -329,6 +335,9 @@ const typeDefs = gql`
       buyingDate: DateTime!
       expireDate: DateTime!
       amount: Int!
+      supplier: String!
+      status: String
+      statusBy: String
       measuredBy: String!
       price: Float!
     ): ItemRegistration!
@@ -959,7 +968,7 @@ const resolvers = {
     },
     ItemRegistration: async (
       _,
-      { name, level, buyingDate, expireDate, amount, measuredBy, price },
+      { name, level, buyingDate, expireDate, amount, measuredBy, supplier, status, statusBy, price },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -970,6 +979,9 @@ const resolvers = {
           buyingDate,
           expireDate,
           amount,
+          supplier,
+          status,
+          statusBy,
           measuredBy,
           price,
           HotelName: context.user.HotelName,
@@ -1096,7 +1108,7 @@ const resolvers = {
     },
     UpdateItemRegistration: async (
       _,
-      { id, name, level, buyingDate, expireDate, amount, measuredBy, price },
+      { id, name, level, buyingDate, expireDate, amount, measuredBy, supplier, status, statusBy, price },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -1114,6 +1126,9 @@ const resolvers = {
           buyingDate,
           expireDate,
           amount,
+          supplier,
+          status,
+          statusBy,
           measuredBy,
           price,
         },

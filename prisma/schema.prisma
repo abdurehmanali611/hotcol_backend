@@ -121,6 +121,9 @@ model ItemRegistration {
   buyingDate DateTime @default(now())
   expireDate DateTime
   amount    Int
+  supplier   String
+  status     String?
+  statusBy   String?
   measuredBy String
   price     Float
   HotelName String
