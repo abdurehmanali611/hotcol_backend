@@ -131,6 +131,7 @@ const typeDefs = gql`
   type CreditRegistration {
     id: Int!
     name: String!
+    imageUrl: String!
     sex: String!
     creditLevel: String!
     phoneNumber: String!
@@ -145,6 +146,7 @@ const typeDefs = gql`
   type ItemRegistration {
     id: Int!
     name: String!
+    imageUrl: String!
     level: String!
     buyingDate: DateTime!
     expireDate: DateTime!
@@ -278,6 +280,7 @@ const typeDefs = gql`
     ): pityCash!
     CreditRegistration(
       name: String!
+      imageUrl: String!
       sex: String!
       creditLevel: String!
       phoneNumber: String!
@@ -290,6 +293,7 @@ const typeDefs = gql`
     ): CreditRegistration!
     ItemRegistration(
       name: String!
+      imageUrl: String!
       level: String!
       buyingDate: DateTime!
       expireDate: DateTime!
@@ -321,6 +325,7 @@ const typeDefs = gql`
     UpdateCreditRegistration(
       id: Int!
       name: String!
+      imageUrl: String!
       sex: String!
       creditLevel: String!
       phoneNumber: String!
@@ -331,6 +336,7 @@ const typeDefs = gql`
     UpdateItemRegistration(
       id: Int!
       name: String!
+      imageUrl: String!
       level: String!
       buyingDate: DateTime!
       expireDate: DateTime!
@@ -947,13 +953,14 @@ const resolvers = {
     },
     CreditRegistration: async (
       _,
-      { name, sex, creditLevel, phoneNumber, amount, timeInterval, timeFrame, paidAmount, registrationDate },
+      { name, imageUrl, sex, creditLevel, phoneNumber, amount, timeInterval, timeFrame, paidAmount, registrationDate },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.creditRegistration.create({
         data: {
           name,
+          imageUrl,
           sex,
           creditLevel,
           phoneNumber,
@@ -968,13 +975,14 @@ const resolvers = {
     },
     ItemRegistration: async (
       _,
-      { name, level, buyingDate, expireDate, amount, measuredBy, supplier, status, statusBy, price },
+      { name, imageUrl, level, buyingDate, expireDate, amount, measuredBy, supplier, status, statusBy, price },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.itemRegistration.create({
         data: {
           name,
+          imageUrl,
           level,
           buyingDate,
           expireDate,
@@ -1083,7 +1091,7 @@ const resolvers = {
     },
     UpdateCreditRegistration: async (
       _,
-      { id, name, sex, creditLevel, phoneNumber, amount, paidAmount, registrationDate },
+      { id, imageUrl, name, sex, creditLevel, phoneNumber, amount, paidAmount, registrationDate },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -1097,6 +1105,7 @@ const resolvers = {
         where: { id: id },
         data: {
           name,
+          imageUrl,
           sex,
           creditLevel,
           phoneNumber,
@@ -1108,7 +1117,7 @@ const resolvers = {
     },
     UpdateItemRegistration: async (
       _,
-      { id, name, level, buyingDate, expireDate, amount, measuredBy, supplier, status, statusBy, price },
+      { id, imageUrl, name, level, buyingDate, expireDate, amount, measuredBy, supplier, status, statusBy, price },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -1122,6 +1131,7 @@ const resolvers = {
         where: { id: id },
         data: {
           name,
+          imageUrl,
           level,
           buyingDate,
           expireDate,
