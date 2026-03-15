@@ -203,13 +203,12 @@ const typeDefs = gql`
       HotelName: String!
     ): Order!
     UpdatePayment(id: Int!, payment: String, withBank: Boolean): Order!
-    UpdateCredit(
-      id: Int!
-      credittorName: String
-      creditAmount: Float
-    ): Order!
+    UpdateCredit(id: Int!, credittorName: String, creditAmount: Float): Order!
     UpdatePityDeduction(id: Int!, amount: Float!): pityCash!
-    UpdateCreditRegistrantDeduction(id: Int!, amount: Float!): CreditRegistration!
+    UpdateCreditRegistrantDeduction(
+      id: Int!
+      amount: Float!
+    ): CreditRegistration!
     DeleteItem(id: Int!): Item!
     UpdateItem(
       id: Int!
@@ -628,11 +627,7 @@ const resolvers = {
         },
       });
     },
-    UpdateCredit: async (
-      _,
-      { id, credittorName, creditAmount },
-      context,
-    ) => {
+    UpdateCredit: async (_, { id, credittorName, creditAmount }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       const order = prisma.order.findUnique({
         where: { id: id },
@@ -663,35 +658,37 @@ const resolvers = {
     },
     UpdatePityDeduction: async (_, { id, amount }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const pityCash = prisma.pityCash.findUnique({
+
+      const pityCash = await prisma.pityCash.findUnique({
         where: { id: id },
       });
+
       if (!pityCash || pityCash.HotelName !== context.user.HotelName) {
         throw new Error("Pity Cash not found or not authorized");
       }
-      return prisma.pityCash.update({
+
+      return await prisma.pityCash.update({
         where: { id: id },
         data: {
           amount: amount,
         },
       });
     },
-    UpdateCreditRegistrantDeduction: async (
-      _,
-      { id, amount },
-      context,
-    ) => {
+    UpdateCreditRegistrantDeduction: async (_, { id, amount }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const creditReg = prisma.creditRegistration.findUnique({
+
+      const creditReg = await prisma.creditRegistration.findUnique({
         where: { id: id },
       });
+
       if (!creditReg || creditReg.HotelName !== context.user.HotelName) {
         throw new Error("Credit Registration not found or not authorized");
       }
-      return prisma.creditRegistration.update({
+
+      return await prisma.creditRegistration.update({
         where: { id: id },
         data: {
-          amount: amount
+          amount: amount,
         },
       });
     },
@@ -901,7 +898,18 @@ const resolvers = {
     },
     CreditRegistration: async (
       _,
-      { name, imageUrl, sex, creditLevel, phoneNumber, amount, timeInterval, timeFrame, paidAmount, registrationDate },
+      {
+        name,
+        imageUrl,
+        sex,
+        creditLevel,
+        phoneNumber,
+        amount,
+        timeInterval,
+        timeFrame,
+        paidAmount,
+        registrationDate,
+      },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -1001,7 +1009,17 @@ const resolvers = {
     },
     UpdateCreditRegistration: async (
       _,
-      { id, imageUrl, name, sex, creditLevel, phoneNumber, amount, paidAmount, registrationDate },
+      {
+        id,
+        imageUrl,
+        name,
+        sex,
+        creditLevel,
+        phoneNumber,
+        amount,
+        paidAmount,
+        registrationDate,
+      },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -1019,7 +1037,7 @@ const resolvers = {
           sex,
           creditLevel,
           phoneNumber,
-          amount, 
+          amount,
           paidAmount,
           registrationDate,
         },
