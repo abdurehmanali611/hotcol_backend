@@ -143,22 +143,6 @@ const typeDefs = gql`
     HotelName: String!
   }
 
-  type ItemRegistration {
-    id: Int!
-    name: String!
-    imageUrl: String!
-    level: String!
-    buyingDate: DateTime!
-    expireDate: DateTime!
-    amount: Int!
-    supplier: String!
-    status: String
-    statusBy: String
-    measuredBy: String!
-    price: Float!
-    HotelName: String!
-  }
-
   type Query {
     users: [User!]!
     items: [Item!]!
@@ -170,7 +154,6 @@ const typeDefs = gql`
     creditLevel: [creditLevel!]!
     pityCash: [pityCash!]!
     CreditRegistration: [CreditRegistration!]!
-    ItemRegistration: [ItemRegistration!]!
   }
 
   type Mutation {
@@ -291,24 +274,9 @@ const typeDefs = gql`
       registrationDate: DateTime!
       HotelName: String!
     ): CreditRegistration!
-    ItemRegistration(
-      name: String!
-      imageUrl: String!
-      level: String!
-      buyingDate: DateTime!
-      expireDate: DateTime!
-      amount: Int!
-      supplier: String!
-      status: String
-      statusBy: String
-      measuredBy: String!
-      price: Float!
-      HotelName: String!
-    ): ItemRegistration!
     DeleteCreditLevel(id: Int!): creditLevel!
     DeletePityCash(id: Int!): pityCash!
     DeleteCreditRegistration(id: Int!): CreditRegistration!
-    DeleteItemRegistration(id: Int!): ItemRegistration!
     UpdateCreditLevel(
       id: Int!
       level: String!
@@ -333,20 +301,6 @@ const typeDefs = gql`
       paidAmount: Float!
       registrationDate: DateTime!
     ): CreditRegistration!
-    UpdateItemRegistration(
-      id: Int!
-      name: String!
-      imageUrl: String!
-      level: String!
-      buyingDate: DateTime!
-      expireDate: DateTime!
-      amount: Int!
-      supplier: String!
-      status: String
-      statusBy: String
-      measuredBy: String!
-      price: Float!
-    ): ItemRegistration!
   }
 `;
 
@@ -440,12 +394,6 @@ const resolvers = {
     CreditRegistration: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.creditRegistration.findMany({
-        where: { HotelName: context.user.HotelName },
-      });
-    },
-    ItemRegistration: async (_, __, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
-      return await prisma.itemRegistration.findMany({
         where: { HotelName: context.user.HotelName },
       });
     },
@@ -973,29 +921,6 @@ const resolvers = {
         },
       });
     },
-    ItemRegistration: async (
-      _,
-      { name, imageUrl, level, buyingDate, expireDate, amount, measuredBy, supplier, status, statusBy, price },
-      context,
-    ) => {
-      if (!context.user) throw new Error("Not Authenticated");
-      return await prisma.itemRegistration.create({
-        data: {
-          name,
-          imageUrl,
-          level,
-          buyingDate,
-          expireDate,
-          amount,
-          supplier,
-          status,
-          statusBy,
-          measuredBy,
-          price,
-          HotelName: context.user.HotelName,
-        },
-      });
-    },
     DeleteCreditLevel: async (_, { id }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       const creditLevel = await prisma.creditLevel.findUnique({
@@ -1032,21 +957,6 @@ const resolvers = {
         throw new Error("Credit Registration not found or not authorized");
       }
       return await prisma.creditRegistration.delete({
-        where: { id: id },
-      });
-    },
-    DeleteItemRegistration: async (_, { id }, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
-      const itemRegistration = await prisma.itemRegistration.findUnique({
-        where: { id: id },
-      });
-      if (
-        !itemRegistration ||
-        itemRegistration.HotelName !== context.user.HotelName
-      ) {
-        throw new Error("Item Registration not found or not authorized");
-      }
-      return await prisma.itemRegistration.delete({
         where: { id: id },
       });
     },
@@ -1112,35 +1022,6 @@ const resolvers = {
           amount, 
           paidAmount,
           registrationDate,
-        },
-      });
-    },
-    UpdateItemRegistration: async (
-      _,
-      { id, imageUrl, name, level, buyingDate, expireDate, amount, measuredBy, supplier, status, statusBy, price },
-      context,
-    ) => {
-      if (!context.user) throw new Error("Not Authenticated");
-      const itemReg = await prisma.itemRegistration.findUnique({
-        where: { id: id },
-      });
-      if (!itemReg || itemReg.HotelName !== context.user.HotelName) {
-        throw new Error("Item Registration not found or not authorized");
-      }
-      return await prisma.itemRegistration.update({
-        where: { id: id },
-        data: {
-          name,
-          imageUrl,
-          level,
-          buyingDate,
-          expireDate,
-          amount,
-          supplier,
-          status,
-          statusBy,
-          measuredBy,
-          price,
         },
       });
     },
