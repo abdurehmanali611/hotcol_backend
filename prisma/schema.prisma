@@ -114,3 +114,41 @@ model CreditRegistration {
   registrationDate DateTime @default(now())
   HotelName    String
 }
+
+model ItemRegistration {
+  id                Int      @id @default(autoincrement())
+  name              String
+  imageUrl          String
+  category          String
+  amount            Float
+  measuredBy        String
+  unitPrice         Float
+  registrationDate  DateTime 
+  expireDate        DateTime
+  dutyFee           Float
+  supplierName      String
+  supplierPhone     String
+  Address           String
+  supplierLevel     String
+  paidAmount        Float
+  HotelName         String
+}
+
+model ItemStatus {
+  id           Int      @id @default(autoincrement())
+  name         String
+  imageUrl     String
+  category     String
+  amount       Float
+  measuredBy   String
+  unitPrice    Float
+  actionDate   DateTime
+  supplierName String
+  supplierPhone String
+  Address       String
+  supplierLevel  String
+  paidAmount     Float
+  status         String
+  statusBy       String
+  HotelName      String 
+}
