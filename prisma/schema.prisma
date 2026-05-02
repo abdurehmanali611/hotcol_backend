@@ -70,6 +70,7 @@ model waiter {
   price        Json     @default("[]")
   tablesServed Json     @default("[]")
   payment      Json     @default("[]")
+  incomeAt     Json     @default("[]")
   createdAt    DateTime @default(now())
 }
 
@@ -79,6 +80,7 @@ model table {
   capacity  Int
   price     Json     @default("[]")
   payment   Json     @default("[]")
+  incomeAt  Json     @default("[]")
   HotelName String
   createdAt DateTime @default(now())
 }

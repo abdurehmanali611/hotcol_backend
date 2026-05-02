@@ -97,6 +97,7 @@ const typeDefs = gql`
     price: JSON
     tablesServed: JSON
     payment: JSON
+    incomeAt: JSON
     createdAt: DateTime!
   }
 
@@ -107,6 +108,7 @@ const typeDefs = gql`
     status: [String]
     price: JSON
     payment: JSON
+    incomeAt: JSON
     capacity: Int!
     createdAt: DateTime!
   }
@@ -269,12 +271,13 @@ const typeDefs = gql`
       HotelName: String!
     ): waiter!
     CreateTable(tableNo: Int!, capacity: Int!, HotelName: String!): table!
-    UpdatePaymentTable(id: Int!, payment: JSON!, price: JSON!): table!
+    UpdatePaymentTable(id: Int!, payment: JSON!, price: JSON!, incomeAt: JSON!): table!
     UpdatePaymentWaiter(
       id: Int!
       payment: JSON!
       price: JSON!
       tablesServed: JSON!
+      incomeAt: JSON!
     ): waiter!
     DeleteWaiter(id: Int!): waiter!
     DeleteTable(id: Int!): table!
@@ -868,6 +871,7 @@ const resolvers = {
           price: [],
           tablesServed: [],
           payment: [],
+          incomeAt: [],
         },
       });
     },
@@ -880,12 +884,13 @@ const resolvers = {
           capacity,
           price: [], // default empty array
           payment: [], // default empty array
+          incomeAt: [],
         },
       });
     },
     UpdatePaymentWaiter: async (
       _,
-      { payment, price, tablesServed, id },
+      { payment, price, tablesServed, incomeAt, id },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -903,16 +908,21 @@ const resolvers = {
       const existingTables = Array.isArray(waiter.tablesServed)
         ? waiter.tablesServed
         : [];
+      const existingIncomeAt = Array.isArray(waiter.incomeAt)
+        ? waiter.incomeAt
+        : [];
+      const newIncomeAt = Array.isArray(incomeAt) ? incomeAt : [];
       return await prisma.waiter.update({
         where: { id: id },
         data: {
           payment: [...existingPayment, ...payment],
           price: [...existingPrice, ...price],
           tablesServed: [...existingTables, ...tablesServed],
+          incomeAt: [...existingIncomeAt, ...newIncomeAt],
         },
       });
     },
-    UpdatePaymentTable: async (_, { id, payment, price }, context) => {
+    UpdatePaymentTable: async (_, { id, payment, price, incomeAt }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       const table = await prisma.table.findUnique({
         where: { id: id },
@@ -922,11 +932,16 @@ const resolvers = {
       }
       const existingPayment = Array.isArray(table.payment) ? table.payment : [];
       const existingPrice = Array.isArray(table.price) ? table.price : [];
+      const existingIncomeAt = Array.isArray(table.incomeAt)
+        ? table.incomeAt
+        : [];
+      const newIncomeAt = Array.isArray(incomeAt) ? incomeAt : [];
       return await prisma.table.update({
         where: { id: id },
         data: {
           payment: [...existingPayment, ...payment],
           price: [...existingPrice, ...price],
+          incomeAt: [...existingIncomeAt, ...newIncomeAt],
         },
       });
     },
@@ -1333,7 +1348,7 @@ async function startServer() {
     });
   });
 
-  const port = 4000;
+  const port = process.env.PORT || 4000;
   app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
   });
