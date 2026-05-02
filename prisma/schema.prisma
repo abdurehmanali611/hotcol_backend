@@ -9,12 +9,19 @@ datasource db {
 }
 
 model user {
-  id        Int     @id @default(autoincrement())
-  UserName  String  @unique
-  Password  String
-  HotelName String
-  Role      String
-  LogoUrl   String?
+  id           Int     @id @default(autoincrement())
+  UserName     String  @unique
+  Password     String
+  /// Display / marketing business name (not necessarily unique)
+  HotelName    String
+  /// Tenant id shared by all staff (10-digit TIN or 11–12 digits); matches Item/Order.HotelName — not unique per row
+  tinNumber    String?
+  businessType String?
+  modules      Json?
+  Role         String
+  LogoUrl      String?
+
+  @@index([tinNumber])
 }
 
 model Item {
