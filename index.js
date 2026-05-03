@@ -331,6 +331,8 @@ const typeDefs = gql`
     id: Int!
     HotelName: String!
     itemRegistrationId: Int!
+    """Resolved from master inventory at read time (may be empty if the row was removed)."""
+    itemName: String!
     movementType: String!
     amount: Float!
     stakeHolderOrReason: String!
@@ -655,6 +657,16 @@ function assertRole(context, allowed) {
 const resolvers = {
   JSON: GraphQLJSON,
   DateTime: DateTimeResolver,
+  StockOutRequest: {
+    itemName: async (parent, _, { prisma }) => {
+      const reg = await prisma.itemRegistration.findUnique({
+        where: { id: parent.itemRegistrationId },
+      });
+      return reg?.name != null && String(reg.name).trim() !== ""
+        ? String(reg.name).trim()
+        : "";
+    },
+  },
   Query: {
     users: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
