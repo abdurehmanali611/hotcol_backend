@@ -1,6 +1,7 @@
 import express from "express";
 import { ApolloServer, gql } from "apollo-server-express";
 import cors from "cors";
+import crypto from "crypto";
 import { PrismaClient } from "./generated/prisma/index.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -9,27 +10,17 @@ import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
 const prisma = new PrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
 
-const AUTO_TENANT_LEN_MIN = 11;
-const AUTO_TENANT_LEN_MAX = 12;
-
+/** Random tenant id when the business does not supply a 10-digit TIN (not guessable, URL-safe). */
 function generateAutoTenantKey() {
-  const len =
-    Math.random() < 0.5 ? AUTO_TENANT_LEN_MIN : AUTO_TENANT_LEN_MAX;
-  let digits = "";
-  for (let i = 0; i < len; i++) {
-    digits += String(Math.floor(Math.random() * 10));
-  }
-  if (digits[0] === "0") {
-    digits = String(Math.floor(Math.random() * 9) + 1) + digits.slice(1);
-  }
-  return digits;
+  const slug = crypto.randomBytes(12).toString("base64url");
+  return `TIN_${slug}`;
 }
 
 /**
  * Resolves tenant TIN for a **new** business (CreateAdmin).
  * Many `user` rows (staff) may share the same `tinNumber`; uniqueness is only
  * across businesses: no existing row may already use this tin for another org.
- * We treat "taken" as: any user with this tinNumber (first admin wins the org).
+ * If the preferred value is not exactly 10 digits, assigns a random `TIN_*` string.
  */
 async function allocateUniqueTinNumber(prismaClient, preferredTenDigitTin) {
   const tin = (preferredTenDigitTin || "").trim();
@@ -344,6 +335,7 @@ const typeDefs = gql`
       totalCalc: Float!
     ): cashouts!
     UpdateCredential(UserName: String!, Password: String!, Role: String!): User!
+    DeleteCredential(UserName: String!): Boolean!
     CreateCredential(
       UserName: String!
       Password: String!
@@ -775,13 +767,19 @@ const resolvers = {
         );
       }
 
+      const orgTin =
+        context.user.tinNumber != null &&
+        String(context.user.tinNumber).trim() !== ""
+          ? String(context.user.tinNumber).trim()
+          : tenantScopeFromContext(context);
+
       const hashedPassword = await bcrypt.hash(Password, 12);
       return await prisma.user.create({
         data: {
           UserName: userNameNorm,
           Password: hashedPassword,
           HotelName: context.user.HotelName,
-          tinNumber: tenantScopeFromContext(context),
+          tinNumber: orgTin,
           Role,
           LogoUrl,
         },
@@ -835,24 +833,53 @@ const resolvers = {
     UpdateCredential: async (_, { UserName, Password, Role }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
 
-      const hashedPassword = await bcrypt.hash(Password, 12);
-
+      const userNameNorm = String(UserName).trim();
       const user = await prisma.user.findFirst({
         where: {
           ...sameOrganizationWhere(context),
-          Role: Role,
+          UserName: userNameNorm,
         },
       });
 
       if (!user) throw new Error("User not found");
+      if (user.Role === "Admin") {
+        throw new Error("Admin accounts cannot be updated from this form");
+      }
+
+      const hashedPassword = await bcrypt.hash(Password, 12);
 
       return await prisma.user.update({
         where: { id: user.id },
         data: {
-          UserName: UserName,
           Password: hashedPassword,
+          Role,
         },
       });
+    },
+    DeleteCredential: async (_, { UserName }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+
+      const userNameNorm = String(UserName).trim();
+      if (userNameNorm === String(context.user.UserName || "").trim()) {
+        throw new Error("You cannot delete your own account");
+      }
+
+      const target = await prisma.user.findFirst({
+        where: {
+          ...sameOrganizationWhere(context),
+          UserName: userNameNorm,
+        },
+      });
+
+      if (!target) throw new Error("User not found");
+      if (target.Role === "Admin") {
+        throw new Error("Admin accounts cannot be deleted here");
+      }
+
+      await prisma.user.delete({
+        where: { id: target.id },
+      });
+      return true;
     },
     CreateItem: async (
       _,
