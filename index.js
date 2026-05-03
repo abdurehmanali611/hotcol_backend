@@ -1808,43 +1808,15 @@ const resolvers = {
       if (pr.status !== "PENDING_FINANCE") {
         throw new Error("Request is not awaiting finance approval");
       }
-      const placeholderImg =
-        "https://placehold.co/400x400/png?text=Stock";
-      const lineTotal =
-        (pr.estimatedUnitPrice || 0) * (pr.quantity || 0);
-      const expire = new Date();
-      expire.setFullYear(expire.getFullYear() + 1);
-      await prisma.$transaction([
-        prisma.itemRegistration.create({
-          data: {
-            name: pr.itemName,
-            imageUrl: placeholderImg,
-            category: pr.category || "Others",
-            amount: pr.quantity,
-            measuredBy: pr.measuredBy,
-            unitPrice: pr.estimatedUnitPrice || 0,
-            registrationDate: new Date(),
-            expireDate: expire,
-            dutyFee: 0,
-            supplierName: pr.supplierName || "TBD",
-            supplierPhone: pr.supplierPhone || "",
-            Address: "",
-            supplierLevel: "Bronze",
-            paidAmount: lineTotal,
-            HotelName: pr.HotelName,
-          },
-        }),
-        prisma.purchaseRequest.update({
-          where: { id },
-          data: {
-            status: "APPROVED_FINANCE",
-            financeApprovedAt: new Date(),
-            financeActorName: context.user.UserName,
-            rejectionReason: null,
-          },
-        }),
-      ]);
-      return await prisma.purchaseRequest.findUnique({ where: { id } });
+      return await prisma.purchaseRequest.update({
+        where: { id },
+        data: {
+          status: "APPROVED_FINANCE",
+          financeApprovedAt: new Date(),
+          financeActorName: context.user.UserName,
+          rejectionReason: null,
+        },
+      });
     },
 
     rejectPurchaseRequestFinance: async (_, { id, reason }, context) => {
