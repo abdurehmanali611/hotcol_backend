@@ -161,3 +161,80 @@ model ItemStatus {
   statusBy       String
   HotelName      String 
 }
+
+/// Named individuals sharing the Cost Control login — selected when approving.
+model CostControllerProfile {
+  id          Int      @id @default(autoincrement())
+  displayName String
+  HotelName   String
+  createdAt   DateTime @default(now())
+
+  @@index([HotelName])
+}
+
+/// Store requests to buy items not currently in stock. CC → Finance → stock receipt.
+model PurchaseRequest {
+  id                  Int       @id @default(autoincrement())
+  HotelName           String
+  itemName            String
+  quantity            Float
+  measuredBy          String
+  notes               String    @default("")
+  estimatedUnitPrice  Float     @default(0)
+  supplierName        String    @default("")
+  supplierPhone       String    @default("")
+  category            String    @default("Others")
+  /// PENDING_CC | APPROVED_CC | REJECTED_CC | PENDING_FINANCE | APPROVED_FINANCE | REJECTED_FINANCE
+  status              String
+  storeUserName       String
+  ccProfileId         Int?
+  ccActorName         String?
+  ccApprovedAt        DateTime?
+  financeActorName    String?
+  financeApprovedAt   DateTime?
+  rejectionReason     String?
+  createdAt           DateTime  @default(now())
+
+  @@index([HotelName])
+  @@index([status])
+}
+
+/// Hotel store movements pending Cost Control approval before inventory updates.
+model StockOutRequest {
+  id                   Int      @id @default(autoincrement())
+  HotelName            String
+  itemRegistrationId   Int
+  /// STOCK_OUT | WASTAGE | RETURN_SUPPLIER
+  movementType         String
+  amount               Float
+  stakeHolderOrReason  String
+  /// PENDING | APPROVED | REJECTED
+  status               String
+  requestedByUserName  String
+  ccProfileId          Int?
+  ccActorName          String?
+  decidedAt            DateTime?
+  rejectionReason      String?
+  createdAt            DateTime @default(now())
+
+  @@index([HotelName])
+  @@index([status])
+}
+
+/// Monthly inventory beginnings for chef / bar (editable for monthly checks).
+model KitchenBarBeginning {
+  id          Int      @id @default(autoincrement())
+  HotelName   String
+  /// CHEF | BAR
+  station     String
+  itemName    String
+  amount      Float
+  measuredBy  String
+  /// YYYY-MM
+  monthPeriod String
+  notes       String   @default("")
+  createdAt   DateTime @default(now())
+
+  @@index([HotelName])
+  @@index([monthPeriod])
+}

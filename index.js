@@ -298,6 +298,63 @@ const typeDefs = gql`
     HotelName: String! 
   }
 
+  type CostControllerProfile {
+    id: Int!
+    displayName: String!
+    HotelName: String!
+    createdAt: DateTime!
+  }
+
+  type PurchaseRequest {
+    id: Int!
+    HotelName: String!
+    itemName: String!
+    quantity: Float!
+    measuredBy: String!
+    notes: String!
+    estimatedUnitPrice: Float!
+    supplierName: String!
+    supplierPhone: String!
+    category: String!
+    status: String!
+    storeUserName: String!
+    ccProfileId: Int
+    ccActorName: String
+    ccApprovedAt: DateTime
+    financeActorName: String
+    financeApprovedAt: DateTime
+    rejectionReason: String
+    createdAt: DateTime!
+  }
+
+  type StockOutRequest {
+    id: Int!
+    HotelName: String!
+    itemRegistrationId: Int!
+    movementType: String!
+    amount: Float!
+    stakeHolderOrReason: String!
+    status: String!
+    requestedByUserName: String!
+    ccProfileId: Int
+    ccActorName: String
+    decidedAt: DateTime
+    rejectionReason: String
+    createdAt: DateTime!
+  }
+
+  type KitchenBarBeginning {
+    id: Int!
+    HotelName: String!
+    station: String!
+    itemName: String!
+    amount: Float!
+    measuredBy: String!
+    monthPeriod: String!
+    notes: String!
+    createdAt: DateTime!
+  }
+
   type Query {
     users: [User!]!
     items: [Item!]!
@@ -311,6 +368,10 @@ const typeDefs = gql`
     CreditRegistration: [CreditRegistration!]!
     ItemRegistration: [ItemRegistration!]!
     ItemStatus: [ItemStatus!]!
+    costControllerProfiles: [CostControllerProfile!]!
+    purchaseRequests: [PurchaseRequest!]!
+    stockOutRequests: [StockOutRequest!]!
+    kitchenBarBeginnings: [KitchenBarBeginning!]!
   }
 
   type Mutation {
@@ -515,6 +576,57 @@ const typeDefs = gql`
     statusBy: String!
     HotelName: String!): ItemStatus!
     DeleteItemStatus(id: Int!): ItemStatus!
+
+    createCostControllerProfile(displayName: String!): CostControllerProfile!
+    deleteCostControllerProfile(id: Int!): Boolean!
+
+    createPurchaseRequest(
+      itemName: String!
+      quantity: Float!
+      measuredBy: String!
+      notes: String
+      estimatedUnitPrice: Float
+      supplierName: String
+      supplierPhone: String
+      category: String
+    ): PurchaseRequest!
+
+    approvePurchaseRequestCC(id: Int!, costControllerProfileId: Int!): PurchaseRequest!
+    rejectPurchaseRequestCC(id: Int!, reason: String): PurchaseRequest!
+
+    approvePurchaseRequestFinance(id: Int!): PurchaseRequest!
+    rejectPurchaseRequestFinance(id: Int!, reason: String): PurchaseRequest!
+
+    createStockOutRequest(
+      itemRegistrationId: Int!
+      movementType: String!
+      amount: Float!
+      stakeHolderOrReason: String!
+    ): StockOutRequest!
+
+    approveStockOutRequest(id: Int!, costControllerProfileId: Int!): StockOutRequest!
+    rejectStockOutRequest(id: Int!, reason: String): StockOutRequest!
+
+    createKitchenBarBeginning(
+      station: String!
+      itemName: String!
+      amount: Float!
+      measuredBy: String!
+      monthPeriod: String!
+      notes: String
+    ): KitchenBarBeginning!
+
+    updateKitchenBarBeginning(
+      id: Int!
+      station: String!
+      itemName: String!
+      amount: Float!
+      measuredBy: String!
+      monthPeriod: String!
+      notes: String
+    ): KitchenBarBeginning!
+
+    deleteKitchenBarBeginning(id: Int!): Boolean!
   }
 `;
 
@@ -528,6 +640,17 @@ const authenticate = (req) => {
     return null;
   }
 };
+
+function assertAuthenticated(context) {
+  if (!context.user) throw new Error("Not Authenticated");
+}
+
+function assertRole(context, allowed) {
+  assertAuthenticated(context);
+  if (!allowed.includes(context.user.Role)) {
+    throw new Error("Not authorized");
+  }
+}
 
 const resolvers = {
   JSON: GraphQLJSON,
@@ -624,6 +747,34 @@ const resolvers = {
         where: tenantHotelReadWhere(context),
       });
     },
+    costControllerProfiles: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.costControllerProfile.findMany({
+        where: tenantHotelReadWhere(context),
+        orderBy: { createdAt: "asc" },
+      });
+    },
+    purchaseRequests: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.purchaseRequest.findMany({
+        where: tenantHotelReadWhere(context),
+        orderBy: { createdAt: "desc" },
+      });
+    },
+    stockOutRequests: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.stockOutRequest.findMany({
+        where: tenantHotelReadWhere(context),
+        orderBy: { createdAt: "desc" },
+      });
+    },
+    kitchenBarBeginnings: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.kitchenBarBeginning.findMany({
+        where: tenantHotelReadWhere(context),
+        orderBy: { createdAt: "desc" },
+      });
+    },
   },
   Mutation: {
     CreateAdmin: async (
@@ -717,6 +868,7 @@ const resolvers = {
           HotelName: user.HotelName,
           tinNumber: user.tinNumber,
           tenantId,
+          businessType: user.businessType ?? null,
         },
         JWT_Secret,
         { expiresIn: "1d" },
@@ -737,11 +889,11 @@ const resolvers = {
     },
     verifyAdminPassword: async (_, { HotelName, passwordInput }) => {
       let admin = await prisma.user.findFirst({
-        where: { tinNumber: HotelName, Role: "Admin" },
+        where: { tinNumber: HotelName, Role: { in: ["Admin", "Manager"] } },
       });
       if (!admin) {
         admin = await prisma.user.findFirst({
-          where: { HotelName: HotelName, Role: "Admin" },
+          where: { HotelName: HotelName, Role: { in: ["Admin", "Manager"] } },
         });
       }
       if (!admin) return false;
@@ -755,6 +907,9 @@ const resolvers = {
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
+      if (!["Admin", "Manager"].includes(context.user.Role)) {
+        throw new Error("Not authorized");
+      }
 
       const userNameNorm = String(UserName).trim();
       const existingUser = await prisma.user.findUnique({
@@ -774,6 +929,13 @@ const resolvers = {
           : tenantScopeFromContext(context);
 
       const hashedPassword = await bcrypt.hash(Password, 12);
+      const creator = await prisma.user.findUnique({
+        where: { id: context.user.userId },
+      });
+      const businessType =
+        (creator && creator.businessType) ||
+        context.user.businessType ||
+        null;
       return await prisma.user.create({
         data: {
           UserName: userNameNorm,
@@ -782,6 +944,7 @@ const resolvers = {
           tinNumber: orgTin,
           Role,
           LogoUrl,
+          businessType,
         },
       });
     },
@@ -816,11 +979,17 @@ const resolvers = {
     },
     UpdateAdminCredential: async (_, { Password }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      if (!["Admin", "Manager"].includes(context.user.Role)) {
+        throw new Error("Not authorized");
+      }
 
       const hashedPassword = await bcrypt.hash(Password, 12);
 
       const admin = await prisma.user.findFirst({
-        where: { ...sameOrganizationWhere(context), Role: "Admin" },
+        where: {
+          ...sameOrganizationWhere(context),
+          Role: { in: ["Admin", "Manager"] },
+        },
       });
 
       if (!admin) throw new Error("Admin not found");
@@ -832,6 +1001,9 @@ const resolvers = {
     },
     UpdateCredential: async (_, { UserName, Password, Role }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      if (!["Admin", "Manager"].includes(context.user.Role)) {
+        throw new Error("Not authorized");
+      }
 
       const userNameNorm = String(UserName).trim();
       const user = await prisma.user.findFirst({
@@ -842,7 +1014,7 @@ const resolvers = {
       });
 
       if (!user) throw new Error("User not found");
-      if (user.Role === "Admin") {
+      if (user.Role === "Admin" || user.Role === "Manager") {
         throw new Error("Admin accounts cannot be updated from this form");
       }
 
@@ -858,6 +1030,9 @@ const resolvers = {
     },
     DeleteCredential: async (_, { UserName }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      if (!["Admin", "Manager"].includes(context.user.Role)) {
+        throw new Error("Not authorized");
+      }
 
       const userNameNorm = String(UserName).trim();
       if (userNameNorm === String(context.user.UserName || "").trim()) {
@@ -872,7 +1047,7 @@ const resolvers = {
       });
 
       if (!target) throw new Error("User not found");
-      if (target.Role === "Admin") {
+      if (target.Role === "Admin" || target.Role === "Manager") {
         throw new Error("Admin accounts cannot be deleted here");
       }
 
@@ -1505,6 +1680,371 @@ const resolvers = {
         },
       });
     },
+    createCostControllerProfile: async (_, { displayName }, context) => {
+      assertRole(context, ["Manager"]);
+      const tenant = tenantScopeFromContext(context);
+      return await prisma.costControllerProfile.create({
+        data: {
+          displayName: String(displayName).trim(),
+          HotelName: tenant,
+        },
+      });
+    },
+    deleteCostControllerProfile: async (_, { id }, context) => {
+      assertRole(context, ["Manager"]);
+      const row = await prisma.costControllerProfile.findUnique({
+        where: { id },
+      });
+      if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+        throw new Error("Profile not found");
+      }
+      await prisma.costControllerProfile.delete({ where: { id } });
+      return true;
+    },
+
+    createPurchaseRequest: async (
+      _,
+      {
+        itemName,
+        quantity,
+        measuredBy,
+        notes,
+        estimatedUnitPrice,
+        supplierName,
+        supplierPhone,
+        category,
+      },
+      context,
+    ) => {
+      assertRole(context, ["Store"]);
+      const tenant = tenantScopeFromContext(context);
+      return await prisma.purchaseRequest.create({
+        data: {
+          HotelName: tenant,
+          itemName: String(itemName).trim(),
+          quantity,
+          measuredBy,
+          notes: notes ?? "",
+          estimatedUnitPrice: estimatedUnitPrice ?? 0,
+          supplierName: supplierName ?? "",
+          supplierPhone: supplierPhone ?? "",
+          category: category ?? "Others",
+          status: "PENDING_CC",
+          storeUserName: context.user.UserName,
+        },
+      });
+    },
+
+    approvePurchaseRequestCC: async (
+      _,
+      { id, costControllerProfileId },
+      context,
+    ) => {
+      assertRole(context, ["CostControl"]);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
+      if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
+        throw new Error("Purchase request not found");
+      }
+      if (pr.status !== "PENDING_CC") {
+        throw new Error("Request is not awaiting cost control approval");
+      }
+      const prof = await prisma.costControllerProfile.findFirst({
+        where: {
+          id: costControllerProfileId,
+          HotelName: pr.HotelName,
+        },
+      });
+      if (!prof) {
+        throw new Error("Select a registered cost controller identity");
+      }
+      return await prisma.purchaseRequest.update({
+        where: { id },
+        data: {
+          status: "PENDING_FINANCE",
+          ccProfileId: prof.id,
+          ccActorName: prof.displayName,
+          ccApprovedAt: new Date(),
+          rejectionReason: null,
+        },
+      });
+    },
+
+    rejectPurchaseRequestCC: async (_, { id, reason }, context) => {
+      assertRole(context, ["CostControl"]);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
+      if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
+        throw new Error("Purchase request not found");
+      }
+      if (pr.status !== "PENDING_CC") {
+        throw new Error("Request is not awaiting cost control approval");
+      }
+      return await prisma.purchaseRequest.update({
+        where: { id },
+        data: {
+          status: "REJECTED_CC",
+          rejectionReason: reason ?? "",
+        },
+      });
+    },
+
+    approvePurchaseRequestFinance: async (_, { id }, context) => {
+      assertRole(context, ["Finance"]);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
+      if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
+        throw new Error("Purchase request not found");
+      }
+      if (pr.status !== "PENDING_FINANCE") {
+        throw new Error("Request is not awaiting finance approval");
+      }
+      const placeholderImg =
+        "https://placehold.co/400x400/png?text=Stock";
+      const lineTotal =
+        (pr.estimatedUnitPrice || 0) * (pr.quantity || 0);
+      const expire = new Date();
+      expire.setFullYear(expire.getFullYear() + 1);
+      await prisma.$transaction([
+        prisma.itemRegistration.create({
+          data: {
+            name: pr.itemName,
+            imageUrl: placeholderImg,
+            category: pr.category || "Others",
+            amount: pr.quantity,
+            measuredBy: pr.measuredBy,
+            unitPrice: pr.estimatedUnitPrice || 0,
+            registrationDate: new Date(),
+            expireDate: expire,
+            dutyFee: 0,
+            supplierName: pr.supplierName || "TBD",
+            supplierPhone: pr.supplierPhone || "",
+            Address: "",
+            supplierLevel: "Bronze",
+            paidAmount: lineTotal,
+            HotelName: pr.HotelName,
+          },
+        }),
+        prisma.purchaseRequest.update({
+          where: { id },
+          data: {
+            status: "APPROVED_FINANCE",
+            financeApprovedAt: new Date(),
+            financeActorName: context.user.UserName,
+            rejectionReason: null,
+          },
+        }),
+      ]);
+      return await prisma.purchaseRequest.findUnique({ where: { id } });
+    },
+
+    rejectPurchaseRequestFinance: async (_, { id, reason }, context) => {
+      assertRole(context, ["Finance"]);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
+      if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
+        throw new Error("Purchase request not found");
+      }
+      if (pr.status !== "PENDING_FINANCE") {
+        throw new Error("Request is not awaiting finance approval");
+      }
+      return await prisma.purchaseRequest.update({
+        where: { id },
+        data: {
+          status: "REJECTED_FINANCE",
+          rejectionReason: reason ?? "",
+        },
+      });
+    },
+
+    createStockOutRequest: async (
+      _,
+      { itemRegistrationId, movementType, amount, stakeHolderOrReason },
+      context,
+    ) => {
+      assertRole(context, ["Store"]);
+      const item = await prisma.itemRegistration.findUnique({
+        where: { id: itemRegistrationId },
+      });
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+        throw new Error("Item not found");
+      }
+      const amt = Number(amount);
+      if (!(amt > 0)) throw new Error("Amount must be positive");
+      if (item.amount - amt < 1) {
+        throw new Error(
+          "At least 1 unit must remain in stock for every item. Reduce the requested quantity.",
+        );
+      }
+      const tenant = tenantScopeFromContext(context);
+      return await prisma.stockOutRequest.create({
+        data: {
+          HotelName: tenant,
+          itemRegistrationId,
+          movementType: String(movementType),
+          amount: amt,
+          stakeHolderOrReason: String(stakeHolderOrReason ?? "").trim(),
+          status: "PENDING",
+          requestedByUserName: context.user.UserName,
+        },
+      });
+    },
+
+    approveStockOutRequest: async (
+      _,
+      { id, costControllerProfileId },
+      context,
+    ) => {
+      assertRole(context, ["CostControl"]);
+      const reqRow = await prisma.stockOutRequest.findUnique({
+        where: { id },
+      });
+      if (!reqRow || !tenantHotelReadMatches(context, reqRow.HotelName)) {
+        throw new Error("Request not found");
+      }
+      if (reqRow.status !== "PENDING") {
+        throw new Error("Request already processed");
+      }
+      const prof = await prisma.costControllerProfile.findFirst({
+        where: {
+          id: costControllerProfileId,
+          HotelName: reqRow.HotelName,
+        },
+      });
+      if (!prof) {
+        throw new Error("Select a registered cost controller identity");
+      }
+      const item = await prisma.itemRegistration.findUnique({
+        where: { id: reqRow.itemRegistrationId },
+      });
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+        throw new Error("Source stock row missing");
+      }
+      if (item.amount - reqRow.amount < 1) {
+        throw new Error(
+          "Approval would violate minimum stock rule (≥1). Reject or adjust inventory.",
+        );
+      }
+      const newAmt = item.amount - reqRow.amount;
+      const statusLabel =
+        reqRow.movementType === "STOCK_OUT"
+          ? "Stock Out"
+          : reqRow.movementType === "WASTAGE"
+            ? "Wastage"
+            : "Returned to Supplier";
+
+      await prisma.$transaction(async (tx) => {
+        await tx.itemStatus.create({
+          data: {
+            name: item.name,
+            imageUrl: item.imageUrl,
+            category: item.category,
+            amount: reqRow.amount,
+            measuredBy: item.measuredBy,
+            unitPrice: item.unitPrice,
+            actionDate: new Date(),
+            supplierName: item.supplierName,
+            supplierPhone: item.supplierPhone,
+            Address: item.Address,
+            supplierLevel: item.supplierLevel,
+            paidAmount: item.paidAmount,
+            status: statusLabel,
+            statusBy: prof.displayName,
+            HotelName: reqRow.HotelName,
+          },
+        });
+        await tx.itemRegistration.update({
+          where: { id: item.id },
+          data: { amount: newAmt },
+        });
+        await tx.stockOutRequest.update({
+          where: { id },
+          data: {
+            status: "APPROVED",
+            ccProfileId: prof.id,
+            ccActorName: prof.displayName,
+            decidedAt: new Date(),
+            rejectionReason: null,
+          },
+        });
+      });
+      return await prisma.stockOutRequest.findUnique({ where: { id } });
+    },
+
+    rejectStockOutRequest: async (_, { id, reason }, context) => {
+      assertRole(context, ["CostControl"]);
+      const reqRow = await prisma.stockOutRequest.findUnique({
+        where: { id },
+      });
+      if (!reqRow || !tenantHotelReadMatches(context, reqRow.HotelName)) {
+        throw new Error("Request not found");
+      }
+      if (reqRow.status !== "PENDING") {
+        throw new Error("Request already processed");
+      }
+      return await prisma.stockOutRequest.update({
+        where: { id },
+        data: {
+          status: "REJECTED",
+          decidedAt: new Date(),
+          rejectionReason: reason ?? "",
+        },
+      });
+    },
+
+    createKitchenBarBeginning: async (
+      _,
+      { station, itemName, amount, measuredBy, monthPeriod, notes },
+      context,
+    ) => {
+      assertRole(context, ["CostControl"]);
+      const tenant = tenantScopeFromContext(context);
+      return await prisma.kitchenBarBeginning.create({
+        data: {
+          HotelName: tenant,
+          station: String(station),
+          itemName: String(itemName).trim(),
+          amount,
+          measuredBy,
+          monthPeriod: String(monthPeriod).trim(),
+          notes: notes ?? "",
+        },
+      });
+    },
+
+    updateKitchenBarBeginning: async (
+      _,
+      { id, station, itemName, amount, measuredBy, monthPeriod, notes },
+      context,
+    ) => {
+      assertRole(context, ["CostControl"]);
+      const row = await prisma.kitchenBarBeginning.findUnique({
+        where: { id },
+      });
+      if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+        throw new Error("Record not found");
+      }
+      return await prisma.kitchenBarBeginning.update({
+        where: { id },
+        data: {
+          station: String(station),
+          itemName: String(itemName).trim(),
+          amount,
+          measuredBy,
+          monthPeriod: String(monthPeriod).trim(),
+          notes: notes ?? "",
+        },
+      });
+    },
+
+    deleteKitchenBarBeginning: async (_, { id }, context) => {
+      assertRole(context, ["CostControl"]);
+      const row = await prisma.kitchenBarBeginning.findUnique({
+        where: { id },
+      });
+      if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+        throw new Error("Record not found");
+      }
+      await prisma.kitchenBarBeginning.delete({ where: { id } });
+      return true;
+    },
+
     CreateItemStatus: async(_, {name, imageUrl, category, amount, measuredBy, unitPrice, actionDate, supplierName, supplierPhone, Address, supplierLevel, paidAmount, status, statusBy}, context) => {
       if (!context.user) throw new Error("Not Authorized")
       return await prisma.itemStatus.create({
