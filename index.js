@@ -1491,6 +1491,18 @@ const resolvers = {
       context
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const norm = (s) => String(s ?? "").trim().toLowerCase();
+      const wanted = norm(name);
+      const existingRows = await prisma.itemRegistration.findMany({
+        where: tenantHotelReadWhere(context),
+      });
+      if (
+        existingRows.some((r) => norm(r.name) === wanted && wanted.length > 0)
+      ) {
+        throw new Error(
+          "The item already exists. You can edit it from the Inventory tab.",
+        );
+      }
       return await prisma.itemRegistration.create({
         data: {
           name,
