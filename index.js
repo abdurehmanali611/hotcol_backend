@@ -68,6 +68,58 @@ function tenantScopeFromContext(ctx) {
   return null;
 }
 
+/**
+ * Item/Order/… rows may still use legacy display strings in `HotelName` while the JWT
+ * scopes by `tenantId` (TIN). Reads must OR-match so lists are not empty mid-migration.
+ */
+function tenantHotelReadWhere(ctx) {
+  const u = ctx?.user;
+  if (!u) return { HotelName: "__no_user__" };
+  const keys = new Set();
+  const tid =
+    u.tenantId != null && String(u.tenantId).trim() !== ""
+      ? String(u.tenantId).trim()
+      : "";
+  const tin =
+    u.tinNumber != null && String(u.tinNumber).trim() !== ""
+      ? String(u.tinNumber).trim()
+      : "";
+  const disp =
+    u.HotelName != null && String(u.HotelName).trim() !== ""
+      ? String(u.HotelName).trim()
+      : "";
+  if (tid) keys.add(tid);
+  if (tin) keys.add(tin);
+  if (disp) keys.add(disp);
+  const list = [...keys];
+  if (list.length === 0) return { HotelName: "__no_scope__" };
+  if (list.length === 1) return { HotelName: list[0] };
+  return { OR: list.map((HotelName) => ({ HotelName })) };
+}
+
+function tenantHotelReadMatches(ctx, rowHotelName) {
+  const u = ctx?.user;
+  if (!u) return false;
+  const row =
+    rowHotelName != null && String(rowHotelName).trim() !== ""
+      ? String(rowHotelName).trim()
+      : "";
+  if (!row) return false;
+  const tid =
+    u.tenantId != null && String(u.tenantId).trim() !== ""
+      ? String(u.tenantId).trim()
+      : "";
+  const tin =
+    u.tinNumber != null && String(u.tinNumber).trim() !== ""
+      ? String(u.tinNumber).trim()
+      : "";
+  const disp =
+    u.HotelName != null && String(u.HotelName).trim() !== ""
+      ? String(u.HotelName).trim()
+      : "";
+  return row === tid || row === tin || row === disp;
+}
+
 /** Filter `user` rows in the same organization. */
 function sameOrganizationWhere(ctx) {
   const u = ctx?.user;
@@ -498,13 +550,13 @@ const resolvers = {
     items: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.item.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
     orders: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.order.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
     me: async (_, __, context) => {
@@ -524,13 +576,13 @@ const resolvers = {
     waiters: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.waiter.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
     tables: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.table.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
     cashouts: async (_, __, context) => {
@@ -539,7 +591,7 @@ const resolvers = {
       }
 
       try {
-        const whereClause = { HotelName: tenantScopeFromContext(context) };
+        const whereClause = tenantHotelReadWhere(context);
 
         const results = await prisma.cashouts.findMany({
           where: whereClause,
@@ -553,31 +605,31 @@ const resolvers = {
     creditLevel: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.creditLevel.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
     pityCash: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.pityCash.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
     CreditRegistration: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.creditRegistration.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
     ItemRegistration: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.itemRegistration.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
     ItemStatus: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.itemStatus.findMany({
-        where: { HotelName: tenantScopeFromContext(context) },
+        where: tenantHotelReadWhere(context),
       });
     },
   },
@@ -863,7 +915,7 @@ const resolvers = {
       const order = await prisma.order.findUnique({
         where: { id: id },
       });
-      if (!order || order.HotelName !== tenantScopeFromContext(context)) {
+      if (!order || !tenantHotelReadMatches(context, order.HotelName)) {
         throw new Error("Order not found or not authorized");
       }
       return await prisma.order.update({
@@ -888,7 +940,7 @@ const resolvers = {
           throw new Error("Order not found");
         }
 
-        if (order.HotelName !== tenantScopeFromContext(context)) {
+        if (!tenantHotelReadMatches(context, order.HotelName)) {
           throw new Error("Not authorized to update this order");
         }
 
@@ -913,7 +965,7 @@ const resolvers = {
       const item = await prisma.item.findUnique({
         where: { id: id },
       });
-      if (!item || item.HotelName !== tenantScopeFromContext(context)) {
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
         throw new Error("Item not found or not authorized");
       }
       return await prisma.item.delete({
@@ -927,7 +979,7 @@ const resolvers = {
         where: { id: id },
       });
 
-      if (!pityCash || pityCash.HotelName !== tenantScopeFromContext(context)) {
+      if (!pityCash || !tenantHotelReadMatches(context, pityCash.HotelName)) {
         throw new Error("Pity Cash not found or not authorized");
       }
 
@@ -945,7 +997,7 @@ const resolvers = {
         where: { id: id },
       });
 
-      if (!creditReg || creditReg.HotelName !== tenantScopeFromContext(context)) {
+      if (!creditReg || !tenantHotelReadMatches(context, creditReg.HotelName)) {
         throw new Error("Credit Registration not found or not authorized");
       }
 
@@ -966,7 +1018,7 @@ const resolvers = {
         const item = await prisma.item.findUnique({
           where: { id: id },
         });
-        if (!item || item.HotelName !== tenantScopeFromContext(context)) {
+        if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
           throw new Error("Item not found or not authorized");
         }
         const updated = await prisma.item.update({
@@ -983,7 +1035,7 @@ const resolvers = {
       const order = await prisma.order.findUnique({
         where: { id: id },
       });
-      if (!order || order.HotelName !== tenantScopeFromContext(context)) {
+      if (!order || !tenantHotelReadMatches(context, order.HotelName)) {
         throw new Error("Order not found or not authorized");
       }
       return await prisma.order.update({
@@ -1036,7 +1088,7 @@ const resolvers = {
       const waiter = await prisma.waiter.findUnique({
         where: { id: id },
       });
-      if (!waiter || waiter.HotelName !== tenantScopeFromContext(context)) {
+      if (!waiter || !tenantHotelReadMatches(context, waiter.HotelName)) {
         throw new Error("Waiter not found or not authorized");
       }
       // combine existing arrays with new values so we don't overwrite
@@ -1066,7 +1118,7 @@ const resolvers = {
       const table = await prisma.table.findUnique({
         where: { id: id },
       });
-      if (!table || table.HotelName !== tenantScopeFromContext(context)) {
+      if (!table || !tenantHotelReadMatches(context, table.HotelName)) {
         throw new Error("Table not found or not authorized");
       }
       const existingPayment = Array.isArray(table.payment) ? table.payment : [];
@@ -1089,7 +1141,7 @@ const resolvers = {
       const waiter = await prisma.waiter.findUnique({
         where: { id: id },
       });
-      if (!waiter || waiter.HotelName !== tenantScopeFromContext(context)) {
+      if (!waiter || !tenantHotelReadMatches(context, waiter.HotelName)) {
         throw new Error("Waiter not found or not authorized");
       }
       return await prisma.waiter.delete({
@@ -1101,7 +1153,7 @@ const resolvers = {
       const table = await prisma.table.findUnique({
         where: { id: id },
       });
-      if (!table || table.HotelName !== tenantScopeFromContext(context)) {
+      if (!table || !tenantHotelReadMatches(context, table.HotelName)) {
         throw new Error("Table not found or not authorized");
       }
       return await prisma.table.delete({
@@ -1117,7 +1169,7 @@ const resolvers = {
       const waiter = await prisma.waiter.findUnique({
         where: { id: id },
       });
-      if (!waiter || waiter.HotelName !== tenantScopeFromContext(context)) {
+      if (!waiter || !tenantHotelReadMatches(context, waiter.HotelName)) {
         throw new Error("Waiter not found or not authorized");
       }
       return await prisma.waiter.update({
@@ -1136,7 +1188,7 @@ const resolvers = {
       const table = await prisma.table.findUnique({
         where: { id: id },
       });
-      if (!table || table.HotelName !== tenantScopeFromContext(context)) {
+      if (!table || !tenantHotelReadMatches(context, table.HotelName)) {
         throw new Error("Table not found or not authorized");
       }
       return await prisma.table.update({
@@ -1250,7 +1302,7 @@ const resolvers = {
       const creditLevel = await prisma.creditLevel.findUnique({
         where: { id: id },
       });
-      if (!creditLevel || creditLevel.HotelName !== tenantScopeFromContext(context)) {
+      if (!creditLevel || !tenantHotelReadMatches(context, creditLevel.HotelName)) {
         throw new Error("Credit Level not found or not authorized");
       }
       return await prisma.creditLevel.delete({
@@ -1262,7 +1314,7 @@ const resolvers = {
       const pityCash = await prisma.pityCash.findUnique({
         where: { id: id },
       });
-      if (!pityCash || pityCash.HotelName !== tenantScopeFromContext(context)) {
+      if (!pityCash || !tenantHotelReadMatches(context, pityCash.HotelName)) {
         throw new Error("Pity Cash not found or not authorized");
       }
       return await prisma.pityCash.delete({
@@ -1276,7 +1328,7 @@ const resolvers = {
       });
       if (
         !creditRegistration ||
-        creditRegistration.HotelName !== tenantScopeFromContext(context)
+        !tenantHotelReadMatches(context, creditRegistration.HotelName)
       ) {
         throw new Error("Credit Registration not found or not authorized");
       }
@@ -1291,7 +1343,7 @@ const resolvers = {
       });
       if (
         !itemRegistration ||
-        itemRegistration.HotelName !== tenantScopeFromContext(context)
+        !tenantHotelReadMatches(context, itemRegistration.HotelName)
       ) {
         throw new Error("Item Registration not found or not authorized");
       }
@@ -1308,7 +1360,7 @@ const resolvers = {
       const creditLevel = await prisma.creditLevel.findUnique({
         where: { id: id },
       });
-      if (!creditLevel || creditLevel.HotelName !== tenantScopeFromContext(context)) {
+      if (!creditLevel || !tenantHotelReadMatches(context, creditLevel.HotelName)) {
         throw new Error("Credit Level not found or not authorized");
       }
       return await prisma.creditLevel.update({
@@ -1326,7 +1378,7 @@ const resolvers = {
       const pityCash = await prisma.pityCash.findUnique({
         where: { id: id },
       });
-      if (!pityCash || pityCash.HotelName !== tenantScopeFromContext(context)) {
+      if (!pityCash || !tenantHotelReadMatches(context, pityCash.HotelName)) {
         throw new Error("Pity Cash not found or not authorized");
       }
       return await prisma.pityCash.update({
@@ -1359,7 +1411,7 @@ const resolvers = {
       const creditReg = await prisma.creditRegistration.findUnique({
         where: { id: id },
       });
-      if (!creditReg || creditReg.HotelName !== tenantScopeFromContext(context)) {
+      if (!creditReg || !tenantHotelReadMatches(context, creditReg.HotelName)) {
         throw new Error("Credit Registration not found or not authorized");
       }
       return await prisma.creditRegistration.update({
@@ -1403,7 +1455,7 @@ const resolvers = {
       const itemReg = await prisma.itemRegistration.findUnique({
         where: { id: id },
       });
-      if (!itemReg || itemReg.HotelName !== tenantScopeFromContext(context)) {
+      if (!itemReg || !tenantHotelReadMatches(context, itemReg.HotelName)) {
         throw new Error("Item Registration not found or not authorized");
       }
       return await prisma.itemRegistration.update({
@@ -1453,7 +1505,7 @@ const resolvers = {
       const itemStatus = await prisma.itemStatus.findUnique({
         where: {id: id}
       })
-      if (!itemStatus || itemStatus.HotelName !== tenantScopeFromContext(context)) {
+      if (!itemStatus || !tenantHotelReadMatches(context, itemStatus.HotelName)) {
         throw new Error("Item Status not found or not authorized");
       }
       return await prisma.itemStatus.delete({
