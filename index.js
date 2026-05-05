@@ -275,6 +275,8 @@ const typeDefs = gql`
     Address: String!
     supplierLevel: String!
     paidAmount: Float!
+    registeredAmount: Float!
+    registeredValue: Float!
     statusBy: String
     HotelName: String!
   }
@@ -1088,8 +1090,32 @@ const resolvers = {
     },
     ItemRegistration: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      return await prisma.itemRegistration.findMany({
+      const rows = await prisma.itemRegistration.findMany({
         where: tenantHotelReadWhere(context),
+      });
+      if (rows.length === 0) return rows;
+      const names = [...new Set(rows.map((r) => String(r.name || "").trim()))];
+      const statuses = await prisma.itemStatus.findMany({
+        where: {
+          ...tenantHotelReadWhere(context),
+          name: { in: names },
+          status: { in: ["Stock Out", "Wastage", "Returned to Supplier"] },
+        },
+      });
+      const deductedByName = new Map();
+      for (const s of statuses) {
+        const k = String(s.name || "").trim().toLowerCase();
+        deductedByName.set(k, (deductedByName.get(k) || 0) + (Number(s.amount) || 0));
+      }
+      return rows.map((r) => {
+        const deducted = deductedByName.get(String(r.name || "").trim().toLowerCase()) || 0;
+        const registeredAmount = Number(r.amount) + deducted;
+        const registeredValue = registeredAmount * Number(r.unitPrice) + Number(r.dutyFee || 0);
+        return {
+          ...r,
+          registeredAmount,
+          registeredValue,
+        };
       });
     },
     ItemStatus: async (_, __, context) => {
