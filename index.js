@@ -2840,13 +2840,6 @@ const resolvers = {
             .toLowerCase(),
         ),
       );
-      const caps = new Map();
-      for (const a of allowed) {
-        const nm = String(a.name || a.title || "")
-          .trim()
-          .toLowerCase();
-        if (nm && a.maxQty != null) caps.set(nm, Number(a.maxQty));
-      }
 
       const menuByLowerName = new Map();
       const menuById = new Map();
@@ -2903,40 +2896,11 @@ const resolvers = {
       });
 
       let spent = 0;
-      const qtyByName = new Map();
       for (const c of prior) {
         spent += Number(c.totalAmount) || 0;
-        let arr;
-        try {
-          arr = JSON.parse(String(c.linesJson || "[]"));
-        } catch {
-          arr = [];
-        }
-        if (!Array.isArray(arr)) continue;
-        for (const line of arr) {
-          const nm = String(line.name || "")
-            .trim()
-            .toLowerCase();
-          const q = Number(line.qty) || 0;
-          qtyByName.set(nm, (qtyByName.get(nm) || 0) + q);
-        }
       }
 
-      for (const line of normalizedLines) {
-        const nm = String(line.name || "")
-          .trim()
-          .toLowerCase();
-        const q = Number(line.qty) || 0;
-        const cap = caps.get(nm);
-        if (cap != null && !Number.isNaN(cap)) {
-          const used = qtyByName.get(nm) || 0;
-          if (used + q > cap + 1e-6) {
-            throw new Error(
-              `Allowed servings exceeded for "${line.name}" in this period.`,
-            );
-          }
-        }
-      }
+      // No max-servings cap: allowedMenuJson now only controls which items are allowed.
 
       const computedTotal = normalizedLines.reduce(
         (s, l) => s + Number(l.qty) * Number(l.unitPrice),

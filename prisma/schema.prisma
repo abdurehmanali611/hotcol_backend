@@ -299,7 +299,7 @@ model HotelCreditCompany {
   timeFrame       String
   hotelCorporateCreditTierId Int?
   tier            HotelCorporateCreditTier? @relation(fields: [hotelCorporateCreditTierId], references: [id], onDelete: SetNull)
-  /// JSON: [{ "name": "...", "itemId"?: number, "maxQty"?: number }]
+  /// JSON: [{ "name": "...", "itemId"?: number }]
   allowedMenuJson String   @db.Text
   dealNotes       String   @default("")
   imageUrl        String   @default("")
