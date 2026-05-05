@@ -371,6 +371,17 @@ const typeDefs = gql`
     syncedAt: DateTime!
   }
 
+  type HotelCorporateCreditTier {
+    id: Int!
+    HotelName: String!
+    name: String!
+    creditCeiling: Float!
+    timeInterval: Int!
+    timeFrame: String!
+    sortOrder: Int!
+    createdAt: DateTime!
+  }
+
   type HotelCreditCompany {
     id: Int!
     HotelName: String!
@@ -382,6 +393,7 @@ const typeDefs = gql`
     creditLimit: Float!
     timeInterval: Int!
     timeFrame: String!
+    hotelCorporateCreditTierId: Int
     allowedMenuJson: String!
     dealNotes: String!
     imageUrl: String!
@@ -429,6 +441,7 @@ const typeDefs = gql`
     kitchenBarBeginnings: [KitchenBarBeginning!]!
     kitchenBarMonthlySnapshots(monthPeriod: String!): [KitchenBarMonthlySnapshot!]!
     hotelCreditCompanies: [HotelCreditCompany!]!
+    hotelCorporateCreditTiers: [HotelCorporateCreditTier!]!
     hotelCreditParties(companyId: Int!): [HotelCreditParty!]!
     hotelCreditConsumptions(from: DateTime!, to: DateTime!): [HotelCreditConsumption!]!
   }
@@ -673,8 +686,6 @@ const typeDefs = gql`
       measuredBy: String!
       monthPeriod: String
       calendarDate: String!
-      stockOutDay: Float
-      closingOnHand: Float
       notes: String
     ): KitchenBarBeginning!
 
@@ -686,8 +697,6 @@ const typeDefs = gql`
       measuredBy: String!
       monthPeriod: String
       calendarDate: String!
-      stockOutDay: Float
-      closingOnHand: Float
       notes: String
     ): KitchenBarBeginning!
 
@@ -700,10 +709,7 @@ const typeDefs = gql`
       contactName: String
       phoneNumber: String!
       email: String
-      creditLevel: String!
-      creditLimit: Float!
-      timeInterval: Int!
-      timeFrame: String!
+      hotelCorporateCreditTierId: Int!
       allowedMenuJson: String!
       dealNotes: String
       imageUrl: String
@@ -715,10 +721,7 @@ const typeDefs = gql`
       contactName: String
       phoneNumber: String!
       email: String
-      creditLevel: String!
-      creditLimit: Float!
-      timeInterval: Int!
-      timeFrame: String!
+      hotelCorporateCreditTierId: Int
       allowedMenuJson: String!
       dealNotes: String
       imageUrl: String
@@ -741,6 +744,25 @@ const typeDefs = gql`
       totalAmount: Float!
       occurredAt: DateTime
     ): HotelCreditConsumption!
+
+    createHotelCorporateCreditTier(
+      name: String!
+      creditCeiling: Float!
+      timeInterval: Int!
+      timeFrame: String!
+      sortOrder: Int
+    ): HotelCorporateCreditTier!
+
+    updateHotelCorporateCreditTier(
+      id: Int!
+      name: String!
+      creditCeiling: Float!
+      timeInterval: Int!
+      timeFrame: String!
+      sortOrder: Int
+    ): HotelCorporateCreditTier!
+
+    deleteHotelCorporateCreditTier(id: Int!): Boolean!
   }
 `;
 
@@ -784,18 +806,182 @@ function monthPeriodFromCalendarDate(calendarDate) {
 function hotelCreditWindowStart(timeInterval, timeFrame) {
   const d = new Date();
   const n = Math.max(1, Number(timeInterval) || 1);
-  const tf = String(timeFrame || "Month");
-  if (tf === "Day" || tf === "Days") {
+  const tf = String(timeFrame || "Month").toLowerCase();
+  if (
+    tf === "day" ||
+    tf === "days" ||
+    tf === "daily"
+  ) {
     d.setHours(0, 0, 0, 0);
     d.setDate(d.getDate() - n);
-  } else if (tf === "Week" || tf === "Weeks") {
+  } else if (tf === "week" || tf === "weeks" || tf === "weekly") {
     d.setDate(d.getDate() - 7 * n);
-  } else if (tf === "Year" || tf === "Years") {
+  } else if (tf === "year" || tf === "years" || tf === "yearly") {
     d.setFullYear(d.getFullYear() - n);
   } else {
     d.setMonth(d.getMonth() - n);
   }
   return d;
+}
+
+/** Align store stakeholder text / legacy CHEF with canonical daily-count station keys. */
+function normalizeKitchenBarStation(raw) {
+  const s = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  if (!s) return "OTHER";
+  if (s === "chef" || s === "kitchen" || s === "chef (kitchen)") return "KITCHEN";
+  if (s === "bar" || s === "barista") return "BAR";
+  if (s === "juicer") return "JUICER";
+  if (s === "cleaning service" || s === "cleaning") return "CLEANING";
+  if (s === "housekeeping") return "HOUSEKEEPING";
+  if (s === "admin") return "ADMIN";
+  if (s === "maintenance") return "MAINTENANCE";
+  const up = String(raw ?? "").trim().toUpperCase();
+  if (up === "CHEF" || up === "KITCHEN") return "KITCHEN";
+  if (up === "BAR") return "BAR";
+  return up.replace(/\s+/g, "_") || "OTHER";
+}
+
+function kitchenBarStationPrismaWhere(stationKey) {
+  if (stationKey === "KITCHEN") {
+    return { OR: [{ station: "KITCHEN" }, { station: "CHEF" }] };
+  }
+  return { station: stationKey };
+}
+
+function ymdUtcFromDate(d) {
+  const dt = d instanceof Date ? d : new Date(d);
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(dt.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Previous day’s physical lights-out: prefer stored closing when > 0, else opening pulse (legacy rows). */
+function prevPhysicalLights(prevRow) {
+  if (!prevRow) return null;
+  const c = Number(prevRow.closingOnHand);
+  const a = Number(prevRow.amount);
+  return c > 0 ? c : a;
+}
+
+function computeClosingOnHand(opening, stockOutSum, prevRow) {
+  const prevLights = prevPhysicalLights(prevRow);
+  const salesToday = prevLights != null ? Number(opening) - prevLights : 0;
+  return Number(opening) + Number(stockOutSum) - salesToday;
+}
+
+async function findPreviousKitchenBarRow(
+  client,
+  hotelName,
+  stationKey,
+  itemNameTrimmed,
+  calendarDateYmd,
+) {
+  const rows = await client.kitchenBarBeginning.findMany({
+    where: {
+      HotelName: hotelName,
+      itemName: String(itemNameTrimmed).trim(),
+      calendarDate: { lt: String(calendarDateYmd).trim() },
+      ...kitchenBarStationPrismaWhere(stationKey),
+    },
+    orderBy: { calendarDate: "desc" },
+    take: 1,
+  });
+  return rows[0] ?? null;
+}
+
+async function sumApprovedStockOutToStation(
+  client,
+  hotelName,
+  stationKey,
+  itemNameTrimmed,
+  calendarDateYmd,
+) {
+  const cal = String(calendarDateYmd).trim();
+  const start = new Date(`${cal}T00:00:00.000Z`);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+  const requests = await client.stockOutRequest.findMany({
+    where: {
+      HotelName: hotelName,
+      movementType: "STOCK_OUT",
+      status: "APPROVED",
+      decidedAt: { gte: start, lt: end },
+    },
+  });
+  if (requests.length === 0) return 0;
+  const itemIds = [...new Set(requests.map((r) => r.itemRegistrationId))];
+  const items = await client.itemRegistration.findMany({
+    where: { id: { in: itemIds } },
+    select: { id: true, name: true },
+  });
+  const idToName = new Map(
+    items.map((i) => [i.id, String(i.name ?? "").trim()]),
+  );
+  const normItem = String(itemNameTrimmed).trim();
+  let sum = 0;
+  for (const r of requests) {
+    if (normalizeKitchenBarStation(r.stakeHolderOrReason) !== stationKey) {
+      continue;
+    }
+    if (idToName.get(r.itemRegistrationId) !== normItem) continue;
+    sum += Number(r.amount);
+  }
+  return sum;
+}
+
+async function refreshKitchenBarComputedFields(client, row) {
+  const stationKey = normalizeKitchenBarStation(row.station);
+  const item = String(row.itemName).trim();
+  const cal = String(row.calendarDate).trim();
+  const sum = await sumApprovedStockOutToStation(
+    client,
+    row.HotelName,
+    stationKey,
+    item,
+    cal,
+  );
+  const prev = await findPreviousKitchenBarRow(
+    client,
+    row.HotelName,
+    stationKey,
+    item,
+    cal,
+  );
+  const closing = computeClosingOnHand(Number(row.amount), sum, prev);
+  return client.kitchenBarBeginning.update({
+    where: { id: row.id },
+    data: {
+      station: stationKey,
+      stockOutDay: sum,
+      closingOnHand: closing,
+    },
+  });
+}
+
+async function reconcileKitchenBarDailyRows(
+  client,
+  hotelName,
+  itemNameTrimmed,
+  stakeholderRaw,
+  decidedAt,
+) {
+  const cal = ymdUtcFromDate(decidedAt);
+  const stationKey = normalizeKitchenBarStation(stakeholderRaw);
+  const rows = await client.kitchenBarBeginning.findMany({
+    where: {
+      HotelName: hotelName,
+      itemName: String(itemNameTrimmed).trim(),
+      calendarDate: cal,
+      ...kitchenBarStationPrismaWhere(stationKey),
+    },
+  });
+  for (const row of rows) {
+    await refreshKitchenBarComputedFields(client, row);
+  }
 }
 
 const resolvers = {
@@ -958,6 +1144,15 @@ const resolvers = {
       return await prisma.hotelCreditCompany.findMany({
         where: tenantHotelReadWhere(context),
         orderBy: { createdAt: "desc" },
+      });
+    },
+
+    hotelCorporateCreditTiers: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertNotHotelStoreForCreditReports(context);
+      return await prisma.hotelCorporateCreditTier.findMany({
+        where: tenantHotelReadWhere(context),
+        orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
       });
     },
 
@@ -2128,6 +2323,7 @@ const resolvers = {
             ? "Wastage"
             : "Returned to Supplier";
 
+      const decidedNow = new Date();
       await prisma.$transaction(async (tx) => {
         await tx.itemStatus.create({
           data: {
@@ -2158,10 +2354,19 @@ const resolvers = {
             status: "APPROVED",
             ccProfileId: prof.id,
             ccActorName: prof.displayName,
-            decidedAt: new Date(),
+            decidedAt: decidedNow,
             rejectionReason: null,
           },
         });
+        if (reqRow.movementType === "STOCK_OUT") {
+          await reconcileKitchenBarDailyRows(
+            tx,
+            reqRow.HotelName,
+            String(item.name).trim(),
+            reqRow.stakeHolderOrReason,
+            decidedNow,
+          );
+        }
       });
       return await prisma.stockOutRequest.findUnique({ where: { id } });
     },
@@ -2197,8 +2402,6 @@ const resolvers = {
         monthPeriod,
         notes,
         calendarDate,
-        stockOutDay,
-        closingOnHand,
       },
       context,
     ) => {
@@ -2213,12 +2416,13 @@ const resolvers = {
           ? String(monthPeriod).trim().slice(0, 7)
           : monthPeriodFromCalendarDate(cal);
       const item = String(itemName).trim();
+      const stationKey = normalizeKitchenBarStation(station);
       const dup = await prisma.kitchenBarBeginning.findFirst({
         where: {
           HotelName: tenant,
-          station: String(station),
           itemName: item,
           calendarDate: cal,
+          ...kitchenBarStationPrismaWhere(stationKey),
         },
       });
       if (dup) {
@@ -2226,17 +2430,32 @@ const resolvers = {
           "A row already exists for this station, item, and calendar date.",
         );
       }
+      const sum = await sumApprovedStockOutToStation(
+        prisma,
+        tenant,
+        stationKey,
+        item,
+        cal,
+      );
+      const prev = await findPreviousKitchenBarRow(
+        prisma,
+        tenant,
+        stationKey,
+        item,
+        cal,
+      );
+      const closing = computeClosingOnHand(Number(amount), sum, prev);
       return await prisma.kitchenBarBeginning.create({
         data: {
           HotelName: tenant,
-          station: String(station),
+          station: stationKey,
           itemName: item,
           amount,
           measuredBy,
           monthPeriod: mp,
           calendarDate: cal,
-          stockOutDay: stockOutDay != null ? Number(stockOutDay) : 0,
-          closingOnHand: closingOnHand != null ? Number(closingOnHand) : 0,
+          stockOutDay: sum,
+          closingOnHand: closing,
           notes: notes ?? "",
         },
       });
@@ -2253,8 +2472,6 @@ const resolvers = {
         monthPeriod,
         notes,
         calendarDate,
-        stockOutDay,
-        closingOnHand,
       },
       context,
     ) => {
@@ -2274,13 +2491,14 @@ const resolvers = {
           ? String(monthPeriod).trim().slice(0, 7)
           : monthPeriodFromCalendarDate(cal);
       const item = String(itemName).trim();
+      const stationKey = normalizeKitchenBarStation(station);
       const dup = await prisma.kitchenBarBeginning.findFirst({
         where: {
           HotelName: row.HotelName,
-          station: String(station),
           itemName: item,
           calendarDate: cal,
           NOT: { id },
+          ...kitchenBarStationPrismaWhere(stationKey),
         },
       });
       if (dup) {
@@ -2288,17 +2506,32 @@ const resolvers = {
           "Another row already uses this station, item, and calendar date.",
         );
       }
+      const sum = await sumApprovedStockOutToStation(
+        prisma,
+        row.HotelName,
+        stationKey,
+        item,
+        cal,
+      );
+      const prev = await findPreviousKitchenBarRow(
+        prisma,
+        row.HotelName,
+        stationKey,
+        item,
+        cal,
+      );
+      const closing = computeClosingOnHand(Number(amount), sum, prev);
       return await prisma.kitchenBarBeginning.update({
         where: { id },
         data: {
-          station: String(station),
+          station: stationKey,
           itemName: item,
           amount,
           measuredBy,
           monthPeriod: mp,
           calendarDate: cal,
-          stockOutDay: stockOutDay != null ? Number(stockOutDay) : 0,
-          closingOnHand: closingOnHand != null ? Number(closingOnHand) : 0,
+          stockOutDay: sum,
+          closingOnHand: closing,
           notes: notes ?? "",
         },
       });
@@ -2331,7 +2564,7 @@ const resolvers = {
       });
       const groups = new Map();
       for (const r of rows) {
-        const key = `${r.station}\t${String(r.itemName).trim()}`;
+        const key = `${normalizeKitchenBarStation(r.station)}\t${String(r.itemName).trim()}`;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(r);
       }
@@ -2354,7 +2587,7 @@ const resolvers = {
             ? Number(last.closingOnHand)
             : Number(last.amount);
         const itemName = String(last.itemName).trim();
-        const station = String(last.station);
+        const station = normalizeKitchenBarStation(last.station);
         const existing = await prisma.kitchenBarMonthlySnapshot.findFirst({
           where: {
             HotelName: tenant,
@@ -2399,10 +2632,7 @@ const resolvers = {
         contactName,
         phoneNumber,
         email,
-        creditLevel,
-        creditLimit,
-        timeInterval,
-        timeFrame,
+        hotelCorporateCreditTierId,
         allowedMenuJson,
         dealNotes,
         imageUrl,
@@ -2411,6 +2641,14 @@ const resolvers = {
     ) => {
       assertRole(context, ["HotelCashier"]);
       const tenant = tenantScopeFromContext(context);
+      const tierId = Number(hotelCorporateCreditTierId);
+      if (!tierId) throw new Error("Select a manager-defined credit tier");
+      const tier = await prisma.hotelCorporateCreditTier.findUnique({
+        where: { id: tierId },
+      });
+      if (!tier || !tenantHotelReadMatches(context, tier.HotelName)) {
+        throw new Error("Credit tier not found");
+      }
       return await prisma.hotelCreditCompany.create({
         data: {
           HotelName: tenant,
@@ -2418,10 +2656,11 @@ const resolvers = {
           contactName: contactName != null ? String(contactName) : "",
           phoneNumber: String(phoneNumber).trim(),
           email: email != null ? String(email).trim() : "",
-          creditLevel: String(creditLevel).trim(),
-          creditLimit: Number(creditLimit),
-          timeInterval: Number(timeInterval),
-          timeFrame: String(timeFrame).trim(),
+          creditLevel: String(tier.name).trim(),
+          creditLimit: Number(tier.creditCeiling),
+          timeInterval: Number(tier.timeInterval),
+          timeFrame: String(tier.timeFrame).trim(),
+          hotelCorporateCreditTierId: tier.id,
           allowedMenuJson: String(allowedMenuJson || "[]"),
           dealNotes: dealNotes != null ? String(dealNotes) : "",
           imageUrl: imageUrl != null ? String(imageUrl) : "",
@@ -2437,10 +2676,7 @@ const resolvers = {
         contactName,
         phoneNumber,
         email,
-        creditLevel,
-        creditLimit,
-        timeInterval,
-        timeFrame,
+        hotelCorporateCreditTierId,
         allowedMenuJson,
         dealNotes,
         imageUrl,
@@ -2454,6 +2690,23 @@ const resolvers = {
       if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
         throw new Error("Company not found");
       }
+      let tierPatch = {};
+      if (hotelCorporateCreditTierId != null) {
+        const tid = Number(hotelCorporateCreditTierId);
+        const tier = await prisma.hotelCorporateCreditTier.findUnique({
+          where: { id: tid },
+        });
+        if (!tier || !tenantHotelReadMatches(context, tier.HotelName)) {
+          throw new Error("Credit tier not found");
+        }
+        tierPatch = {
+          hotelCorporateCreditTierId: tier.id,
+          creditLevel: String(tier.name).trim(),
+          creditLimit: Number(tier.creditCeiling),
+          timeInterval: Number(tier.timeInterval),
+          timeFrame: String(tier.timeFrame).trim(),
+        };
+      }
       return await prisma.hotelCreditCompany.update({
         where: { id },
         data: {
@@ -2461,13 +2714,10 @@ const resolvers = {
           contactName: contactName != null ? String(contactName) : "",
           phoneNumber: String(phoneNumber).trim(),
           email: email != null ? String(email).trim() : "",
-          creditLevel: String(creditLevel).trim(),
-          creditLimit: Number(creditLimit),
-          timeInterval: Number(timeInterval),
-          timeFrame: String(timeFrame).trim(),
           allowedMenuJson: String(allowedMenuJson || "[]"),
           dealNotes: dealNotes != null ? String(dealNotes) : "",
           imageUrl: imageUrl != null ? String(imageUrl) : "",
+          ...tierPatch,
         },
       });
     },
@@ -2644,6 +2894,61 @@ const resolvers = {
           recordedBy,
         },
       });
+    },
+
+    createHotelCorporateCreditTier: async (
+      _,
+      { name, creditCeiling, timeInterval, timeFrame, sortOrder },
+      context,
+    ) => {
+      assertRole(context, ["Manager"]);
+      const tenant = tenantScopeFromContext(context);
+      return await prisma.hotelCorporateCreditTier.create({
+        data: {
+          HotelName: tenant,
+          name: String(name).trim(),
+          creditCeiling: Number(creditCeiling),
+          timeInterval: Number(timeInterval),
+          timeFrame: String(timeFrame).trim(),
+          sortOrder: sortOrder != null ? Number(sortOrder) : 0,
+        },
+      });
+    },
+
+    updateHotelCorporateCreditTier: async (
+      _,
+      { id, name, creditCeiling, timeInterval, timeFrame, sortOrder },
+      context,
+    ) => {
+      assertRole(context, ["Manager"]);
+      const row = await prisma.hotelCorporateCreditTier.findUnique({
+        where: { id },
+      });
+      if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+        throw new Error("Tier not found");
+      }
+      return await prisma.hotelCorporateCreditTier.update({
+        where: { id },
+        data: {
+          name: String(name).trim(),
+          creditCeiling: Number(creditCeiling),
+          timeInterval: Number(timeInterval),
+          timeFrame: String(timeFrame).trim(),
+          sortOrder: sortOrder != null ? Number(sortOrder) : row.sortOrder,
+        },
+      });
+    },
+
+    deleteHotelCorporateCreditTier: async (_, { id }, context) => {
+      assertRole(context, ["Manager"]);
+      const row = await prisma.hotelCorporateCreditTier.findUnique({
+        where: { id },
+      });
+      if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+        throw new Error("Tier not found");
+      }
+      await prisma.hotelCorporateCreditTier.delete({ where: { id } });
+      return true;
     },
 
     CreateItemStatus: async(_, {name, imageUrl, category, amount, measuredBy, unitPrice, actionDate, supplierName, supplierPhone, Address, supplierLevel, paidAmount, status, statusBy}, context) => {

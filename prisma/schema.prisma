@@ -267,6 +267,22 @@ model KitchenBarMonthlySnapshot {
   @@index([monthPeriod])
 }
 
+/// Manager-defined tier (ceiling + period) for hotel corporate credit — cashier picks one per company.
+model HotelCorporateCreditTier {
+  id            Int      @id @default(autoincrement())
+  HotelName     String
+  name          String
+  creditCeiling Float
+  timeInterval  Int
+  timeFrame     String
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  companies HotelCreditCompany[]
+
+  @@index([HotelName])
+}
+
 /// Corporate credit account registered by hotel cashier (B2B meals).
 model HotelCreditCompany {
   id              Int      @id @default(autoincrement())
@@ -275,11 +291,14 @@ model HotelCreditCompany {
   contactName     String   @default("")
   phoneNumber     String
   email           String   @default("")
+  /// Snapshot label from the tier at registration time.
   creditLevel     String
   /// Money ceiling for the deal window (same spirit as cafe credit amount).
   creditLimit     Float
   timeInterval    Int
   timeFrame       String
+  hotelCorporateCreditTierId Int?
+  tier            HotelCorporateCreditTier? @relation(fields: [hotelCorporateCreditTierId], references: [id], onDelete: SetNull)
   /// JSON: [{ "name": "...", "itemId"?: number, "maxQty"?: number }]
   allowedMenuJson String   @db.Text
   dealNotes       String   @default("")
@@ -290,6 +309,7 @@ model HotelCreditCompany {
   consumptions HotelCreditConsumption[]
 
   @@index([HotelName])
+  @@index([hotelCorporateCreditTierId])
 }
 
 /// Staff or guest registered under a company account.
