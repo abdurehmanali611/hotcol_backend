@@ -739,7 +739,7 @@ const typeDefs = gql`
 
     createHotelCreditConsumption(
       companyId: Int!
-      partyId: Int!
+      partyId: Int
       linesJson: String!
       totalAmount: Float!
       occurredAt: DateTime
@@ -873,6 +873,10 @@ function computeClosingOnHand(opening, stockOutSum, prevRow) {
   return Number(opening) + Number(stockOutSum) - salesToday;
 }
 
+function round2(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+}
+
 async function findPreviousKitchenBarRow(
   client,
   hotelName,
@@ -927,7 +931,12 @@ async function sumApprovedStockOutToStation(
     if (normalizeKitchenBarStation(r.stakeHolderOrReason) !== stationKey) {
       continue;
     }
-    if (idToName.get(r.itemRegistrationId) !== normItem) continue;
+    if (
+      String(idToName.get(r.itemRegistrationId) || "").toLowerCase() !==
+      normItem.toLowerCase()
+    ) {
+      continue;
+    }
     sum += Number(r.amount);
   }
   return sum;
@@ -951,12 +960,12 @@ async function refreshKitchenBarComputedFields(client, row) {
     item,
     cal,
   );
-  const closing = computeClosingOnHand(Number(row.amount), sum, prev);
+  const closing = round2(computeClosingOnHand(Number(row.amount), sum, prev));
   return client.kitchenBarBeginning.update({
     where: { id: row.id },
     data: {
       station: stationKey,
-      stockOutDay: sum,
+      stockOutDay: round2(sum),
       closingOnHand: closing,
     },
   });
@@ -1121,7 +1130,7 @@ const resolvers = {
       `;
       return await prisma.kitchenBarBeginning.findMany({
         where: tenantHotelReadWhere(context),
-        orderBy: [{ calendarDate: "desc" }, { id: "desc" }],
+        orderBy: [{ calendarDate: "asc" }, { id: "asc" }],
       });
     },
 
@@ -2437,6 +2446,7 @@ const resolvers = {
         item,
         cal,
       );
+      const opening = round2(Number(amount));
       const prev = await findPreviousKitchenBarRow(
         prisma,
         tenant,
@@ -2444,17 +2454,17 @@ const resolvers = {
         item,
         cal,
       );
-      const closing = computeClosingOnHand(Number(amount), sum, prev);
+      const closing = round2(computeClosingOnHand(opening, sum, prev));
       return await prisma.kitchenBarBeginning.create({
         data: {
           HotelName: tenant,
           station: stationKey,
           itemName: item,
-          amount,
+          amount: opening,
           measuredBy,
           monthPeriod: mp,
           calendarDate: cal,
-          stockOutDay: sum,
+          stockOutDay: round2(sum),
           closingOnHand: closing,
           notes: notes ?? "",
         },
@@ -2513,6 +2523,7 @@ const resolvers = {
         item,
         cal,
       );
+      const opening = round2(Number(amount));
       const prev = await findPreviousKitchenBarRow(
         prisma,
         row.HotelName,
@@ -2520,17 +2531,17 @@ const resolvers = {
         item,
         cal,
       );
-      const closing = computeClosingOnHand(Number(amount), sum, prev);
+      const closing = round2(computeClosingOnHand(opening, sum, prev));
       return await prisma.kitchenBarBeginning.update({
         where: { id },
         data: {
           station: stationKey,
           itemName: item,
-          amount,
+          amount: opening,
           measuredBy,
           monthPeriod: mp,
           calendarDate: cal,
-          stockOutDay: sum,
+          stockOutDay: round2(sum),
           closingOnHand: closing,
           notes: notes ?? "",
         },
@@ -2766,21 +2777,44 @@ const resolvers = {
     ) => {
       assertRole(context, ["HotelCashier"]);
       const cid = Number(companyId);
-      const pid = Number(partyId);
+      const pid = partyId != null ? Number(partyId) : 0;
       const company = await prisma.hotelCreditCompany.findUnique({
         where: { id: cid },
       });
       if (!company || !tenantHotelReadMatches(context, company.HotelName)) {
         throw new Error("Company not found");
       }
-      const party = await prisma.hotelCreditParty.findFirst({
-        where: {
-          id: pid,
-          companyId: cid,
-          HotelName: company.HotelName,
-        },
-      });
-      if (!party) throw new Error("Party not found for this company");
+      let party = null;
+      if (pid > 0) {
+        party = await prisma.hotelCreditParty.findFirst({
+          where: {
+            id: pid,
+            companyId: cid,
+            HotelName: company.HotelName,
+          },
+        });
+      }
+      if (!party) {
+        const fallbackName = String(company.companyName || "").trim() || "Company";
+        const fallbackPhone = String(company.phoneNumber || "").trim();
+        party =
+          (await prisma.hotelCreditParty.findFirst({
+            where: {
+              companyId: cid,
+              HotelName: company.HotelName,
+              displayName: fallbackName,
+            },
+          })) ||
+          (await prisma.hotelCreditParty.create({
+            data: {
+              HotelName: company.HotelName,
+              companyId: cid,
+              displayName: fallbackName,
+              phoneNumber: fallbackPhone,
+              notes: "Auto-created default bill-to for company credit usage",
+            },
+          }));
+      }
 
       let lines;
       try {
@@ -2814,6 +2848,19 @@ const resolvers = {
         if (nm && a.maxQty != null) caps.set(nm, Number(a.maxQty));
       }
 
+      const menuByLowerName = new Map();
+      const menuById = new Map();
+      for (const it of await prisma.item.findMany({
+        where: { HotelName: company.HotelName },
+      })) {
+        const nm = String(it.name || "")
+          .trim()
+          .toLowerCase();
+        if (nm) menuByLowerName.set(nm, it);
+        menuById.set(it.id, it);
+      }
+
+      const normalizedLines = [];
       for (const line of lines) {
         const nm = String(line.name || "")
           .trim()
@@ -2821,6 +2868,26 @@ const resolvers = {
         if (!nm || !allowedNames.has(nm)) {
           throw new Error(`Item not on company deal list: ${line.name || ""}`);
         }
+        const qty = Number(line.qty) || 0;
+        if (qty <= 0) throw new Error(`Quantity must be positive for item: ${line.name || ""}`);
+        const allowedEntry = allowed.find(
+          (a) =>
+            String(a.name || a.title || "")
+              .trim()
+              .toLowerCase() === nm,
+        );
+        const menuItem =
+          (allowedEntry?.itemId != null ? menuById.get(Number(allowedEntry.itemId)) : null) ||
+          menuByLowerName.get(nm) ||
+          null;
+        if (!menuItem) {
+          throw new Error(`Menu item not found in database for: ${line.name || ""}`);
+        }
+        normalizedLines.push({
+          name: String(menuItem.name || line.name).trim(),
+          qty,
+          unitPrice: round2(Number(menuItem.price) || 0),
+        });
       }
 
       const winStart = hotelCreditWindowStart(
@@ -2855,7 +2922,7 @@ const resolvers = {
         }
       }
 
-      for (const line of lines) {
+      for (const line of normalizedLines) {
         const nm = String(line.name || "")
           .trim()
           .toLowerCase();
@@ -2871,7 +2938,11 @@ const resolvers = {
         }
       }
 
-      const add = Number(totalAmount) || 0;
+      const computedTotal = normalizedLines.reduce(
+        (s, l) => s + Number(l.qty) * Number(l.unitPrice),
+        0,
+      );
+      const add = round2(computedTotal);
       if (spent + add > Number(company.creditLimit) + 1e-6) {
         throw new Error(
           "Company credit ceiling reached for this period — cannot register more.",
@@ -2887,8 +2958,8 @@ const resolvers = {
         data: {
           HotelName: company.HotelName,
           companyId: cid,
-          partyId: pid,
-          linesJson: JSON.stringify(lines),
+          partyId: party.id,
+          linesJson: JSON.stringify(normalizedLines),
           totalAmount: add,
           occurredAt: occurredAt ? new Date(occurredAt) : new Date(),
           recordedBy,
