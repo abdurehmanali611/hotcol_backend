@@ -221,20 +221,111 @@ model StockOutRequest {
   @@index([status])
 }
 
-/// Monthly inventory beginnings for chef / bar (editable for monthly checks).
+/// Daily chef / bar count rows (opening pulse, documented stock-out, closing on-hand).
+/// Implied movement for a day is derived when the next day’s opening is recorded: opening + stockOut − nextOpening.
 model KitchenBarBeginning {
   id          Int      @id @default(autoincrement())
   HotelName   String
   /// CHEF | BAR
   station     String
   itemName    String
+  /// Opening pulse — count at the start of calendarDate (same unit as inventory).
   amount      Float
   measuredBy  String
-  /// YYYY-MM
+  /// YYYY-MM — kept in sync with calendarDate for reporting and sync jobs.
   monthPeriod String
+  /// YYYY-MM-DD — one logical row per station + item + day.
+  calendarDate   String   @default("")
+  /// Units issued / logged out that day (usage trail).
+  stockOutDay    Float    @default(0)
+  /// Physical on-hand at end of day (lights-out snapshot).
+  closingOnHand  Float    @default(0)
   notes       String   @default("")
   createdAt   DateTime @default(now())
 
   @@index([HotelName])
   @@index([monthPeriod])
+  @@index([calendarDate])
+  @@index([HotelName, station, itemName, calendarDate])
+}
+
+/// Rolled-up figures after “Sync monthly inventory” from daily rows for a month.
+model KitchenBarMonthlySnapshot {
+  id                   Int      @id @default(autoincrement())
+  HotelName            String
+  station              String
+  itemName             String
+  monthPeriod          String
+  /// Sum of implied daily movement units for that month (excludes the anchor day).
+  totalImpliedSales    Float    @default(0)
+  /// closingOnHand from the last calendar day present in that month for this key.
+  lastDayClosingOnHand Float    @default(0)
+  syncedAt             DateTime @default(now())
+
+  @@unique([HotelName, station, itemName, monthPeriod])
+  @@index([HotelName])
+  @@index([monthPeriod])
+}
+
+/// Corporate credit account registered by hotel cashier (B2B meals).
+model HotelCreditCompany {
+  id              Int      @id @default(autoincrement())
+  HotelName       String
+  companyName     String
+  contactName     String   @default("")
+  phoneNumber     String
+  email           String   @default("")
+  creditLevel     String
+  /// Money ceiling for the deal window (same spirit as cafe credit amount).
+  creditLimit     Float
+  timeInterval    Int
+  timeFrame       String
+  /// JSON: [{ "name": "...", "itemId"?: number, "maxQty"?: number }]
+  allowedMenuJson String   @db.Text
+  dealNotes       String   @default("")
+  imageUrl        String   @default("")
+  createdAt       DateTime @default(now())
+
+  parties      HotelCreditParty[]
+  consumptions HotelCreditConsumption[]
+
+  @@index([HotelName])
+}
+
+/// Staff or guest registered under a company account.
+model HotelCreditParty {
+  id          Int      @id @default(autoincrement())
+  HotelName   String
+  companyId   Int
+  displayName String
+  phoneNumber String   @default("")
+  sex         String   @default("")
+  notes       String   @default("")
+  createdAt   DateTime @default(now())
+
+  company      HotelCreditCompany       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  consumptions HotelCreditConsumption[]
+
+  @@index([HotelName])
+  @@index([companyId])
+}
+
+/// One consumption event (timestamped for reporting); not visible to hotel store role in UI.
+model HotelCreditConsumption {
+  id          Int      @id @default(autoincrement())
+  HotelName   String
+  companyId   Int
+  partyId     Int
+  /// JSON array: [{ "name": "", "qty": 1, "unitPrice": 0 }]
+  linesJson   String   @db.Text
+  totalAmount Float
+  occurredAt  DateTime @default(now())
+  recordedBy  String
+
+  company HotelCreditCompany @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  party   HotelCreditParty   @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  @@index([HotelName])
+  @@index([companyId])
+  @@index([occurredAt])
 }

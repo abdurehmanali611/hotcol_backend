@@ -353,8 +353,61 @@ const typeDefs = gql`
     amount: Float!
     measuredBy: String!
     monthPeriod: String!
+    calendarDate: String!
+    stockOutDay: Float!
+    closingOnHand: Float!
     notes: String!
     createdAt: DateTime!
+  }
+
+  type KitchenBarMonthlySnapshot {
+    id: Int!
+    HotelName: String!
+    station: String!
+    itemName: String!
+    monthPeriod: String!
+    totalImpliedSales: Float!
+    lastDayClosingOnHand: Float!
+    syncedAt: DateTime!
+  }
+
+  type HotelCreditCompany {
+    id: Int!
+    HotelName: String!
+    companyName: String!
+    contactName: String!
+    phoneNumber: String!
+    email: String!
+    creditLevel: String!
+    creditLimit: Float!
+    timeInterval: Int!
+    timeFrame: String!
+    allowedMenuJson: String!
+    dealNotes: String!
+    imageUrl: String!
+    createdAt: DateTime!
+  }
+
+  type HotelCreditParty {
+    id: Int!
+    HotelName: String!
+    companyId: Int!
+    displayName: String!
+    phoneNumber: String!
+    sex: String!
+    notes: String!
+    createdAt: DateTime!
+  }
+
+  type HotelCreditConsumption {
+    id: Int!
+    HotelName: String!
+    companyId: Int!
+    partyId: Int!
+    linesJson: String!
+    totalAmount: Float!
+    occurredAt: DateTime!
+    recordedBy: String!
   }
 
   type Query {
@@ -374,6 +427,10 @@ const typeDefs = gql`
     purchaseRequests: [PurchaseRequest!]!
     stockOutRequests: [StockOutRequest!]!
     kitchenBarBeginnings: [KitchenBarBeginning!]!
+    kitchenBarMonthlySnapshots(monthPeriod: String!): [KitchenBarMonthlySnapshot!]!
+    hotelCreditCompanies: [HotelCreditCompany!]!
+    hotelCreditParties(companyId: Int!): [HotelCreditParty!]!
+    hotelCreditConsumptions(from: DateTime!, to: DateTime!): [HotelCreditConsumption!]!
   }
 
   type Mutation {
@@ -614,7 +671,10 @@ const typeDefs = gql`
       itemName: String!
       amount: Float!
       measuredBy: String!
-      monthPeriod: String!
+      monthPeriod: String
+      calendarDate: String!
+      stockOutDay: Float
+      closingOnHand: Float
       notes: String
     ): KitchenBarBeginning!
 
@@ -624,11 +684,63 @@ const typeDefs = gql`
       itemName: String!
       amount: Float!
       measuredBy: String!
-      monthPeriod: String!
+      monthPeriod: String
+      calendarDate: String!
+      stockOutDay: Float
+      closingOnHand: Float
       notes: String
     ): KitchenBarBeginning!
 
     deleteKitchenBarBeginning(id: Int!): Boolean!
+
+    syncKitchenBarMonthly(monthPeriod: String!): [KitchenBarMonthlySnapshot!]!
+
+    createHotelCreditCompany(
+      companyName: String!
+      contactName: String
+      phoneNumber: String!
+      email: String
+      creditLevel: String!
+      creditLimit: Float!
+      timeInterval: Int!
+      timeFrame: String!
+      allowedMenuJson: String!
+      dealNotes: String
+      imageUrl: String
+    ): HotelCreditCompany!
+
+    updateHotelCreditCompany(
+      id: Int!
+      companyName: String!
+      contactName: String
+      phoneNumber: String!
+      email: String
+      creditLevel: String!
+      creditLimit: Float!
+      timeInterval: Int!
+      timeFrame: String!
+      allowedMenuJson: String!
+      dealNotes: String
+      imageUrl: String
+    ): HotelCreditCompany!
+
+    deleteHotelCreditCompany(id: Int!): Boolean!
+
+    createHotelCreditParty(
+      companyId: Int!
+      displayName: String!
+      phoneNumber: String
+      sex: String
+      notes: String
+    ): HotelCreditParty!
+
+    createHotelCreditConsumption(
+      companyId: Int!
+      partyId: Int!
+      linesJson: String!
+      totalAmount: Float!
+      occurredAt: DateTime
+    ): HotelCreditConsumption!
   }
 `;
 
@@ -652,6 +764,38 @@ function assertRole(context, allowed) {
   if (!allowed.includes(context.user.Role)) {
     throw new Error("Not authorized");
   }
+}
+
+function assertNotHotelStoreForCreditReports(context) {
+  assertAuthenticated(context);
+  const bt = String(context.user.businessType || "").trim();
+  const lodging = bt === "Hotel" || bt === "Resort" || bt === "Pension";
+  if (context.user.Role === "Store" && lodging) {
+    throw new Error("Not authorized");
+  }
+}
+
+function monthPeriodFromCalendarDate(calendarDate) {
+  const s = String(calendarDate).trim();
+  if (s.length < 7) throw new Error("calendarDate must be YYYY-MM-DD");
+  return s.slice(0, 7);
+}
+
+function hotelCreditWindowStart(timeInterval, timeFrame) {
+  const d = new Date();
+  const n = Math.max(1, Number(timeInterval) || 1);
+  const tf = String(timeFrame || "Month");
+  if (tf === "Day" || tf === "Days") {
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - n);
+  } else if (tf === "Week" || tf === "Weeks") {
+    d.setDate(d.getDate() - 7 * n);
+  } else if (tf === "Year" || tf === "Years") {
+    d.setFullYear(d.getFullYear() - n);
+  } else {
+    d.setMonth(d.getMonth() - n);
+  }
+  return d;
 }
 
 const resolvers = {
@@ -782,9 +926,68 @@ const resolvers = {
     },
     kitchenBarBeginnings: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const tenant = tenantScopeFromContext(context);
+      await prisma.$executeRaw`
+        UPDATE KitchenBarBeginning
+        SET calendarDate = CONCAT(monthPeriod, '-01')
+        WHERE HotelName = ${tenant}
+        AND (calendarDate = '' OR calendarDate IS NULL)
+      `;
       return await prisma.kitchenBarBeginning.findMany({
         where: tenantHotelReadWhere(context),
+        orderBy: [{ calendarDate: "desc" }, { id: "desc" }],
+      });
+    },
+
+    kitchenBarMonthlySnapshots: async (_, { monthPeriod }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const mp = String(monthPeriod || "").trim();
+      if (!mp) throw new Error("monthPeriod required");
+      return await prisma.kitchenBarMonthlySnapshot.findMany({
+        where: {
+          ...tenantHotelReadWhere(context),
+          monthPeriod: mp,
+        },
+        orderBy: [{ station: "asc" }, { itemName: "asc" }],
+      });
+    },
+
+    hotelCreditCompanies: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertNotHotelStoreForCreditReports(context);
+      return await prisma.hotelCreditCompany.findMany({
+        where: tenantHotelReadWhere(context),
         orderBy: { createdAt: "desc" },
+      });
+    },
+
+    hotelCreditParties: async (_, { companyId }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertNotHotelStoreForCreditReports(context);
+      const id = Number(companyId);
+      const company = await prisma.hotelCreditCompany.findUnique({
+        where: { id },
+      });
+      if (!company || !tenantHotelReadMatches(context, company.HotelName)) {
+        throw new Error("Company not found");
+      }
+      return await prisma.hotelCreditParty.findMany({
+        where: { companyId: id, HotelName: company.HotelName },
+        orderBy: { createdAt: "desc" },
+      });
+    },
+
+    hotelCreditConsumptions: async (_, { from, to }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertNotHotelStoreForCreditReports(context);
+      const fromD = new Date(from);
+      const toD = new Date(to);
+      return await prisma.hotelCreditConsumption.findMany({
+        where: {
+          ...tenantHotelReadWhere(context),
+          occurredAt: { gte: fromD, lte: toD },
+        },
+        orderBy: { occurredAt: "desc" },
       });
     },
   },
@@ -1986,19 +2189,54 @@ const resolvers = {
 
     createKitchenBarBeginning: async (
       _,
-      { station, itemName, amount, measuredBy, monthPeriod, notes },
+      {
+        station,
+        itemName,
+        amount,
+        measuredBy,
+        monthPeriod,
+        notes,
+        calendarDate,
+        stockOutDay,
+        closingOnHand,
+      },
       context,
     ) => {
       assertRole(context, ["CostControl"]);
       const tenant = tenantScopeFromContext(context);
+      const cal = String(calendarDate).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(cal)) {
+        throw new Error("calendarDate must be YYYY-MM-DD");
+      }
+      const mp =
+        monthPeriod != null && String(monthPeriod).trim().length >= 7
+          ? String(monthPeriod).trim().slice(0, 7)
+          : monthPeriodFromCalendarDate(cal);
+      const item = String(itemName).trim();
+      const dup = await prisma.kitchenBarBeginning.findFirst({
+        where: {
+          HotelName: tenant,
+          station: String(station),
+          itemName: item,
+          calendarDate: cal,
+        },
+      });
+      if (dup) {
+        throw new Error(
+          "A row already exists for this station, item, and calendar date.",
+        );
+      }
       return await prisma.kitchenBarBeginning.create({
         data: {
           HotelName: tenant,
           station: String(station),
-          itemName: String(itemName).trim(),
+          itemName: item,
           amount,
           measuredBy,
-          monthPeriod: String(monthPeriod).trim(),
+          monthPeriod: mp,
+          calendarDate: cal,
+          stockOutDay: stockOutDay != null ? Number(stockOutDay) : 0,
+          closingOnHand: closingOnHand != null ? Number(closingOnHand) : 0,
           notes: notes ?? "",
         },
       });
@@ -2006,7 +2244,18 @@ const resolvers = {
 
     updateKitchenBarBeginning: async (
       _,
-      { id, station, itemName, amount, measuredBy, monthPeriod, notes },
+      {
+        id,
+        station,
+        itemName,
+        amount,
+        measuredBy,
+        monthPeriod,
+        notes,
+        calendarDate,
+        stockOutDay,
+        closingOnHand,
+      },
       context,
     ) => {
       assertRole(context, ["CostControl"]);
@@ -2016,14 +2265,40 @@ const resolvers = {
       if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
         throw new Error("Record not found");
       }
+      const cal = String(calendarDate).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(cal)) {
+        throw new Error("calendarDate must be YYYY-MM-DD");
+      }
+      const mp =
+        monthPeriod != null && String(monthPeriod).trim().length >= 7
+          ? String(monthPeriod).trim().slice(0, 7)
+          : monthPeriodFromCalendarDate(cal);
+      const item = String(itemName).trim();
+      const dup = await prisma.kitchenBarBeginning.findFirst({
+        where: {
+          HotelName: row.HotelName,
+          station: String(station),
+          itemName: item,
+          calendarDate: cal,
+          NOT: { id },
+        },
+      });
+      if (dup) {
+        throw new Error(
+          "Another row already uses this station, item, and calendar date.",
+        );
+      }
       return await prisma.kitchenBarBeginning.update({
         where: { id },
         data: {
           station: String(station),
-          itemName: String(itemName).trim(),
+          itemName: item,
           amount,
           measuredBy,
-          monthPeriod: String(monthPeriod).trim(),
+          monthPeriod: mp,
+          calendarDate: cal,
+          stockOutDay: stockOutDay != null ? Number(stockOutDay) : 0,
+          closingOnHand: closingOnHand != null ? Number(closingOnHand) : 0,
           notes: notes ?? "",
         },
       });
@@ -2039,6 +2314,336 @@ const resolvers = {
       }
       await prisma.kitchenBarBeginning.delete({ where: { id } });
       return true;
+    },
+
+    syncKitchenBarMonthly: async (_, { monthPeriod }, context) => {
+      assertRole(context, ["CostControl"]);
+      const tenant = tenantScopeFromContext(context);
+      const mp = String(monthPeriod || "").trim().slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(mp)) {
+        throw new Error("monthPeriod must be YYYY-MM");
+      }
+      const rows = await prisma.kitchenBarBeginning.findMany({
+        where: {
+          ...tenantHotelReadWhere(context),
+          monthPeriod: mp,
+        },
+      });
+      const groups = new Map();
+      for (const r of rows) {
+        const key = `${r.station}\t${String(r.itemName).trim()}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(r);
+      }
+      const results = [];
+      for (const [, list] of groups) {
+        list.sort((a, b) =>
+          String(a.calendarDate).localeCompare(String(b.calendarDate)),
+        );
+        let totalImplied = 0;
+        for (let i = 0; i < list.length - 1; i++) {
+          const implied =
+            Number(list[i].amount) +
+            Number(list[i].stockOutDay) -
+            Number(list[i + 1].amount);
+          totalImplied += implied;
+        }
+        const last = list[list.length - 1];
+        const closing =
+          Number(last.closingOnHand) > 0
+            ? Number(last.closingOnHand)
+            : Number(last.amount);
+        const itemName = String(last.itemName).trim();
+        const station = String(last.station);
+        const existing = await prisma.kitchenBarMonthlySnapshot.findFirst({
+          where: {
+            HotelName: tenant,
+            station,
+            itemName,
+            monthPeriod: mp,
+          },
+        });
+        const payload = {
+          totalImpliedSales: totalImplied,
+          lastDayClosingOnHand: closing,
+          syncedAt: new Date(),
+        };
+        if (existing) {
+          results.push(
+            await prisma.kitchenBarMonthlySnapshot.update({
+              where: { id: existing.id },
+              data: payload,
+            }),
+          );
+        } else {
+          results.push(
+            await prisma.kitchenBarMonthlySnapshot.create({
+              data: {
+                HotelName: tenant,
+                station,
+                itemName,
+                monthPeriod: mp,
+                ...payload,
+              },
+            }),
+          );
+        }
+      }
+      return results;
+    },
+
+    createHotelCreditCompany: async (
+      _,
+      {
+        companyName,
+        contactName,
+        phoneNumber,
+        email,
+        creditLevel,
+        creditLimit,
+        timeInterval,
+        timeFrame,
+        allowedMenuJson,
+        dealNotes,
+        imageUrl,
+      },
+      context,
+    ) => {
+      assertRole(context, ["HotelCashier"]);
+      const tenant = tenantScopeFromContext(context);
+      return await prisma.hotelCreditCompany.create({
+        data: {
+          HotelName: tenant,
+          companyName: String(companyName).trim(),
+          contactName: contactName != null ? String(contactName) : "",
+          phoneNumber: String(phoneNumber).trim(),
+          email: email != null ? String(email).trim() : "",
+          creditLevel: String(creditLevel).trim(),
+          creditLimit: Number(creditLimit),
+          timeInterval: Number(timeInterval),
+          timeFrame: String(timeFrame).trim(),
+          allowedMenuJson: String(allowedMenuJson || "[]"),
+          dealNotes: dealNotes != null ? String(dealNotes) : "",
+          imageUrl: imageUrl != null ? String(imageUrl) : "",
+        },
+      });
+    },
+
+    updateHotelCreditCompany: async (
+      _,
+      {
+        id,
+        companyName,
+        contactName,
+        phoneNumber,
+        email,
+        creditLevel,
+        creditLimit,
+        timeInterval,
+        timeFrame,
+        allowedMenuJson,
+        dealNotes,
+        imageUrl,
+      },
+      context,
+    ) => {
+      assertRole(context, ["HotelCashier"]);
+      const row = await prisma.hotelCreditCompany.findUnique({
+        where: { id },
+      });
+      if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+        throw new Error("Company not found");
+      }
+      return await prisma.hotelCreditCompany.update({
+        where: { id },
+        data: {
+          companyName: String(companyName).trim(),
+          contactName: contactName != null ? String(contactName) : "",
+          phoneNumber: String(phoneNumber).trim(),
+          email: email != null ? String(email).trim() : "",
+          creditLevel: String(creditLevel).trim(),
+          creditLimit: Number(creditLimit),
+          timeInterval: Number(timeInterval),
+          timeFrame: String(timeFrame).trim(),
+          allowedMenuJson: String(allowedMenuJson || "[]"),
+          dealNotes: dealNotes != null ? String(dealNotes) : "",
+          imageUrl: imageUrl != null ? String(imageUrl) : "",
+        },
+      });
+    },
+
+    deleteHotelCreditCompany: async (_, { id }, context) => {
+      assertRole(context, ["HotelCashier", "Manager"]);
+      const row = await prisma.hotelCreditCompany.findUnique({
+        where: { id },
+      });
+      if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+        throw new Error("Company not found");
+      }
+      await prisma.hotelCreditCompany.delete({ where: { id } });
+      return true;
+    },
+
+    createHotelCreditParty: async (
+      _,
+      { companyId, displayName, phoneNumber, sex, notes },
+      context,
+    ) => {
+      assertRole(context, ["HotelCashier"]);
+      const cid = Number(companyId);
+      const company = await prisma.hotelCreditCompany.findUnique({
+        where: { id: cid },
+      });
+      if (!company || !tenantHotelReadMatches(context, company.HotelName)) {
+        throw new Error("Company not found");
+      }
+      return await prisma.hotelCreditParty.create({
+        data: {
+          HotelName: company.HotelName,
+          companyId: cid,
+          displayName: String(displayName).trim(),
+          phoneNumber: phoneNumber != null ? String(phoneNumber).trim() : "",
+          sex: sex != null ? String(sex) : "",
+          notes: notes != null ? String(notes) : "",
+        },
+      });
+    },
+
+    createHotelCreditConsumption: async (
+      _,
+      { companyId, partyId, linesJson, totalAmount, occurredAt },
+      context,
+    ) => {
+      assertRole(context, ["HotelCashier"]);
+      const cid = Number(companyId);
+      const pid = Number(partyId);
+      const company = await prisma.hotelCreditCompany.findUnique({
+        where: { id: cid },
+      });
+      if (!company || !tenantHotelReadMatches(context, company.HotelName)) {
+        throw new Error("Company not found");
+      }
+      const party = await prisma.hotelCreditParty.findFirst({
+        where: {
+          id: pid,
+          companyId: cid,
+          HotelName: company.HotelName,
+        },
+      });
+      if (!party) throw new Error("Party not found for this company");
+
+      let lines;
+      try {
+        lines = JSON.parse(String(linesJson || "[]"));
+      } catch {
+        throw new Error("linesJson must be valid JSON");
+      }
+      if (!Array.isArray(lines) || lines.length === 0) {
+        throw new Error("At least one line item is required");
+      }
+
+      let allowed;
+      try {
+        allowed = JSON.parse(String(company.allowedMenuJson || "[]"));
+      } catch {
+        allowed = [];
+      }
+      if (!Array.isArray(allowed)) allowed = [];
+      const allowedNames = new Set(
+        allowed.map((a) =>
+          String(a.name || a.title || "")
+            .trim()
+            .toLowerCase(),
+        ),
+      );
+      const caps = new Map();
+      for (const a of allowed) {
+        const nm = String(a.name || a.title || "")
+          .trim()
+          .toLowerCase();
+        if (nm && a.maxQty != null) caps.set(nm, Number(a.maxQty));
+      }
+
+      for (const line of lines) {
+        const nm = String(line.name || "")
+          .trim()
+          .toLowerCase();
+        if (!nm || !allowedNames.has(nm)) {
+          throw new Error(`Item not on company deal list: ${line.name || ""}`);
+        }
+      }
+
+      const winStart = hotelCreditWindowStart(
+        company.timeInterval,
+        company.timeFrame,
+      );
+      const prior = await prisma.hotelCreditConsumption.findMany({
+        where: {
+          companyId: cid,
+          HotelName: company.HotelName,
+          occurredAt: { gte: winStart },
+        },
+      });
+
+      let spent = 0;
+      const qtyByName = new Map();
+      for (const c of prior) {
+        spent += Number(c.totalAmount) || 0;
+        let arr;
+        try {
+          arr = JSON.parse(String(c.linesJson || "[]"));
+        } catch {
+          arr = [];
+        }
+        if (!Array.isArray(arr)) continue;
+        for (const line of arr) {
+          const nm = String(line.name || "")
+            .trim()
+            .toLowerCase();
+          const q = Number(line.qty) || 0;
+          qtyByName.set(nm, (qtyByName.get(nm) || 0) + q);
+        }
+      }
+
+      for (const line of lines) {
+        const nm = String(line.name || "")
+          .trim()
+          .toLowerCase();
+        const q = Number(line.qty) || 0;
+        const cap = caps.get(nm);
+        if (cap != null && !Number.isNaN(cap)) {
+          const used = qtyByName.get(nm) || 0;
+          if (used + q > cap + 1e-6) {
+            throw new Error(
+              `Allowed servings exceeded for "${line.name}" in this period.`,
+            );
+          }
+        }
+      }
+
+      const add = Number(totalAmount) || 0;
+      if (spent + add > Number(company.creditLimit) + 1e-6) {
+        throw new Error(
+          "Company credit ceiling reached for this period — cannot register more.",
+        );
+      }
+
+      const me = await prisma.user.findUnique({
+        where: { id: context.user.userId },
+      });
+      const recordedBy = me?.UserName || "unknown";
+
+      return await prisma.hotelCreditConsumption.create({
+        data: {
+          HotelName: company.HotelName,
+          companyId: cid,
+          partyId: pid,
+          linesJson: JSON.stringify(lines),
+          totalAmount: add,
+          occurredAt: occurredAt ? new Date(occurredAt) : new Date(),
+          recordedBy,
+        },
+      });
     },
 
     CreateItemStatus: async(_, {name, imageUrl, category, amount, measuredBy, unitPrice, actionDate, supplierName, supplierPhone, Address, supplierLevel, paidAmount, status, statusBy}, context) => {
