@@ -742,6 +742,8 @@ const typeDefs = gql`
     createHotelCreditConsumption(
       companyId: Int!
       partyId: Int
+      guestName: String
+      guestPhone: String
       linesJson: String!
       totalAmount: Float!
       occurredAt: DateTime
@@ -2798,7 +2800,7 @@ const resolvers = {
 
     createHotelCreditConsumption: async (
       _,
-      { companyId, partyId, linesJson, totalAmount, occurredAt },
+      { companyId, partyId, guestName, guestPhone, linesJson, totalAmount, occurredAt },
       context,
     ) => {
       assertRole(context, ["HotelCashier"]);
@@ -2821,8 +2823,10 @@ const resolvers = {
         });
       }
       if (!party) {
-        const fallbackName = String(company.companyName || "").trim() || "Company";
-        const fallbackPhone = String(company.phoneNumber || "").trim();
+        const requestedName = String(guestName || "").trim();
+        const fallbackName =
+          requestedName || String(company.companyName || "").trim() || "Company";
+        const fallbackPhone = String(guestPhone || company.phoneNumber || "").trim();
         party =
           (await prisma.hotelCreditParty.findFirst({
             where: {
