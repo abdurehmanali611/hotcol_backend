@@ -245,6 +245,8 @@ model KitchenBarBeginning {
   calendarDate   String   @default("")
   /// Units issued / logged out that day (usage trail).
   stockOutDay    Float    @default(0)
+  /// Units issued from station stock to management in that day.
+  managementTakenDay Float @default(0)
   /// Physical on-hand at end of day (lights-out snapshot).
   closingOnHand  Float    @default(0)
   notes       String   @default("")

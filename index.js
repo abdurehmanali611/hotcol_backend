@@ -361,6 +361,7 @@ const typeDefs = gql`
     monthPeriod: String!
     calendarDate: String!
     stockOutDay: Float!
+    managementTakenDay: Float!
     closingOnHand: Float!
     notes: String!
     createdAt: DateTime!
@@ -696,6 +697,7 @@ const typeDefs = gql`
       itemName: String!
       amount: Float!
       measuredBy: String!
+      managementTakenDay: Float
       monthPeriod: String
       calendarDate: String!
       notes: String
@@ -707,6 +709,7 @@ const typeDefs = gql`
       itemName: String!
       amount: Float!
       measuredBy: String!
+      managementTakenDay: Float
       monthPeriod: String
       calendarDate: String!
       notes: String
@@ -850,7 +853,7 @@ function normalizeKitchenBarStation(raw) {
   if (s === "juicer") return "JUICER";
   if (s === "cleaning service" || s === "cleaning") return "CLEANING";
   if (s === "housekeeping") return "HOUSEKEEPING";
-  if (s === "admin") return "ADMIN";
+  if (s === "admin" || s === "management" || s === "manager") return "MANAGEMENT";
   if (s === "maintenance") return "MAINTENANCE";
   const up = String(raw ?? "").trim().toUpperCase();
   if (up === "CHEF" || up === "KITCHEN") return "KITCHEN";
@@ -881,10 +884,11 @@ function prevPhysicalLights(prevRow) {
   return c > 0 ? c : a;
 }
 
-function computeClosingOnHand(opening, stockOutSum, prevRow) {
+function computeClosingOnHand(opening, stockOutSum, managementTakenDay, prevRow) {
   const prevLights = prevPhysicalLights(prevRow);
   const salesToday = prevLights != null ? Number(opening) - prevLights : 0;
-  return Number(opening) + Number(stockOutSum) - salesToday;
+  const mgmt = Number(managementTakenDay ?? 0);
+  return Number(opening) + Number(stockOutSum) - salesToday - mgmt;
 }
 
 function round2(n) {
@@ -945,10 +949,10 @@ async function sumApprovedStockOutToStation(
     if (normalizeKitchenBarStation(r.stakeHolderOrReason) !== stationKey) {
       continue;
     }
-    if (
-      String(idToName.get(r.itemRegistrationId) || "").toLowerCase() !==
-      normItem.toLowerCase()
-    ) {
+    const reqItemName = String(
+      idToName.get(r.itemRegistrationId) || r.itemNameSnapshot || "",
+    ).toLowerCase();
+    if (reqItemName !== normItem.toLowerCase()) {
       continue;
     }
     sum += Number(r.amount);
@@ -974,7 +978,14 @@ async function refreshKitchenBarComputedFields(client, row) {
     item,
     cal,
   );
-  const closing = round2(computeClosingOnHand(Number(row.amount), sum, prev));
+  const closing = round2(
+    computeClosingOnHand(
+      Number(row.amount),
+      sum,
+      Number(row.managementTakenDay ?? 0),
+      prev,
+    ),
+  );
   return client.kitchenBarBeginning.update({
     where: { id: row.id },
     data: {
@@ -1124,7 +1135,7 @@ const resolvers = {
       return rows.map((r) => {
         const deducted = deductedByName.get(String(r.name || "").trim().toLowerCase()) || 0;
         const registeredAmount = Number(r.amount) + deducted;
-        const registeredValue = registeredAmount * Number(r.unitPrice) + Number(r.dutyFee || 0);
+        const registeredValue = registeredAmount * Number(r.unitPrice);
         return {
           ...r,
           registeredAmount,
@@ -2314,6 +2325,13 @@ const resolvers = {
       }
       const amt = Number(amount);
       if (!(amt > 0)) throw new Error("Amount must be positive");
+      const stakeText = String(stakeHolderOrReason ?? "").trim();
+      const stakeKey = normalizeKitchenBarStation(stakeText);
+      if (stakeKey === "MANAGEMENT") {
+        throw new Error(
+          "Management stock issue must be recorded from station daily count, not store stock-out.",
+        );
+      }
       if (item.amount - amt < 1) {
         throw new Error(
           "At least 1 unit must remain in stock for every item. Reduce the requested quantity.",
@@ -2327,7 +2345,7 @@ const resolvers = {
           itemNameSnapshot: String(item.name ?? "").trim(),
           movementType: String(movementType),
           amount: amt,
-          stakeHolderOrReason: String(stakeHolderOrReason ?? "").trim(),
+          stakeHolderOrReason: stakeText,
           status: "PENDING",
           requestedByUserName: context.user.UserName,
         },
@@ -2392,6 +2410,8 @@ const resolvers = {
             supplierPhone: item.supplierPhone,
             Address: item.Address,
             supplierLevel: item.supplierLevel,
+            purchaseWithVat: item.purchaseWithVat === true,
+            supplierTinNumber: String(item.supplierTinNumber ?? "").trim(),
             paidAmount: item.paidAmount,
             status: statusLabel,
             statusBy: prof.displayName,
@@ -2453,6 +2473,7 @@ const resolvers = {
         itemName,
         amount,
         measuredBy,
+        managementTakenDay,
         monthPeriod,
         notes,
         calendarDate,
@@ -2471,6 +2492,17 @@ const resolvers = {
           : monthPeriodFromCalendarDate(cal);
       const item = String(itemName).trim();
       const stationKey = normalizeKitchenBarStation(station);
+      const inv = await prisma.itemRegistration.findFirst({
+        where: {
+          ...tenantHotelReadWhere(context),
+          name: item,
+        },
+      });
+      if (!inv || Number(inv.amount) <= 0) {
+        throw new Error(
+          "Select an item from active inventory. Daily count items must exist in stock.",
+        );
+      }
       const dup = await prisma.kitchenBarBeginning.findFirst({
         where: {
           HotelName: tenant,
@@ -2492,6 +2524,7 @@ const resolvers = {
         cal,
       );
       const opening = round2(Number(amount));
+      const mgmtTaken = round2(Number(managementTakenDay ?? 0));
       const prev = await findPreviousKitchenBarRow(
         prisma,
         tenant,
@@ -2499,17 +2532,18 @@ const resolvers = {
         item,
         cal,
       );
-      const closing = round2(computeClosingOnHand(opening, sum, prev));
+      const closing = round2(computeClosingOnHand(opening, sum, mgmtTaken, prev));
       return await prisma.kitchenBarBeginning.create({
         data: {
           HotelName: tenant,
           station: stationKey,
           itemName: item,
           amount: opening,
-          measuredBy,
+          measuredBy: String(inv.measuredBy || measuredBy || "").trim(),
           monthPeriod: mp,
           calendarDate: cal,
           stockOutDay: round2(sum),
+          managementTakenDay: mgmtTaken,
           closingOnHand: closing,
           notes: notes ?? "",
         },
@@ -2524,6 +2558,7 @@ const resolvers = {
         itemName,
         amount,
         measuredBy,
+        managementTakenDay,
         monthPeriod,
         notes,
         calendarDate,
@@ -2547,6 +2582,17 @@ const resolvers = {
           : monthPeriodFromCalendarDate(cal);
       const item = String(itemName).trim();
       const stationKey = normalizeKitchenBarStation(station);
+      const inv = await prisma.itemRegistration.findFirst({
+        where: {
+          ...tenantHotelReadWhere(context),
+          name: item,
+        },
+      });
+      if (!inv || Number(inv.amount) <= 0) {
+        throw new Error(
+          "Select an item from active inventory. Daily count items must exist in stock.",
+        );
+      }
       const dup = await prisma.kitchenBarBeginning.findFirst({
         where: {
           HotelName: row.HotelName,
@@ -2569,6 +2615,7 @@ const resolvers = {
         cal,
       );
       const opening = round2(Number(amount));
+      const mgmtTaken = round2(Number(managementTakenDay ?? 0));
       const prev = await findPreviousKitchenBarRow(
         prisma,
         row.HotelName,
@@ -2576,17 +2623,18 @@ const resolvers = {
         item,
         cal,
       );
-      const closing = round2(computeClosingOnHand(opening, sum, prev));
+      const closing = round2(computeClosingOnHand(opening, sum, mgmtTaken, prev));
       return await prisma.kitchenBarBeginning.update({
         where: { id },
         data: {
           station: stationKey,
           itemName: item,
           amount: opening,
-          measuredBy,
+          measuredBy: String(inv.measuredBy || measuredBy || "").trim(),
           monthPeriod: mp,
           calendarDate: cal,
           stockOutDay: round2(sum),
+          managementTakenDay: mgmtTaken,
           closingOnHand: closing,
           notes: notes ?? "",
         },
