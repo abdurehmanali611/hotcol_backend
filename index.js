@@ -274,6 +274,8 @@ const typeDefs = gql`
     supplierPhone: String!
     Address: String!
     supplierLevel: String!
+    purchaseWithVat: Boolean!
+    supplierTinNumber: String!
     paidAmount: Float!
     registeredAmount: Float!
     registeredValue: Float!
@@ -294,6 +296,8 @@ const typeDefs = gql`
     supplierPhone: String!   
     Address:       String!
     supplierLevel: String!
+    purchaseWithVat: Boolean!
+    supplierTinNumber: String!
     paidAmount: Float!
     status: String!
     statusBy: String!
@@ -584,6 +588,8 @@ const typeDefs = gql`
       supplierPhone: String!
       Address: String!
       supplierLevel: String!
+      purchaseWithVat: Boolean
+      supplierTinNumber: String
       paidAmount: Float!
       HotelName: String!
     ): ItemRegistration!
@@ -632,6 +638,8 @@ const typeDefs = gql`
       supplierPhone: String!
       Address: String!
       supplierLevel: String!
+      purchaseWithVat: Boolean
+      supplierTinNumber: String
       paidAmount: Float!
     ): ItemRegistration!
     CreateItemStatus(name: String!
@@ -645,6 +653,8 @@ const typeDefs = gql`
     supplierPhone: String!   
     Address:       String!
     supplierLevel: String!
+    purchaseWithVat: Boolean
+    supplierTinNumber: String
     paidAmount: Float!
     status: String!
     statusBy: String!
@@ -1002,6 +1012,8 @@ const resolvers = {
   DateTime: DateTimeResolver,
   StockOutRequest: {
     itemName: async (parent, _, { prisma }) => {
+      const snap = String(parent.itemNameSnapshot ?? "").trim();
+      if (snap) return snap;
       const reg = await prisma.itemRegistration.findUnique({
         where: { id: parent.itemRegistrationId },
       });
@@ -2108,6 +2120,8 @@ const resolvers = {
         supplierPhone,
         Address,
         supplierLevel,
+        purchaseWithVat,
+        supplierTinNumber,
         paidAmount,
       },
       context,
@@ -2135,6 +2149,8 @@ const resolvers = {
           supplierPhone,
           Address,
           supplierLevel,
+          purchaseWithVat: purchaseWithVat === true,
+          supplierTinNumber: String(supplierTinNumber ?? "").trim(),
           paidAmount
         },
       });
@@ -2308,6 +2324,7 @@ const resolvers = {
         data: {
           HotelName: tenant,
           itemRegistrationId,
+          itemNameSnapshot: String(item.name ?? "").trim(),
           movementType: String(movementType),
           amount: amt,
           stakeHolderOrReason: String(stakeHolderOrReason ?? "").trim(),
@@ -3016,7 +3033,7 @@ const resolvers = {
       return true;
     },
 
-    CreateItemStatus: async(_, {name, imageUrl, category, amount, measuredBy, unitPrice, actionDate, supplierName, supplierPhone, Address, supplierLevel, paidAmount, status, statusBy}, context) => {
+    CreateItemStatus: async(_, {name, imageUrl, category, amount, measuredBy, unitPrice, actionDate, supplierName, supplierPhone, Address, supplierLevel, purchaseWithVat, supplierTinNumber, paidAmount, status, statusBy}, context) => {
       if (!context.user) throw new Error("Not Authorized")
       return await prisma.itemStatus.create({
         data: {
@@ -3031,6 +3048,8 @@ const resolvers = {
           supplierPhone: supplierPhone,
           Address: Address,
           supplierLevel: supplierLevel,
+          purchaseWithVat: purchaseWithVat === true,
+          supplierTinNumber: String(supplierTinNumber ?? "").trim(),
           paidAmount: paidAmount,
           status: status,
           statusBy: statusBy,

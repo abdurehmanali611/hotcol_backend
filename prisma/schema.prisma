@@ -139,6 +139,9 @@ model ItemRegistration {
   supplierPhone     String
   Address           String
   supplierLevel     String
+  /// When true, unit price / line totals were agreed including VAT.
+  purchaseWithVat   Boolean  @default(false)
+  supplierTinNumber String   @default("")
   paidAmount        Float
   HotelName         String
 }
@@ -156,6 +159,8 @@ model ItemStatus {
   supplierPhone String
   Address       String
   supplierLevel  String
+  purchaseWithVat   Boolean  @default(false)
+  supplierTinNumber String   @default("")
   paidAmount     Float
   status         String
   statusBy       String
@@ -204,6 +209,8 @@ model StockOutRequest {
   id                   Int      @id @default(autoincrement())
   HotelName            String
   itemRegistrationId   Int
+  /// Item name when this request was created (kept if the stock row is removed later).
+  itemNameSnapshot     String   @default("")
   /// STOCK_OUT | WASTAGE | RETURN_SUPPLIER
   movementType         String
   amount               Float
