@@ -20,6 +20,26 @@ function isVatEnabled(flag) {
   return false;
 }
 
+const INVENTORY_VAT_RATE = 0.15;
+
+function computeInventoryVatETB(subtotal, purchaseWithVat) {
+  if (!isVatEnabled(purchaseWithVat)) return 0;
+  return Number(subtotal || 0) * INVENTORY_VAT_RATE;
+}
+
+function computeInventoryTotalETB({
+  amount,
+  unitPrice,
+  dutyFee,
+  purchaseWithVat,
+}) {
+  const qty = Number(amount) || 0;
+  const price = Number(unitPrice) || 0;
+  const duty = Number(dutyFee) || 0;
+  const subtotal = qty * price;
+  return subtotal + duty + computeInventoryVatETB(subtotal, purchaseWithVat);
+}
+
 /** Random tenant id when the business does not supply a 10-digit TIN (not guessable, URL-safe). */
 function generateAutoTenantKey() {
   const slug = crypto.randomBytes(12).toString("base64url");
@@ -1137,15 +1157,32 @@ const resolvers = {
           status: { in: ["Stock Out", "Wastage", "Returned to Supplier"] },
         },
       });
-      const deductedByName = new Map();
+      const inventoryIdentityKey = (row) =>
+        [
+          String(row.name || "").trim().toLowerCase(),
+          Number(row.unitPrice || 0).toFixed(4),
+          String(row.supplierName || "").trim().toLowerCase(),
+          String(row.supplierPhone || "").trim(),
+          String(row.Address || "").trim().toLowerCase(),
+        ].join("|");
+
+      const deductedByIdentity = new Map();
       for (const s of statuses) {
-        const k = String(s.name || "").trim().toLowerCase();
-        deductedByName.set(k, (deductedByName.get(k) || 0) + (Number(s.amount) || 0));
+        const k = inventoryIdentityKey(s);
+        deductedByIdentity.set(
+          k,
+          (deductedByIdentity.get(k) || 0) + (Number(s.amount) || 0),
+        );
       }
       return rows.map((r) => {
-        const deducted = deductedByName.get(String(r.name || "").trim().toLowerCase()) || 0;
+        const deducted = deductedByIdentity.get(inventoryIdentityKey(r)) || 0;
         const registeredAmount = Number(r.amount) + deducted;
-        const registeredValue = registeredAmount * Number(r.unitPrice);
+        const registeredValue = computeInventoryTotalETB({
+          amount: registeredAmount,
+          unitPrice: r.unitPrice,
+          dutyFee: r.dutyFee,
+          purchaseWithVat: r.purchaseWithVat,
+        });
         return {
           ...r,
           registeredAmount,
