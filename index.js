@@ -403,6 +403,10 @@ const typeDefs = gql`
     station: String!
     itemName: String!
     monthPeriod: String!
+    """Inclusive calendar start (YYYY-MM-DD) for this roll-up; derived from monthPeriod."""
+    periodFrom: String!
+    """Inclusive calendar end (YYYY-MM-DD) for this roll-up; derived from monthPeriod."""
+    periodTo: String!
     totalImpliedSales: Float!
     lastDayClosingOnHand: Float!
     syncedAt: DateTime!
@@ -476,7 +480,7 @@ const typeDefs = gql`
     purchaseRequests: [PurchaseRequest!]!
     stockOutRequests: [StockOutRequest!]!
     kitchenBarBeginnings: [KitchenBarBeginning!]!
-    kitchenBarMonthlySnapshots(monthPeriod: String!): [KitchenBarMonthlySnapshot!]!
+    kitchenBarRollupSnapshots(fromYmd: String!, toYmd: String!): [KitchenBarMonthlySnapshot!]!
     hotelCreditCompanies: [HotelCreditCompany!]!
     hotelCorporateCreditTiers: [HotelCorporateCreditTier!]!
     hotelCreditParties(companyId: Int!): [HotelCreditParty!]!
@@ -747,7 +751,7 @@ const typeDefs = gql`
 
     deleteKitchenBarBeginning(id: Int!): Boolean!
 
-    syncKitchenBarMonthly(monthPeriod: String!): [KitchenBarMonthlySnapshot!]!
+    syncKitchenBarRollup(fromYmd: String!, toYmd: String!): [KitchenBarMonthlySnapshot!]!
 
     createHotelCreditCompany(
       companyName: String!
@@ -848,6 +852,39 @@ function monthPeriodFromCalendarDate(calendarDate) {
   const s = String(calendarDate).trim();
   if (s.length < 7) throw new Error("calendarDate must be YYYY-MM-DD");
   return s.slice(0, 7);
+}
+
+const ROLLUP_YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** Normalize inclusive YYYY-MM-DD range; returns canonical storage key `from|to`. */
+function normalizeRollupRangeYmd(fromYmd, toYmd) {
+  let a = String(fromYmd || "").trim();
+  let b = String(toYmd || "").trim();
+  if (!ROLLUP_YMD_RE.test(a) || !ROLLUP_YMD_RE.test(b)) {
+    throw new Error("fromYmd and toYmd must be YYYY-MM-DD");
+  }
+  if (a > b) {
+    const t = a;
+    a = b;
+    b = t;
+  }
+  return { fromYmd: a, toYmd: b, rangeKey: `${a}|${b}` };
+}
+
+/** Derive display bounds from DB `monthPeriod`: range key `YYYY-MM-DD|YYYY-MM-DD` or legacy `YYYY-MM`. */
+function periodBoundsFromSnapshotMonthPeriod(monthPeriod) {
+  const s = String(monthPeriod || "").trim();
+  const range = /^(\d{4}-\d{2}-\d{2})\|(\d{4}-\d{2}-\d{2})$/.exec(s);
+  if (range) return { from: range[1], to: range[2] };
+  const ym = /^(\d{4}-\d{2})$/.exec(s);
+  if (ym) {
+    const y = Number(ym[1].slice(0, 4));
+    const m = Number(ym[1].slice(5, 7));
+    const last = new Date(y, m, 0);
+    const ld = String(last.getDate()).padStart(2, "0");
+    return { from: `${ym[1]}-01`, to: `${ym[1]}-${ld}` };
+  }
+  return { from: "", to: "" };
 }
 
 function hotelCreditWindowStart(timeInterval, timeFrame) {
@@ -1051,6 +1088,10 @@ async function reconcileKitchenBarDailyRows(
 const resolvers = {
   JSON: GraphQLJSON,
   DateTime: DateTimeResolver,
+  KitchenBarMonthlySnapshot: {
+    periodFrom: (p) => periodBoundsFromSnapshotMonthPeriod(p.monthPeriod).from,
+    periodTo: (p) => periodBoundsFromSnapshotMonthPeriod(p.monthPeriod).to,
+  },
   StockOutRequest: {
     itemName: async (parent, _, { prisma }) => {
       const snap = String(parent.itemNameSnapshot ?? "").trim();
@@ -1232,14 +1273,13 @@ const resolvers = {
       });
     },
 
-    kitchenBarMonthlySnapshots: async (_, { monthPeriod }, context) => {
+    kitchenBarRollupSnapshots: async (_, { fromYmd, toYmd }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const mp = String(monthPeriod || "").trim();
-      if (!mp) throw new Error("monthPeriod required");
+      const { rangeKey } = normalizeRollupRangeYmd(fromYmd, toYmd);
       return await prisma.kitchenBarMonthlySnapshot.findMany({
         where: {
           ...tenantHotelReadWhere(context),
-          monthPeriod: mp,
+          monthPeriod: rangeKey,
         },
         orderBy: [{ station: "asc" }, { itemName: "asc" }],
       });
@@ -2704,17 +2744,17 @@ const resolvers = {
       return true;
     },
 
-    syncKitchenBarMonthly: async (_, { monthPeriod }, context) => {
+    syncKitchenBarRollup: async (_, { fromYmd, toYmd }, context) => {
       assertRole(context, ["CostControl"]);
       const tenant = tenantScopeFromContext(context);
-      const mp = String(monthPeriod || "").trim().slice(0, 7);
-      if (!/^\d{4}-\d{2}$/.test(mp)) {
-        throw new Error("monthPeriod must be YYYY-MM");
-      }
+      const { fromYmd: from, toYmd: to, rangeKey } = normalizeRollupRangeYmd(
+        fromYmd,
+        toYmd,
+      );
       const rows = await prisma.kitchenBarBeginning.findMany({
         where: {
           ...tenantHotelReadWhere(context),
-          monthPeriod: mp,
+          calendarDate: { gte: from, lte: to },
         },
       });
       const groups = new Map();
@@ -2748,7 +2788,7 @@ const resolvers = {
             HotelName: tenant,
             station,
             itemName,
-            monthPeriod: mp,
+            monthPeriod: rangeKey,
           },
         });
         const payload = {
@@ -2770,7 +2810,7 @@ const resolvers = {
                 HotelName: tenant,
                 station,
                 itemName,
-                monthPeriod: mp,
+                monthPeriod: rangeKey,
                 ...payload,
               },
             }),
