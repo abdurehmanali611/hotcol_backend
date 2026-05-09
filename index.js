@@ -10,6 +10,16 @@ import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
 const prisma = new PrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
 
+function isVatEnabled(flag) {
+  if (flag === true) return true;
+  if (typeof flag === "string") {
+    const v = flag.trim().toLowerCase();
+    return v === "true" || v === "1" || v === "yes";
+  }
+  if (typeof flag === "number") return flag === 1;
+  return false;
+}
+
 /** Random tenant id when the business does not supply a 10-digit TIN (not guessable, URL-safe). */
 function generateAutoTenantKey() {
   const slug = crypto.randomBytes(12).toString("base64url");
@@ -2160,7 +2170,7 @@ const resolvers = {
           supplierPhone,
           Address,
           supplierLevel,
-          purchaseWithVat: purchaseWithVat === true,
+          purchaseWithVat: isVatEnabled(purchaseWithVat),
           supplierTinNumber: String(supplierTinNumber ?? "").trim(),
           paidAmount
         },
@@ -2410,7 +2420,7 @@ const resolvers = {
             supplierPhone: item.supplierPhone,
             Address: item.Address,
             supplierLevel: item.supplierLevel,
-            purchaseWithVat: item.purchaseWithVat === true,
+            purchaseWithVat: isVatEnabled(item.purchaseWithVat),
             supplierTinNumber: String(item.supplierTinNumber ?? "").trim(),
             paidAmount: item.paidAmount,
             status: statusLabel,
@@ -3096,7 +3106,7 @@ const resolvers = {
           supplierPhone: supplierPhone,
           Address: Address,
           supplierLevel: supplierLevel,
-          purchaseWithVat: purchaseWithVat === true,
+          purchaseWithVat: isVatEnabled(purchaseWithVat),
           supplierTinNumber: String(supplierTinNumber ?? "").trim(),
           paidAmount: paidAmount,
           status: status,
