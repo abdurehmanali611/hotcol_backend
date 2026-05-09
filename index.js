@@ -1954,6 +1954,8 @@ const resolvers = {
         supplierPhone,
         Address,
         supplierLevel,
+        purchaseWithVat,
+        supplierTinNumber,
         paidAmount,
       },
       context
@@ -1986,6 +1988,8 @@ const resolvers = {
           supplierPhone,
           Address,
           supplierLevel,
+          purchaseWithVat: isVatEnabled(purchaseWithVat),
+          supplierTinNumber: String(supplierTinNumber ?? "").trim(),
           paidAmount,
           HotelName: tenantScopeFromContext(context),
         },
