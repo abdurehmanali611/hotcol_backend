@@ -9,6 +9,12 @@ import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
 
 const prisma = new PrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
+/** Default 14d — slow networks & regional users; override with JWT_EXPIRES_IN e.g. "30d". */
+const JWT_EXPIRES_IN =
+  process.env.JWT_EXPIRES_IN != null &&
+  String(process.env.JWT_EXPIRES_IN).trim() !== ""
+    ? String(process.env.JWT_EXPIRES_IN).trim()
+    : "14d";
 
 function isVatEnabled(flag) {
   if (flag === true) return true;
@@ -1428,7 +1434,7 @@ const resolvers = {
           businessType: user.businessType ?? null,
         },
         JWT_Secret,
-        { expiresIn: "1d" },
+        { expiresIn: JWT_EXPIRES_IN },
       );
       return {
         token,
