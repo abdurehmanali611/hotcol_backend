@@ -33,6 +33,14 @@ function computeInventoryVatETB(subtotal, purchaseWithVat) {
   return Number(subtotal || 0) * INVENTORY_VAT_RATE;
 }
 
+function computeInventoryPaidAmountETB(amount, unitPrice, purchaseWithVat) {
+  const qty = Number(amount) || 0;
+  const price = Number(unitPrice) || 0;
+  const subtotal = qty * price;
+  if (!isVatEnabled(purchaseWithVat)) return subtotal;
+  return subtotal + price * INVENTORY_VAT_RATE;
+}
+
 function computeInventoryTotalETB({
   amount,
   unitPrice,
@@ -42,8 +50,7 @@ function computeInventoryTotalETB({
   const qty = Number(amount) || 0;
   const price = Number(unitPrice) || 0;
   const duty = Number(dutyFee) || 0;
-  const subtotal = qty * price;
-  return subtotal + duty + computeInventoryVatETB(subtotal, purchaseWithVat);
+  return computeInventoryPaidAmountETB(qty, price, purchaseWithVat) + duty;
 }
 
 /** Random tenant id when the business does not supply a 10-digit TIN (not guessable, URL-safe). */
