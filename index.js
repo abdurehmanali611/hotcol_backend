@@ -20,6 +20,7 @@ import {
   isStockOutPendingFinance,
   isStockOutPendingManager,
   ITEM_REG_VOID,
+  isItemRegistrationActive,
 } from "./lib/hotelWorkflow.js";
 
 const prisma = new PrismaClient();
@@ -351,6 +352,8 @@ const typeDefs = gql`
     managerActorName: String
     managerAuthorizedAt: DateTime
     rejectionReason: String
+    pendingUnitPrice: Float
+    unitPriceChangeStatus: String
   }
 
   type ItemStatus {
@@ -791,6 +794,12 @@ const typeDefs = gql`
     approvePurchaseRequestUnitPriceFinance(id: Int!): PurchaseRequest!
     authorizePurchaseRequestUnitPriceManager(id: Int!): PurchaseRequest!
     rejectPurchaseRequestUnitPrice(id: Int!, reason: String): PurchaseRequest!
+
+    submitItemRegistrationUnitPriceChange(id: Int!, proposedUnitPrice: Float!): ItemRegistration!
+    checkItemRegistrationUnitPriceCC(id: Int!, costControllerProfileId: Int!): ItemRegistration!
+    approveItemRegistrationUnitPriceFinance(id: Int!): ItemRegistration!
+    authorizeItemRegistrationUnitPriceManager(id: Int!): ItemRegistration!
+    rejectItemRegistrationUnitPrice(id: Int!, reason: String): ItemRegistration!
 
     createStockOutRequest(
       itemRegistrationId: Int!
@@ -2723,6 +2732,114 @@ const resolvers = {
         throw new Error("Purchase request not found");
       }
       const row = await prisma.purchaseRequest.update({
+        where: { id },
+        data: {
+          pendingUnitPrice: null,
+          unitPriceChangeStatus: "REJECTED",
+          rejectionReason: reason ?? "",
+        },
+      });
+      return withVoucherDisplay(row);
+    },
+
+    submitItemRegistrationUnitPriceChange: async (
+      _,
+      { id, proposedUnitPrice },
+      context,
+    ) => {
+      assertRole(context, ["Store"]);
+      const item = await prisma.itemRegistration.findUnique({ where: { id } });
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+        throw new Error("Inventory item not found");
+      }
+      if (!isItemRegistrationActive(item.approvalStatus)) {
+        throw new Error(
+          "Only authorized inventory items can revise unit price",
+        );
+      }
+      const price = Number(proposedUnitPrice);
+      if (!(price >= 0)) throw new Error("Invalid unit price");
+      const row = await prisma.itemRegistration.update({
+        where: { id },
+        data: {
+          pendingUnitPrice: price,
+          unitPriceChangeStatus: "PENDING_CC",
+        },
+      });
+      return withVoucherDisplay(row);
+    },
+
+    checkItemRegistrationUnitPriceCC: async (
+      _,
+      { id, costControllerProfileId },
+      context,
+    ) => {
+      assertRole(context, ["CostControl"]);
+      const item = await prisma.itemRegistration.findUnique({ where: { id } });
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+        throw new Error("Inventory item not found");
+      }
+      if (item.unitPriceChangeStatus !== "PENDING_CC") {
+        throw new Error("No unit price change awaiting cost control");
+      }
+      const prof = await prisma.costControllerProfile.findFirst({
+        where: { id: costControllerProfileId, HotelName: item.HotelName },
+      });
+      if (!prof) throw new Error("Select a registered cost controller identity");
+      const row = await prisma.itemRegistration.update({
+        where: { id },
+        data: { unitPriceChangeStatus: "PENDING_FINANCE" },
+      });
+      return withVoucherDisplay(row);
+    },
+
+    approveItemRegistrationUnitPriceFinance: async (_, { id }, context) => {
+      assertRole(context, ["Finance"]);
+      const item = await prisma.itemRegistration.findUnique({ where: { id } });
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+        throw new Error("Inventory item not found");
+      }
+      if (item.unitPriceChangeStatus !== "PENDING_FINANCE") {
+        throw new Error("No unit price change awaiting finance");
+      }
+      const row = await prisma.itemRegistration.update({
+        where: { id },
+        data: { unitPriceChangeStatus: "PENDING_MANAGER" },
+      });
+      return withVoucherDisplay(row);
+    },
+
+    authorizeItemRegistrationUnitPriceManager: async (_, { id }, context) => {
+      assertRole(context, ["Manager"]);
+      const item = await prisma.itemRegistration.findUnique({ where: { id } });
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+        throw new Error("Inventory item not found");
+      }
+      if (item.unitPriceChangeStatus !== "PENDING_MANAGER") {
+        throw new Error("No unit price change awaiting manager");
+      }
+      const price = Number(item.pendingUnitPrice);
+      const row = await prisma.itemRegistration.update({
+        where: { id },
+        data: {
+          unitPrice: price,
+          pendingUnitPrice: null,
+          unitPriceChangeStatus: "AUTHORIZED",
+        },
+      });
+      return withVoucherDisplay(row);
+    },
+
+    rejectItemRegistrationUnitPrice: async (_, { id, reason }, context) => {
+      const role = context.user?.Role;
+      if (!["CostControl", "Finance", "Manager"].includes(role)) {
+        throw new Error("Not authorized");
+      }
+      const item = await prisma.itemRegistration.findUnique({ where: { id } });
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+        throw new Error("Inventory item not found");
+      }
+      const row = await prisma.itemRegistration.update({
         where: { id },
         data: {
           pendingUnitPrice: null,

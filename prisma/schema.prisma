@@ -169,6 +169,9 @@ model ItemRegistration {
   managerActorName  String?
   managerAuthorizedAt DateTime?
   rejectionReason   String?
+  /// Unit price revision after initial authorization (same 3-tier flow as purchase requests).
+  pendingUnitPrice    Float?
+  unitPriceChangeStatus String?
 
   @@index([HotelName])
   @@index([approvalStatus])
