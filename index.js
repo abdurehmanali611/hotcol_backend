@@ -374,7 +374,10 @@ const typeDefs = gql`
     paidAmount: Float!
     status: String!
     statusBy: String!
-    HotelName: String! 
+    HotelName: String!
+    voucherNumber: Int
+    voucherDisplay: String
+    stockOutRequestId: Int
   }
 
   type CostControllerProfile {
@@ -1229,6 +1232,8 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
       status: statusLabel,
       statusBy: actorName,
       HotelName: reqRow.HotelName,
+      voucherNumber: reqRow.voucherNumber ?? null,
+      stockOutRequestId: reqRow.id,
     },
   });
   await tx.itemRegistration.update({
@@ -1261,6 +1266,12 @@ const resolvers = {
         : null,
   },
   ItemRegistration: {
+    voucherDisplay: (p) =>
+      p.voucherNumber != null && Number(p.voucherNumber) > 0
+        ? formatVoucherNumber(p.voucherNumber)
+        : null,
+  },
+  ItemStatus: {
     voucherDisplay: (p) =>
       p.voucherNumber != null && Number(p.voucherNumber) > 0
         ? formatVoucherNumber(p.voucherNumber)
@@ -1417,9 +1428,11 @@ const resolvers = {
     },
     ItemStatus: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      return await prisma.itemStatus.findMany({
+      const rows = await prisma.itemStatus.findMany({
         where: tenantHotelReadWhere(context),
+        orderBy: { actionDate: "desc" },
       });
+      return rows.map(withVoucherDisplay);
     },
     costControllerProfiles: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");

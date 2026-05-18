@@ -195,7 +195,13 @@ model ItemStatus {
   paidAmount     Float
   status         String
   statusBy       String
-  HotelName      String 
+  HotelName      String
+  /// Stock movement voucher when created from an approved hotel stock-out request.
+  voucherNumber     Int?
+  stockOutRequestId Int?
+
+  @@index([HotelName])
+  @@index([stockOutRequestId])
 }
 
 /// Named individuals sharing the Cost Control login — selected when approving.
