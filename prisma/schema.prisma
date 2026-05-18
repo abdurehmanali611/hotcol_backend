@@ -124,6 +124,17 @@ model CreditRegistration {
   HotelName    String
 }
 
+/// Per-hotel voucher sequence counters (purchase request, item registration, stock movement).
+model HotelVoucherCounter {
+  id          Int    @id @default(autoincrement())
+  HotelName   String
+  voucherType String
+  lastNumber  Int    @default(0)
+
+  @@unique([HotelName, voucherType])
+  @@index([HotelName])
+}
+
 model ItemRegistration {
   id                Int      @id @default(autoincrement())
   name              String
@@ -144,6 +155,23 @@ model ItemRegistration {
   supplierTinNumber String   @default("")
   paidAmount        Float
   HotelName         String
+  /// Per-hotel sequential voucher (display padded to 4+ digits).
+  voucherNumber     Int?
+  /// Linked purchase request voucher when goods are received against a PR.
+  purchaseRequestId Int?
+  /// PENDING_CC | CHECKED_CC | PENDING_FINANCE | PENDING_MANAGER | AUTHORIZED | REJECTED_* | VOID
+  approvalStatus    String   @default("PENDING_CC")
+  ccProfileId       Int?
+  ccActorName       String?
+  ccCheckedAt       DateTime?
+  financeActorName  String?
+  financeApprovedAt DateTime?
+  managerActorName  String?
+  managerAuthorizedAt DateTime?
+  rejectionReason   String?
+
+  @@index([HotelName])
+  @@index([approvalStatus])
 }
 
 model ItemStatus {
@@ -177,7 +205,7 @@ model CostControllerProfile {
   @@index([HotelName])
 }
 
-/// Store requests to buy items not currently in stock. CC → Finance → stock receipt.
+/// Store requests to buy items not currently in stock. CC check → Finance approve → Manager authorize.
 model PurchaseRequest {
   id                  Int       @id @default(autoincrement())
   HotelName           String
@@ -189,22 +217,28 @@ model PurchaseRequest {
   supplierName        String    @default("")
   supplierPhone       String    @default("")
   category            String    @default("Others")
-  /// PENDING_CC | APPROVED_CC | REJECTED_CC | PENDING_FINANCE | APPROVED_FINANCE | REJECTED_FINANCE
+  /// PENDING_CC | CHECKED_CC | PENDING_FINANCE | PENDING_MANAGER | AUTHORIZED | REJECTED_* | legacy APPROVED_FINANCE
   status              String
   storeUserName       String
+  voucherNumber       Int?
   ccProfileId         Int?
   ccActorName         String?
   ccApprovedAt        DateTime?
   financeActorName    String?
   financeApprovedAt   DateTime?
+  managerActorName    String?
+  managerAuthorizedAt DateTime?
   rejectionReason     String?
+  /// Unit price revision after initial approval (same 3-tier flow).
+  pendingUnitPrice    Float?
+  unitPriceChangeStatus String?
   createdAt           DateTime  @default(now())
 
   @@index([HotelName])
   @@index([status])
 }
 
-/// Hotel store movements pending Cost Control approval before inventory updates.
+/// Hotel store movements: CC check → Finance approve → Manager authorize → inventory update.
 model StockOutRequest {
   id                   Int      @id @default(autoincrement())
   HotelName            String
@@ -215,11 +249,17 @@ model StockOutRequest {
   movementType         String
   amount               Float
   stakeHolderOrReason  String
-  /// PENDING | APPROVED | REJECTED
+  /// PENDING_CC | CHECKED_CC | PENDING_FINANCE | PENDING_MANAGER | APPROVED | REJECTED | legacy PENDING
   status               String
+  voucherNumber        Int?
   requestedByUserName  String
   ccProfileId          Int?
   ccActorName          String?
+  ccCheckedAt          DateTime?
+  financeActorName     String?
+  financeApprovedAt    DateTime?
+  managerActorName     String?
+  managerAuthorizedAt  DateTime?
   decidedAt            DateTime?
   rejectionReason      String?
   createdAt            DateTime @default(now())
@@ -297,9 +337,17 @@ model HotelCreditCompany {
   id              Int      @id @default(autoincrement())
   HotelName       String
   companyName     String
+  companyTinNumber String  @default("")
   contactName     String   @default("")
-  phoneNumber     String
+  phoneNumber     String   @default("")
   email           String   @default("")
+  /// NOW | AFTER_SERVICE — pay before or after receiving meals.
+  payTiming       String   @default("AFTER_SERVICE")
+  /// PENDING_MANAGER | AUTHORIZED | REJECTED
+  approvalStatus  String   @default("PENDING_MANAGER")
+  managerActorName String?
+  managerAuthorizedAt DateTime?
+  rejectionReason String?
   /// Snapshot label from the tier at registration time.
   creditLevel     String
   /// Money ceiling for the deal window (same spirit as cafe credit amount).
@@ -319,6 +367,7 @@ model HotelCreditCompany {
 
   @@index([HotelName])
   @@index([hotelCorporateCreditTierId])
+  @@index([approvalStatus])
 }
 
 /// Staff or guest registered under a company account.
