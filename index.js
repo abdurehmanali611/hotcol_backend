@@ -14,7 +14,6 @@ import {
 import {
   isPurchaseRequestAuthorized,
   itemRegistrationInventoryWhere,
-  itemRegistrationStoreTerminalWhere,
   isCompanyAuthorized,
   normalizeStockOutStatus,
   isStockOutPendingCC,
@@ -329,6 +328,13 @@ const typeDefs = gql`
     paidAmount: Float!
     registrationDate: DateTime!
     HotelName: String!
+    registrantType: String!
+    approvalStatus: String!
+    companyTinNumber: String!
+    affiliatedCompany: String!
+    rejectionReason: String
+    adminActorName: String
+    adminAuthorizedAt: DateTime
   }
 
   type ItemRegistration {
@@ -516,6 +522,7 @@ const typeDefs = gql`
     allowedMenuJson: String!
     dealNotes: String!
     imageUrl: String!
+    paidAmount: Float!
     createdAt: DateTime!
   }
 
@@ -686,7 +693,12 @@ const typeDefs = gql`
       paidAmount: Float!
       registrationDate: DateTime!
       HotelName: String!
+      registrantType: String
+      companyTinNumber: String
+      affiliatedCompany: String
     ): CreditRegistration!
+    AuthorizeCreditRegistration(id: Int!): CreditRegistration!
+    RejectCreditRegistration(id: Int!, reason: String): CreditRegistration!
     ItemRegistration(
       name: String!
       imageUrl: String!
@@ -869,6 +881,8 @@ const typeDefs = gql`
       allowedMenuJson: String!
       dealNotes: String
       imageUrl: String
+      creditLimit: Float
+      paidAmount: Float
     ): HotelCreditCompany!
 
     updateHotelCreditCompany(
@@ -883,6 +897,8 @@ const typeDefs = gql`
       allowedMenuJson: String!
       dealNotes: String
       imageUrl: String
+      creditLimit: Float
+      paidAmount: Float
     ): HotelCreditCompany!
 
     authorizeHotelCreditCompany(id: Int!): HotelCreditCompany!
@@ -1382,9 +1398,17 @@ const resolvers = {
     },
     CreditRegistration: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      return await prisma.creditRegistration.findMany({
+      const rows = await prisma.creditRegistration.findMany({
         where: tenantHotelReadWhere(context),
       });
+      const role = String(context.user.Role || "");
+      if (role === "Cashier") {
+        return rows.filter((r) => {
+          const s = String(r.approvalStatus || "").trim().toUpperCase();
+          return !s || s === "AUTHORIZED";
+        });
+      }
+      return rows;
     },
     ItemRegistration: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -1392,7 +1416,7 @@ const resolvers = {
       const role = String(context.user.Role || "");
       const where =
         role === "Store"
-          ? { AND: [tenantWhere, itemRegistrationStoreTerminalWhere()] }
+          ? { AND: [tenantWhere, itemRegistrationInventoryWhere()] }
           : tenantWhere;
       const rows = await prisma.itemRegistration.findMany({
         where,
@@ -1977,10 +2001,15 @@ const resolvers = {
         throw new Error("Credit Registration not found or not authorized");
       }
 
+      const next = Number(amount);
+      if (!Number.isFinite(next) || next < 0) {
+        throw new Error("Remaining credit cannot be negative");
+      }
+
       return await prisma.creditRegistration.update({
         where: { id: id },
         data: {
-          amount: amount,
+          amount: next,
         },
       });
     },
@@ -2212,10 +2241,36 @@ const resolvers = {
         timeFrame,
         paidAmount,
         registrationDate,
+        registrantType,
+        companyTinNumber,
+        affiliatedCompany,
       },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const tenant = tenantScopeFromContext(context);
+      const requested = Number(amount);
+      const paid = Number(paidAmount) || 0;
+      if (!Number.isFinite(requested) || requested <= 0) {
+        throw new Error("Requested credit must be greater than zero");
+      }
+      if (paid < 0 || paid > requested + 1e-6) {
+        throw new Error("Presale paid cannot exceed requested credit");
+      }
+      const tierRow = await prisma.creditLevel.findFirst({
+        where: { HotelName: tenant, level: String(creditLevel).trim() },
+      });
+      if (tierRow && requested > Number(tierRow.requiredAmount) + 1e-6) {
+        throw new Error(
+          `Requested credit cannot exceed ${creditLevel} tier maximum of ETB ${tierRow.requiredAmount}`,
+        );
+      }
+      const role = String(context.user.Role || "");
+      const type = String(registrantType || "STAFF").trim().toUpperCase();
+      const approvalStatus = role === "Admin" ? "AUTHORIZED" : "PENDING_ADMIN";
+      const adminActorName =
+        role === "Admin" ? String(context.user.userName || "").trim() : null;
+      const adminAuthorizedAt = role === "Admin" ? new Date() : null;
       return await prisma.creditRegistration.create({
         data: {
           name,
@@ -2223,12 +2278,60 @@ const resolvers = {
           sex,
           creditLevel,
           phoneNumber,
-          amount,
+          amount: requested,
           timeInterval,
           timeFrame,
-          paidAmount,
+          paidAmount: paid,
           registrationDate,
-          HotelName: tenantScopeFromContext(context),
+          HotelName: tenant,
+          registrantType: type === "COMPANY" ? "COMPANY" : "STAFF",
+          approvalStatus,
+          companyTinNumber: String(companyTinNumber || "").trim(),
+          affiliatedCompany: String(affiliatedCompany || "").trim(),
+          adminActorName: adminActorName || undefined,
+          adminAuthorizedAt: adminAuthorizedAt || undefined,
+        },
+      });
+    },
+    AuthorizeCreditRegistration: async (_, { id }, context) => {
+      assertRole(context, ["Admin"]);
+      const creditReg = await prisma.creditRegistration.findUnique({
+        where: { id },
+      });
+      if (
+        !creditReg ||
+        !tenantHotelReadMatches(context, creditReg.HotelName)
+      ) {
+        throw new Error("Credit registration not found");
+      }
+      return await prisma.creditRegistration.update({
+        where: { id },
+        data: {
+          approvalStatus: "AUTHORIZED",
+          rejectionReason: null,
+          adminActorName: String(context.user.userName || "").trim() || null,
+          adminAuthorizedAt: new Date(),
+        },
+      });
+    },
+    RejectCreditRegistration: async (_, { id, reason }, context) => {
+      assertRole(context, ["Admin"]);
+      const creditReg = await prisma.creditRegistration.findUnique({
+        where: { id },
+      });
+      if (
+        !creditReg ||
+        !tenantHotelReadMatches(context, creditReg.HotelName)
+      ) {
+        throw new Error("Credit registration not found");
+      }
+      return await prisma.creditRegistration.update({
+        where: { id },
+        data: {
+          approvalStatus: "REJECTED",
+          rejectionReason: String(reason || "").trim() || "Rejected by admin",
+          adminActorName: String(context.user.userName || "").trim() || null,
+          adminAuthorizedAt: new Date(),
         },
       });
     },
@@ -3487,6 +3590,8 @@ const resolvers = {
         allowedMenuJson,
         dealNotes,
         imageUrl,
+        creditLimit,
+        paidAmount,
       },
       context,
     ) => {
@@ -3504,6 +3609,23 @@ const resolvers = {
       if (!["NOW", "AFTER_SERVICE"].includes(timing)) {
         throw new Error("payTiming must be NOW or AFTER_SERVICE");
       }
+      const ceiling = Number(tier.creditCeiling);
+      const requested =
+        creditLimit != null ? Number(creditLimit) : ceiling;
+      if (!Number.isFinite(requested) || requested <= 0) {
+        throw new Error("Requested credit must be greater than zero");
+      }
+      if (requested > ceiling + 1e-6) {
+        throw new Error(
+          `Requested credit cannot exceed tier maximum of ETB ${ceiling}`,
+        );
+      }
+      const paid = paidAmount != null ? Number(paidAmount) : 0;
+      if (paid < 0 || paid > requested + 1e-6) {
+        throw new Error("Presale paid cannot exceed requested credit");
+      }
+      const logo = String(imageUrl || "").trim();
+      if (!logo) throw new Error("Company logo or photo is required");
       return await prisma.hotelCreditCompany.create({
         data: {
           HotelName: tenant,
@@ -3517,13 +3639,14 @@ const resolvers = {
           payTiming: timing,
           approvalStatus: "PENDING_MANAGER",
           creditLevel: String(tier.name).trim(),
-          creditLimit: Number(tier.creditCeiling),
+          creditLimit: requested,
           timeInterval: Number(tier.timeInterval),
           timeFrame: String(tier.timeFrame).trim(),
           hotelCorporateCreditTierId: tier.id,
           allowedMenuJson: String(allowedMenuJson || "[]"),
           dealNotes: dealNotes != null ? String(dealNotes) : "",
-          imageUrl: imageUrl != null ? String(imageUrl) : "",
+          imageUrl: logo,
+          paidAmount: paid,
         },
       });
     },
@@ -3542,6 +3665,8 @@ const resolvers = {
         allowedMenuJson,
         dealNotes,
         imageUrl,
+        creditLimit,
+        paidAmount,
       },
       context,
     ) => {
@@ -3553,6 +3678,7 @@ const resolvers = {
         throw new Error("Company not found");
       }
       let tierPatch = {};
+      let ceiling = Number(row.creditLimit);
       if (hotelCorporateCreditTierId != null) {
         const tid = Number(hotelCorporateCreditTierId);
         const tier = await prisma.hotelCorporateCreditTier.findUnique({
@@ -3561,14 +3687,37 @@ const resolvers = {
         if (!tier || !tenantHotelReadMatches(context, tier.HotelName)) {
           throw new Error("Credit tier not found");
         }
+        ceiling = Number(tier.creditCeiling);
         tierPatch = {
           hotelCorporateCreditTierId: tier.id,
           creditLevel: String(tier.name).trim(),
-          creditLimit: Number(tier.creditCeiling),
           timeInterval: Number(tier.timeInterval),
           timeFrame: String(tier.timeFrame).trim(),
         };
+      } else {
+        const tier = row.hotelCorporateCreditTierId
+          ? await prisma.hotelCorporateCreditTier.findUnique({
+              where: { id: row.hotelCorporateCreditTierId },
+            })
+          : null;
+        if (tier) ceiling = Number(tier.creditCeiling);
       }
+      const requested =
+        creditLimit != null ? Number(creditLimit) : Number(row.creditLimit);
+      if (!Number.isFinite(requested) || requested <= 0) {
+        throw new Error("Requested credit must be greater than zero");
+      }
+      if (requested > ceiling + 1e-6) {
+        throw new Error(
+          `Requested credit cannot exceed tier maximum of ETB ${ceiling}`,
+        );
+      }
+      const paid =
+        paidAmount != null ? Number(paidAmount) : Number(row.paidAmount) || 0;
+      if (paid < 0 || paid > requested + 1e-6) {
+        throw new Error("Presale paid cannot exceed requested credit");
+      }
+      tierPatch = { ...tierPatch, creditLimit: requested, paidAmount: paid };
       const timing =
         payTiming != null
           ? String(payTiming).trim().toUpperCase()

@@ -110,18 +110,25 @@ model pityCash {
 }
 
 model CreditRegistration {
-  id           Int      @id @default(autoincrement())
-  imageUrl     String
-  name         String
-  sex          String
-  creditLevel  String
-  phoneNumber  String
-  amount       Float
-  timeInterval Int
-  timeFrame    String
-  paidAmount   Float
-  registrationDate DateTime @default(now())
-  HotelName    String
+  id                 Int       @id @default(autoincrement())
+  imageUrl           String
+  name               String
+  sex                String
+  creditLevel        String
+  phoneNumber        String
+  amount             Float
+  timeInterval       Int
+  timeFrame          String
+  paidAmount         Float
+  registrationDate   DateTime  @default(now())
+  HotelName          String
+  registrantType     String    @default("STAFF")
+  approvalStatus     String    @default("AUTHORIZED")
+  companyTinNumber   String    @default("")
+  affiliatedCompany  String    @default("")
+  rejectionReason    String?
+  adminActorName     String?
+  adminAuthorizedAt  DateTime?
 }
 
 /// Per-hotel voucher sequence counters (purchase request, item registration, stock movement).
@@ -369,6 +376,8 @@ model HotelCreditCompany {
   allowedMenuJson String   @db.Text
   dealNotes       String   @default("")
   imageUrl        String   @default("")
+  /// Presale / amount paid upfront when payTiming is NOW.
+  paidAmount      Float    @default(0)
   createdAt       DateTime @default(now())
 
   parties      HotelCreditParty[]
