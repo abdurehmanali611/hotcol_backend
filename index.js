@@ -3801,7 +3801,7 @@ const resolvers = {
       { companyId, displayName, phoneNumber, sex, notes },
       context,
     ) => {
-      assertRole(context, ["HotelCashier"]);
+      assertRole(context, ["HotelCashier", "Cashier"]);
       const cid = Number(companyId);
       const company = await prisma.hotelCreditCompany.findUnique({
         where: { id: cid },
@@ -3826,7 +3826,7 @@ const resolvers = {
       { companyId, partyId, guestName, guestPhone, linesJson, totalAmount, occurredAt },
       context,
     ) => {
-      assertRole(context, ["HotelCashier"]);
+      assertRole(context, ["HotelCashier", "Cashier"]);
       const cid = Number(companyId);
       const pid = partyId != null ? Number(partyId) : 0;
       const company = await prisma.hotelCreditCompany.findUnique({
