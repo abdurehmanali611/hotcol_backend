@@ -3747,7 +3747,7 @@ const resolvers = {
     },
 
     authorizeHotelCreditCompany: async (_, { id }, context) => {
-      assertRole(context, ["Manager"]);
+      assertRole(context, ["Manager", "Admin"]);
       const row = await prisma.hotelCreditCompany.findUnique({ where: { id } });
       if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
         throw new Error("Company not found");
@@ -3767,7 +3767,7 @@ const resolvers = {
     },
 
     rejectHotelCreditCompany: async (_, { id, reason }, context) => {
-      assertRole(context, ["Manager"]);
+      assertRole(context, ["Manager", "Admin"]);
       const row = await prisma.hotelCreditCompany.findUnique({ where: { id } });
       if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
         throw new Error("Company not found");
@@ -3994,7 +3994,7 @@ const resolvers = {
       { name, creditCeiling, timeInterval, timeFrame, sortOrder },
       context,
     ) => {
-      assertRole(context, ["Manager"]);
+      assertRole(context, ["Manager", "Admin"]);
       const tenant = tenantScopeFromContext(context);
       return await prisma.hotelCorporateCreditTier.create({
         data: {
@@ -4013,7 +4013,7 @@ const resolvers = {
       { id, name, creditCeiling, timeInterval, timeFrame, sortOrder },
       context,
     ) => {
-      assertRole(context, ["Manager"]);
+      assertRole(context, ["Manager", "Admin"]);
       const row = await prisma.hotelCorporateCreditTier.findUnique({
         where: { id },
       });
@@ -4033,7 +4033,7 @@ const resolvers = {
     },
 
     deleteHotelCorporateCreditTier: async (_, { id }, context) => {
-      assertRole(context, ["Manager"]);
+      assertRole(context, ["Manager", "Admin"]);
       const row = await prisma.hotelCorporateCreditTier.findUnique({
         where: { id },
       });
