@@ -14,6 +14,7 @@ import {
 import {
   isPurchaseRequestAuthorized,
   itemRegistrationInventoryWhere,
+  itemRegistrationStoreTerminalWhere,
   isCompanyAuthorized,
   normalizeStockOutStatus,
   isStockOutPendingCC,
@@ -145,6 +146,18 @@ function tenantHotelReadWhere(ctx) {
   if (list.length === 0) return { HotelName: "__no_scope__" };
   if (list.length === 1) return { HotelName: list[0] };
   return { OR: list.map((HotelName) => ({ HotelName })) };
+}
+
+function tenantHotelKeysFromContext(ctx) {
+  const where = tenantHotelReadWhere(ctx);
+  if (where.HotelName) return [where.HotelName];
+  if (where.OR) return where.OR.map((c) => c.HotelName).filter(Boolean);
+  return [];
+}
+
+function isLodgingBusiness(ctx) {
+  const bt = String(ctx?.user?.businessType ?? "").trim();
+  return bt === "Hotel" || bt === "Resort" || bt === "Pension";
 }
 
 function tenantHotelReadMatches(ctx, rowHotelName) {
@@ -1379,7 +1392,7 @@ const resolvers = {
       const role = String(context.user.Role || "");
       const where =
         role === "Store"
-          ? { AND: [tenantWhere, itemRegistrationInventoryWhere()] }
+          ? { AND: [tenantWhere, itemRegistrationStoreTerminalWhere()] }
           : tenantWhere;
       const rows = await prisma.itemRegistration.findMany({
         where,
@@ -2261,6 +2274,7 @@ const resolvers = {
         prisma,
         tenant,
         VOUCHER_TYPES.ITEM_REGISTRATION,
+        tenantHotelKeysFromContext(context),
       );
       const row = await prisma.itemRegistration.create({
         data: {
@@ -2283,7 +2297,7 @@ const resolvers = {
           HotelName: tenant,
           voucherNumber,
           purchaseRequestId: purchaseRequestId ?? null,
-          approvalStatus: "PENDING_CC",
+          approvalStatus: isLodgingBusiness(context) ? "PENDING_CC" : "AUTHORIZED",
         },
       });
       return withVoucherDisplay(row);
@@ -2515,6 +2529,7 @@ const resolvers = {
         prisma,
         tenant,
         VOUCHER_TYPES.PURCHASE_REQUEST,
+        tenantHotelKeysFromContext(context),
       );
       const row = await prisma.purchaseRequest.create({
         data: {
@@ -2912,6 +2927,7 @@ const resolvers = {
         prisma,
         tenant,
         VOUCHER_TYPES.STOCK_MOVEMENT,
+        tenantHotelKeysFromContext(context),
       );
       const row = await prisma.stockOutRequest.create({
         data: {
@@ -3881,6 +3897,13 @@ const resolvers = {
 
     CreateItemStatus: async(_, {name, imageUrl, category, amount, measuredBy, unitPrice, actionDate, supplierName, supplierPhone, Address, supplierLevel, purchaseWithVat, supplierTinNumber, paidAmount, status, statusBy}, context) => {
       if (!context.user) throw new Error("Not Authorized")
+      const tenant = tenantScopeFromContext(context);
+      const { voucherNumber } = await allocateVoucherNumber(
+        prisma,
+        tenant,
+        VOUCHER_TYPES.STOCK_MOVEMENT,
+        tenantHotelKeysFromContext(context),
+      );
       return await prisma.itemStatus.create({
         data: {
           name: name,
@@ -3899,7 +3922,8 @@ const resolvers = {
           paidAmount: paidAmount,
           status: status,
           statusBy: statusBy,
-          HotelName: tenantScopeFromContext(context),
+          HotelName: tenant,
+          voucherNumber,
         },
       });
     },
