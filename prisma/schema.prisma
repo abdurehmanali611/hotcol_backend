@@ -152,11 +152,9 @@ model ItemRegistration {
   unitPrice         Float
   registrationDate  DateTime 
   expireDate        DateTime
-  dutyFee           Float
   supplierName      String
   supplierPhone     String
   Address           String
-  supplierLevel     String
   /// When true, unit price / line totals were agreed including VAT.
   purchaseWithVat   Boolean  @default(false)
   supplierTinNumber String   @default("")
@@ -196,7 +194,6 @@ model ItemStatus {
   supplierName String
   supplierPhone String
   Address       String
-  supplierLevel  String
   purchaseWithVat   Boolean  @default(false)
   supplierTinNumber String   @default("")
   paidAmount     Float

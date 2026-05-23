@@ -57,16 +57,10 @@ function computeInventoryPaidAmountETB(amount, unitPrice, purchaseWithVat) {
   return subtotal + price * INVENTORY_VAT_RATE;
 }
 
-function computeInventoryTotalETB({
-  amount,
-  unitPrice,
-  dutyFee,
-  purchaseWithVat,
-}) {
+function computeInventoryTotalETB({ amount, unitPrice, purchaseWithVat }) {
   const qty = Number(amount) || 0;
   const price = Number(unitPrice) || 0;
-  const duty = Number(dutyFee) || 0;
-  return computeInventoryPaidAmountETB(qty, price, purchaseWithVat) + duty;
+  return computeInventoryPaidAmountETB(qty, price, purchaseWithVat);
 }
 
 /** Random tenant id when the business does not supply a 10-digit TIN (not guessable, URL-safe). */
@@ -347,11 +341,9 @@ const typeDefs = gql`
     unitPrice: Float!
     registrationDate: DateTime!
     expireDate: DateTime!
-    dutyFee: Float!
     supplierName: String!
     supplierPhone: String!
     Address: String!
-    supplierLevel: String!
     purchaseWithVat: Boolean!
     supplierTinNumber: String!
     paidAmount: Float!
@@ -387,7 +379,6 @@ const typeDefs = gql`
     supplierName: String!
     supplierPhone: String!   
     Address:       String!
-    supplierLevel: String!
     purchaseWithVat: Boolean!
     supplierTinNumber: String!
     paidAmount: Float!
@@ -708,11 +699,9 @@ const typeDefs = gql`
       unitPrice: Float!
       registrationDate: DateTime!
       expireDate: DateTime!
-      dutyFee: Float!
       supplierName: String!
       supplierPhone: String!
       Address: String!
-      supplierLevel: String!
       purchaseWithVat: Boolean
       supplierTinNumber: String
       paidAmount: Float!
@@ -766,11 +755,9 @@ const typeDefs = gql`
       unitPrice: Float!
       registrationDate: DateTime!
       expireDate: DateTime!
-      dutyFee: Float!
       supplierName: String!
       supplierPhone: String!
       Address: String!
-      supplierLevel: String!
       purchaseWithVat: Boolean
       supplierTinNumber: String
       paidAmount: Float!
@@ -785,7 +772,6 @@ const typeDefs = gql`
     supplierName: String!
     supplierPhone: String!   
     Address:       String!
-    supplierLevel: String!
     purchaseWithVat: Boolean
     supplierTinNumber: String
     paidAmount: Float!
@@ -1254,7 +1240,6 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
       supplierName: item.supplierName,
       supplierPhone: item.supplierPhone,
       Address: item.Address,
-      supplierLevel: item.supplierLevel,
       purchaseWithVat: isVatEnabled(item.purchaseWithVat),
       supplierTinNumber: String(item.supplierTinNumber ?? "").trim(),
       paidAmount: item.paidAmount,
@@ -1453,7 +1438,6 @@ const resolvers = {
         const registeredValue = computeInventoryTotalETB({
           amount: registeredAmount,
           unitPrice: r.unitPrice,
-          dutyFee: r.dutyFee,
           purchaseWithVat: r.purchaseWithVat,
         });
         return withVoucherDisplay({
@@ -2346,11 +2330,9 @@ const resolvers = {
         unitPrice,
         registrationDate,
         expireDate,
-        dutyFee,
         supplierName,
         supplierPhone,
         Address,
-        supplierLevel,
         purchaseWithVat,
         supplierTinNumber,
         paidAmount,
@@ -2389,11 +2371,9 @@ const resolvers = {
           unitPrice,
           registrationDate,
           expireDate,
-          dutyFee,
           supplierName,
           supplierPhone,
           Address,
-          supplierLevel,
           purchaseWithVat: isVatEnabled(purchaseWithVat),
           supplierTinNumber: String(supplierTinNumber ?? "").trim(),
           paidAmount,
@@ -2550,11 +2530,9 @@ const resolvers = {
         unitPrice,
         registrationDate,
         expireDate,
-        dutyFee,
         supplierName,
         supplierPhone,
         Address,
-        supplierLevel,
         purchaseWithVat,
         supplierTinNumber,
         paidAmount,
@@ -2579,11 +2557,9 @@ const resolvers = {
           unitPrice,
           registrationDate,
           expireDate,
-          dutyFee,
           supplierName,
           supplierPhone,
           Address,
-          supplierLevel,
           purchaseWithVat: isVatEnabled(purchaseWithVat),
           supplierTinNumber: String(supplierTinNumber ?? "").trim(),
           paidAmount
@@ -4044,7 +4020,7 @@ const resolvers = {
       return true;
     },
 
-    CreateItemStatus: async(_, {name, imageUrl, category, amount, measuredBy, unitPrice, actionDate, supplierName, supplierPhone, Address, supplierLevel, purchaseWithVat, supplierTinNumber, paidAmount, status, statusBy}, context) => {
+    CreateItemStatus: async(_, {name, imageUrl, category, amount, measuredBy, unitPrice, actionDate, supplierName, supplierPhone, Address, purchaseWithVat, supplierTinNumber, paidAmount, status, statusBy}, context) => {
       if (!context.user) throw new Error("Not Authorized")
       const tenant = tenantScopeFromContext(context);
       const { voucherNumber } = await allocateVoucherNumber(
@@ -4065,7 +4041,6 @@ const resolvers = {
           supplierName: supplierName,
           supplierPhone: supplierPhone,
           Address: Address,
-          supplierLevel: supplierLevel,
           purchaseWithVat: isVatEnabled(purchaseWithVat),
           supplierTinNumber: String(supplierTinNumber ?? "").trim(),
           paidAmount: paidAmount,
