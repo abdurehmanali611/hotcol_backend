@@ -3595,7 +3595,7 @@ const resolvers = {
       },
       context,
     ) => {
-      assertRole(context, ["HotelCashier"]);
+      assertRole(context, ["HotelCashier", "Cashier"]);
       const tenant = tenantScopeFromContext(context);
       const tierId = Number(hotelCorporateCreditTierId);
       if (!tierId) throw new Error("Select a manager-defined credit tier");
@@ -3670,7 +3670,7 @@ const resolvers = {
       },
       context,
     ) => {
-      assertRole(context, ["HotelCashier"]);
+      assertRole(context, ["HotelCashier", "Cashier"]);
       const row = await prisma.hotelCreditCompany.findUnique({
         where: { id },
       });
