@@ -64,6 +64,63 @@ model tenant_payment_submission {
   @@index([tinNumber, paymentKind, status])
 }
 
+/// Apex internal team — login for the Apex dashboard (separate from tenant `user`).
+model apex_team_member {
+  id          Int      @id @default(autoincrement())
+  UserName    String   @unique
+  Password    String
+  displayName String?
+  /// support | billing | admin
+  role        String   @default("support")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  feedbackMessages tenant_feedback_message[]
+}
+
+/// One feedback thread per property (TIN). Cafe Admin / Hotel Manager chat with Apex.
+model tenant_feedback_thread {
+  id               Int      @id @default(autoincrement())
+  tinNumber        String   @unique
+  hotelDisplayName String
+  businessType     String?
+  /// open | closed
+  status           String   @default("open")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  messages tenant_feedback_message[]
+
+  @@index([status])
+  @@index([updatedAt])
+}
+
+model tenant_feedback_message {
+  id              Int      @id @default(autoincrement())
+  threadId        Int
+  /// tenant | apex
+  senderSide      String
+  tenantUserId    Int?
+  tenantUserName  String?
+  tenantRole      String?
+  apexMemberId    Int?
+  apexDisplayName String?
+  body            String   @db.Text
+  imageUrl        String?  @db.VarChar(2048)
+  readByTenant    Boolean  @default(false)
+  readByApex      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  thread     tenant_feedback_thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  apexMember apex_team_member?      @relation(fields: [apexMemberId], references: [id], onDelete: SetNull)
+
+  @@index([threadId])
+  @@index([createdAt])
+  @@index([senderSide, readByTenant])
+  @@index([senderSide, readByApex])
+}
+
 model Item {
   id        Int      @id @default(autoincrement())
   name      String

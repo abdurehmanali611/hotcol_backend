@@ -380,6 +380,28 @@ const typeDefs = gql`
     paymentKind: String
   }
 
+  type TenantFeedbackMessage {
+    id: Int!
+    threadId: Int!
+    senderSide: String!
+    tenantUserId: Int
+    tenantUserName: String
+    tenantRole: String
+    apexMemberId: Int
+    apexDisplayName: String
+    body: String!
+    imageUrl: String
+    readByTenant: Boolean!
+    readByApex: Boolean!
+    createdAt: DateTime!
+  }
+
+  type TenantFeedbackInbox {
+    threadId: Int!
+    unreadFromApex: Int!
+    messages: [TenantFeedbackMessage!]!
+  }
+
   type Item {
     id: Int!
     name: String!
@@ -735,6 +757,7 @@ const typeDefs = gql`
     hotelCorporateCreditTiers: [HotelCorporateCreditTier!]!
     hotelCreditParties(companyId: Int!): [HotelCreditParty!]!
     hotelCreditConsumptions(from: DateTime!, to: DateTime!): [HotelCreditConsumption!]!
+    tenantFeedbackInbox(limit: Int): TenantFeedbackInbox!
   }
 
   type Mutation {
@@ -763,6 +786,8 @@ const typeDefs = gql`
       paymentChannel: String!
       transactionRef: String!
     ): TenantPaymentSubmission!
+    sendTenantFeedbackMessage(body: String, imageUrl: String): TenantFeedbackMessage!
+    markTenantFeedbackRead: Boolean!
     CreateCashout(
       items: JSON
       prices: JSON
@@ -1137,6 +1162,32 @@ function assertRole(context, allowed) {
   if (!allowed.includes(context.user.Role)) {
     throw new Error("Not authorized");
   }
+}
+
+function assertAdminOrManager(context) {
+  assertRole(context, ["Admin", "Manager"]);
+}
+
+async function getOrCreateFeedbackThread(context) {
+  assertAdminOrManager(context);
+  const tin = tenantScopeFromContext(context);
+  if (!tin) throw new Error("Tenant scope missing");
+
+  let thread = await prisma.tenant_feedback_thread.findUnique({
+    where: { tinNumber: tin },
+  });
+
+  if (!thread) {
+    thread = await prisma.tenant_feedback_thread.create({
+      data: {
+        tinNumber: tin,
+        hotelDisplayName: String(context.user.HotelName || "").trim() || tin,
+        businessType: context.user.businessType ?? null,
+      },
+    });
+  }
+
+  return thread;
 }
 
 function assertNotHotelStoreForCreditReports(context) {
@@ -1743,6 +1794,33 @@ const resolvers = {
         orderBy: { occurredAt: "desc" },
       });
     },
+
+    tenantFeedbackInbox: async (_, { limit }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const thread = await getOrCreateFeedbackThread(context);
+      const take = Math.min(Math.max(Number(limit) || 80, 1), 200);
+
+      const messagesDesc = await prisma.tenant_feedback_message.findMany({
+        where: { threadId: thread.id },
+        orderBy: { createdAt: "desc" },
+        take,
+      });
+      const messages = messagesDesc.reverse();
+
+      const unreadFromApex = await prisma.tenant_feedback_message.count({
+        where: {
+          threadId: thread.id,
+          senderSide: "apex",
+          readByTenant: false,
+        },
+      });
+
+      return {
+        threadId: thread.id,
+        unreadFromApex,
+        messages,
+      };
+    },
   },
   Mutation: {
     CreateAdmin: async (
@@ -2139,6 +2217,57 @@ const resolvers = {
       }
 
       return submission;
+    },
+    sendTenantFeedbackMessage: async (_, { body, imageUrl }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertAdminOrManager(context);
+      const text = String(body || "").trim();
+      const image = String(imageUrl || "").trim();
+      if (!text && !image) {
+        throw new Error("Message text or an image is required");
+      }
+      if (text.length > 4000) {
+        throw new Error("Message is too long (max 4000 characters)");
+      }
+      if (image && !/^https:\/\/.+/i.test(image)) {
+        throw new Error("Image URL must be a secure https link");
+      }
+
+      const thread = await getOrCreateFeedbackThread(context);
+      const msg = await prisma.tenant_feedback_message.create({
+        data: {
+          threadId: thread.id,
+          senderSide: "tenant",
+          tenantUserId: context.user.userId,
+          tenantUserName: context.user.UserName,
+          tenantRole: context.user.Role,
+          body: text,
+          imageUrl: image || null,
+          readByTenant: true,
+          readByApex: false,
+        },
+      });
+
+      await prisma.tenant_feedback_thread.update({
+        where: { id: thread.id },
+        data: { updatedAt: new Date(), status: "open" },
+      });
+
+      return msg;
+    },
+    markTenantFeedbackRead: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertAdminOrManager(context);
+      const thread = await getOrCreateFeedbackThread(context);
+      await prisma.tenant_feedback_message.updateMany({
+        where: {
+          threadId: thread.id,
+          senderSide: "apex",
+          readByTenant: false,
+        },
+        data: { readByTenant: true },
+      });
+      return true;
     },
     CreateCredential: async (
       _,
