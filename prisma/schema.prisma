@@ -9,19 +9,50 @@ datasource db {
 }
 
 model user {
-  id           Int     @id @default(autoincrement())
-  UserName     String  @unique
-  Password     String
+  id                          Int       @id @default(autoincrement())
+  UserName                    String    @unique
+  Password                    String
   /// Display / marketing business name (not necessarily unique)
-  HotelName    String
+  HotelName                   String
   /// Tenant id shared by all staff (10-digit TIN or 11–12 digits); matches Item/Order.HotelName — not unique per row
-  tinNumber    String?
-  businessType String?
-  modules      Json?
-  Role         String
-  LogoUrl      String?
+  tinNumber                   String?
+  businessType                String?
+  modules                     Json?
+  Role                        String
+  LogoUrl                     String?
+  setupFeeETB                 Int?
+  quarterlyFeeETB             Int?
+  paymentChannel              String?
+  paymentTransactionRef       String?
+  registeredAt                DateTime?
+  subscriptionPaidUntil       DateTime?
+  subscriptionPaymentApproved Boolean   @default(false)
+  setupFeeApproved            Boolean   @default(false)
+  paidQuartersCount           Int       @default(0)
+  createdAt                   DateTime  @default(now())
 
   @@index([tinNumber])
+}
+
+/// Setup & quarterly fee payment proofs awaiting Apex approval.
+model tenant_payment_submission {
+  id                Int       @id @default(autoincrement())
+  tinNumber         String
+  /// setup | quarterly
+  paymentKind       String
+  amountETB         Int
+  paymentChannel    String
+  transactionRef    String
+  /// pending | approved | rejected
+  status            String    @default("pending")
+  submittedAt       DateTime  @default(now())
+  submittedByUserId Int?
+  approvedAt        DateTime?
+  quarterNumber     Int?
+
+  @@index([tinNumber])
+  @@index([status])
+  @@index([tinNumber, paymentKind, status])
 }
 
 model Item {
