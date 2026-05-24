@@ -39,8 +39,16 @@ model user {
   /// Apex notes (discount reason, special terms)
   billingNotes                String?   @db.Text
   createdAt                   DateTime  @default(now())
+  /// Apex-only: disable a single staff login without suspending the whole property
+  loginDisabled               Boolean   @default(false)
+  loginDisabledReason         String?   @db.Text
+  loginDisabledAt             DateTime?
+  loginDisabledByApexMemberId Int?
+
+  loginDisabledBy apex_team_member? @relation("UserLoginDisabledBy", fields: [loginDisabledByApexMemberId], references: [id], onDelete: SetNull)
 
   @@index([tinNumber])
+  @@index([loginDisabled])
 }
 
 /// Setup & quarterly fee payment proofs awaiting Apex approval.
@@ -57,7 +65,14 @@ model tenant_payment_submission {
   submittedAt       DateTime  @default(now())
   submittedByUserId Int?
   approvedAt        DateTime?
+  approvedByApexMemberId Int?
+  rejectedAt        DateTime?
+  rejectedByApexMemberId Int?
+  rejectionReason   String?   @db.Text
   quarterNumber     Int?
+
+  approvedBy apex_team_member? @relation("PaymentApprovedBy", fields: [approvedByApexMemberId], references: [id], onDelete: SetNull)
+  rejectedBy apex_team_member? @relation("PaymentRejectedBy", fields: [rejectedByApexMemberId], references: [id], onDelete: SetNull)
 
   @@index([tinNumber])
   @@index([status])
@@ -76,7 +91,17 @@ model apex_team_member {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  feedbackMessages tenant_feedback_message[]
+  feedbackMessages              tenant_feedback_message[]
+  auditLogs                     apex_audit_log[]
+  tenantsSuspended              tenant_account[]              @relation("TenantSuspendedBy")
+  tenantsBanned                 tenant_account[]              @relation("TenantBannedBy")
+  usersLoginDisabled            user[]                        @relation("UserLoginDisabledBy")
+  paymentsApproved              tenant_payment_submission[]   @relation("PaymentApprovedBy")
+  paymentsRejected              tenant_payment_submission[]   @relation("PaymentRejectedBy")
+  moduleChangesRequested        tenant_module_change_request[] @relation("ModuleChangeRequestedByApex")
+  moduleChangesReviewed         tenant_module_change_request[] @relation("ModuleChangeReviewedBy")
+  feedbackThreadsAssigned       tenant_feedback_thread[]      @relation("FeedbackAssignedTo")
+  feedbackThreadsClosed         tenant_feedback_thread[]      @relation("FeedbackClosedBy")
 }
 
 /// One feedback thread per property (TIN). Cafe Admin / Hotel Manager chat with Apex.
@@ -87,13 +112,99 @@ model tenant_feedback_thread {
   businessType     String?
   /// open | closed
   status           String   @default("open")
+  assignedApexMemberId Int?
+  closedAt         DateTime?
+  closedByApexMemberId Int?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  messages tenant_feedback_message[]
+  messages         tenant_feedback_message[]
+  assignedTo       apex_team_member? @relation("FeedbackAssignedTo", fields: [assignedApexMemberId], references: [id], onDelete: SetNull)
+  closedBy         apex_team_member? @relation("FeedbackClosedBy", fields: [closedByApexMemberId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([updatedAt])
+  @@index([assignedApexMemberId])
+}
+
+/// Canonical tenant record for the Apex dashboard — one row per business TIN.
+model tenant_account {
+  id               Int      @id @default(autoincrement())
+  tinNumber        String   @unique
+  hotelDisplayName String
+  businessType     String?
+  logoUrl          String?
+  /// Subscribed modules (canonical list for the property)
+  modules          Json?
+  /// active | suspended | banned — subscription/setup states remain on owner `user` row
+  accountStatus    String   @default("active")
+  suspendedAt      DateTime?
+  suspendedReason  String?  @db.Text
+  suspendedByApexMemberId Int?
+  bannedAt         DateTime?
+  bannedReason     String?  @db.Text
+  bannedByApexMemberId Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  suspendedBy           apex_team_member?            @relation("TenantSuspendedBy", fields: [suspendedByApexMemberId], references: [id], onDelete: SetNull)
+  bannedBy              apex_team_member?            @relation("TenantBannedBy", fields: [bannedByApexMemberId], references: [id], onDelete: SetNull)
+  moduleChangeRequests  tenant_module_change_request[]
+
+  @@index([accountStatus])
+  @@index([updatedAt])
+  @@index([hotelDisplayName])
+}
+
+/// Tenant or Apex request to change subscribed modules (add/remove, repricing).
+model tenant_module_change_request {
+  id                      Int      @id @default(autoincrement())
+  tinNumber                 String
+  requestedModules        Json
+  requestNote               String?  @db.Text
+  /// pending | approved | rejected | cancelled
+  status                    String   @default("pending")
+  /// tenant | apex
+  requestedBySide           String
+  requestedByUserId         Int?
+  requestedByApexMemberId   Int?
+  reviewedByApexMemberId    Int?
+  reviewedAt                DateTime?
+  reviewNote                String?  @db.Text
+  /// Fee snapshot at approval time (ETB)
+  setupFeeETB               Int?
+  quarterlyFeeETB           Int?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  tenantAccount   tenant_account    @relation(fields: [tinNumber], references: [tinNumber], onDelete: Cascade)
+  requestedByApex apex_team_member? @relation("ModuleChangeRequestedByApex", fields: [requestedByApexMemberId], references: [id], onDelete: SetNull)
+  reviewedByApex  apex_team_member? @relation("ModuleChangeReviewedBy", fields: [reviewedByApexMemberId], references: [id], onDelete: SetNull)
+
+  @@index([tinNumber])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Immutable log of sensitive Apex dashboard actions.
+model apex_audit_log {
+  id              Int      @id @default(autoincrement())
+  apexMemberId    Int?
+  /// Short action code, e.g. approve_setup, suspend_tenant, update_modules
+  action          String
+  targetTinNumber String?
+  targetUserId    Int?
+  payload         Json?
+  reason          String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  apexMember apex_team_member? @relation(fields: [apexMemberId], references: [id], onDelete: SetNull)
+
+  @@index([targetTinNumber])
+  @@index([targetUserId])
+  @@index([apexMemberId])
+  @@index([action])
+  @@index([createdAt])
 }
 
 model tenant_feedback_message {
