@@ -27,6 +27,13 @@ import {
   daysBetweenCalendar,
   paidQuartersFromCreatedAt,
 } from "./lib/subscriptionPricing.js";
+import {
+  computeSubscriptionPeriodStatus,
+  resolveLoginAccess,
+  subscriptionAllowsFullSystemAccess,
+  tenantBillingRowFromOwner,
+  resolveBillingAnchor,
+} from "./lib/tenantBilling.js";
 
 function computeQuarterEndFromRegistration(createdAt, paidQuartersCount) {
   return computeQuarterEndFromCreatedAt(createdAt, paidQuartersCount);
@@ -143,79 +150,8 @@ function roleAllowedForModules(role, modules) {
 const SUBSCRIPTION_WARNING_DAYS = 10;
 const SUBSCRIPTION_GRACE_DAYS = 10;
 
-function subscriptionBillingApplies(quarterlyFeeETB) {
+function quarterlyFeeApplies(quarterlyFeeETB) {
   return Number(quarterlyFeeETB) > 0;
-}
-
-function computeSubscriptionPeriodStatus(sub, now = new Date()) {
-  const quarterlyFeeETB = sub.quarterlyFeeETB ?? 0;
-  if (!subscriptionBillingApplies(quarterlyFeeETB)) return "exempt";
-  if (!sub.createdAt) return "exempt";
-  if (!sub.setupFeeApproved) return "setup_pending";
-  if (!sub.subscriptionPaymentApproved) return "pending_approval";
-  const paidUntil = sub.subscriptionPaidUntil
-    ? new Date(sub.subscriptionPaidUntil)
-    : null;
-  if (!paidUntil || Number.isNaN(paidUntil.getTime())) return "pending_approval";
-  const daysUntilEnd = daysBetweenCalendar(now, paidUntil);
-  if (daysUntilEnd > SUBSCRIPTION_WARNING_DAYS) return "active";
-  if (daysUntilEnd >= 0) return "warning";
-  const daysPast = -daysUntilEnd;
-  if (daysPast >= 1 && daysPast < SUBSCRIPTION_GRACE_DAYS) return "grace";
-  return "expired";
-}
-
-function subscriptionAllowsFullSystemAccess(status) {
-  return status === "exempt" || status === "active" || status === "warning";
-}
-
-function subscriptionAllowsSystemAccess(status) {
-  return subscriptionAllowsFullSystemAccess(status);
-}
-
-function resolveLoginAccess(user, subscription, periodStatus) {
-  const isAdminManager = ["Admin", "Manager"].includes(user.Role);
-
-  if (periodStatus === "exempt") {
-    return { accessMode: "full", paymentKind: null };
-  }
-
-  if (periodStatus === "expired") {
-    return {
-      accessMode: "denied",
-      message:
-        "Login is disabled — the 10-day grace period after your quarter ended has passed. Pay Apex and contact support to restore access.",
-    };
-  }
-
-  const needsSetupPortal = !subscription.setupFeeApproved;
-  const needsQuarterlyPortal =
-    periodStatus === "grace" ||
-    (periodStatus === "pending_approval" && subscription.setupFeeApproved);
-
-  if (needsSetupPortal) {
-    if (isAdminManager) {
-      return { accessMode: "payment_portal", paymentKind: "setup" };
-    }
-    return {
-      accessMode: "denied",
-      message:
-        "Setup fee verification is pending. Only Admin or Manager can sign in to submit payment.",
-    };
-  }
-
-  if (needsQuarterlyPortal) {
-    if (isAdminManager) {
-      return { accessMode: "payment_portal", paymentKind: "quarterly" };
-    }
-    return {
-      accessMode: "denied",
-      message:
-        "Subscription renewal is in progress. Staff terminals are paused until Admin or Manager completes quarterly payment.",
-    };
-  }
-
-  return { accessMode: "full", paymentKind: null };
 }
 
 async function tenantTinFromUser(user) {
@@ -279,15 +215,10 @@ async function resolveTenantSubscription(prismaClient, user) {
     })) || user;
 
   const row = owner;
+  const billing = tenantBillingRowFromOwner(row);
   return {
+    ...billing,
     modules: parseModulesJson(row.modules),
-    setupFeeETB: row.setupFeeETB ?? 0,
-    quarterlyFeeETB: row.quarterlyFeeETB ?? 0,
-    setupFeeApproved: Boolean(row.setupFeeApproved),
-    createdAt: row.createdAt ?? null,
-    subscriptionPaidUntil: row.subscriptionPaidUntil ?? null,
-    subscriptionPaymentApproved: Boolean(row.subscriptionPaymentApproved),
-    paidQuartersCount: row.paidQuartersCount ?? 0,
   };
 }
 
@@ -299,6 +230,11 @@ function attachSubscriptionFields(user, subscription) {
     quarterlyFeeETB: subscription.quarterlyFeeETB,
     setupFeeApproved: subscription.setupFeeApproved,
     createdAt: subscription.createdAt,
+    billingStartedAt: subscription.billingStartedAt,
+    billingHold: subscription.billingHold,
+    isIllustrationTenant: subscription.isIllustrationTenant,
+    freeTrialEndsAt: subscription.freeTrialEndsAt,
+    billingNotes: subscription.billingNotes,
     subscriptionPaidUntil: subscription.subscriptionPaidUntil,
     subscriptionPaymentApproved: subscription.subscriptionPaymentApproved,
     paidQuartersCount: subscription.paidQuartersCount,
@@ -415,6 +351,11 @@ const typeDefs = gql`
     subscriptionPaymentApproved: Boolean
     setupFeeApproved: Boolean
     paidQuartersCount: Int
+    isIllustrationTenant: Boolean
+    billingHold: Boolean
+    billingStartedAt: DateTime
+    freeTrialEndsAt: DateTime
+    billingNotes: String
     Role: String!
     LogoUrl: String
   }
@@ -816,6 +757,7 @@ const typeDefs = gql`
     ): User!
     ApproveTenantQuarterPayment(tinNumber: String!): User!
     ApproveTenantSetupPayment(tinNumber: String!): User!
+    ReleaseTenantBillingHold(tinNumber: String!): User!
     SubmitTenantPayment(
       paymentKind: String!
       paymentChannel: String!
@@ -1857,7 +1799,7 @@ const resolvers = {
         quarterlyFeeETB != null && Number.isFinite(Number(quarterlyFeeETB))
           ? Number(quarterlyFeeETB)
           : 0;
-      const billingApplies = subscriptionBillingApplies(quarterlyNum);
+      const billingApplies = quarterlyFeeApplies(quarterlyNum);
       const needsPaymentApproval = billingApplies && setupNum > 0;
 
       const created = await prisma.user.create({
@@ -1880,7 +1822,12 @@ const resolvers = {
             : null,
           setupFeeApproved: !needsPaymentApproval,
           subscriptionPaymentApproved: !needsPaymentApproval,
-          paidQuartersCount: billingApplies && !needsPaymentApproval ? 1 : 0,
+          billingHold: false,
+          isIllustrationTenant: false,
+          paidQuartersCount:
+            billingApplies && !needsPaymentApproval ? 1 : 0,
+          billingStartedAt:
+            billingApplies && !needsPaymentApproval ? now : null,
           subscriptionPaidUntil:
             billingApplies && !needsPaymentApproval
               ? computeQuarterEndFromRegistration(now, 1)
@@ -2006,11 +1953,13 @@ const resolvers = {
         orderBy: { id: "asc" },
       });
       if (!owner) throw new Error("Business not found for this TIN");
-      if (!subscriptionBillingApplies(owner.quarterlyFeeETB ?? 0)) {
+      if (!quarterlyFeeApplies(owner.quarterlyFeeETB ?? 0)) {
         throw new Error("This property has no quarterly billing");
       }
 
-      const createdAt = owner.createdAt ? new Date(owner.createdAt) : new Date();
+      const createdAt =
+        resolveBillingAnchor(tenantBillingRowFromOwner(owner)) ||
+        (owner.createdAt ? new Date(owner.createdAt) : new Date());
       const nextQuarters = (owner.paidQuartersCount ?? 0) + 1;
       const paidUntil = computeQuarterEndFromRegistration(
         createdAt,
@@ -2050,9 +1999,7 @@ const resolvers = {
 
       const now = new Date();
       const createdAt = owner.createdAt ? new Date(owner.createdAt) : now;
-      const billingApplies = subscriptionBillingApplies(
-        owner.quarterlyFeeETB ?? 0,
-      );
+      const billingApplies = quarterlyFeeApplies(owner.quarterlyFeeETB ?? 0);
 
       const pending = await prisma.tenant_payment_submission.findFirst({
         where: { tinNumber: tin, paymentKind: "setup", status: "pending" },
@@ -2071,9 +2018,44 @@ const resolvers = {
           setupFeeApproved: true,
           subscriptionPaymentApproved: billingApplies,
           paidQuartersCount: billingApplies ? 1 : 0,
+          billingStartedAt: billingApplies ? now : null,
           subscriptionPaidUntil: billingApplies
             ? computeQuarterEndFromRegistration(createdAt, 1)
             : null,
+        },
+      });
+    },
+    ReleaseTenantBillingHold: async (_, { tinNumber }) => {
+      const tin = String(tinNumber || "").trim();
+      if (!tin) throw new Error("TIN is required");
+
+      const owner = await prisma.user.findFirst({
+        where: { tinNumber: tin, Role: { in: ["Admin", "Manager"] } },
+        orderBy: { id: "asc" },
+      });
+      if (!owner) throw new Error("Business not found for this TIN");
+      if (owner.isIllustrationTenant) {
+        throw new Error("Illustration properties do not use billing hold");
+      }
+      if (!owner.billingHold) {
+        throw new Error("This property is not on billing hold");
+      }
+
+      const now = new Date();
+      const billingApplies = quarterlyFeeApplies(owner.quarterlyFeeETB ?? 0);
+      const paidUntil = billingApplies
+        ? computeQuarterEndFromRegistration(now, 1)
+        : null;
+
+      return await prisma.user.update({
+        where: { id: owner.id },
+        data: {
+          billingHold: false,
+          billingStartedAt: now,
+          paidQuartersCount: billingApplies ? 1 : 0,
+          subscriptionPaidUntil: paidUntil,
+          subscriptionPaymentApproved:
+            billingApplies && Boolean(owner.setupFeeApproved),
         },
       });
     },
@@ -2103,6 +2085,12 @@ const resolvers = {
         prisma,
         creator || context.user,
       );
+      if (subscription.isIllustrationTenant || subscription.billingHold) {
+        throw new Error(
+          "Payment submission is not required for this property (illustration or billing hold).",
+        );
+      }
+
       const tin = await tenantTinFromUser(creator || context.user);
 
       const amountETB =

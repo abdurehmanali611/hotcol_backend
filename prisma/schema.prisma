@@ -28,6 +28,16 @@ model user {
   subscriptionPaymentApproved Boolean   @default(false)
   setupFeeApproved            Boolean   @default(false)
   paidQuartersCount           Int       @default(0)
+  /// Demo / sales property — no payment or subscription enforcement
+  isIllustrationTenant        Boolean   @default(false)
+  /// Quarters paused until released (legacy clients start on hold)
+  billingHold                 Boolean   @default(false)
+  /// Set when hold lifts — day 1 for quarter counting
+  billingStartedAt            DateTime?
+  /// Optional free trial — no quarterly enforcement until this date
+  freeTrialEndsAt             DateTime?
+  /// Apex notes (discount reason, special terms)
+  billingNotes                String?   @db.Text
   createdAt                   DateTime  @default(now())
 
   @@index([tinNumber])

@@ -1,8 +1,8 @@
 /**
- * One-time / repeatable backfill for legacy cafés & hotels:
- * - Copy Manager/Admin modules to staff rows missing modules
- * - Mark setup as paid; derive fees from module selection
- * - Anchor billing quarters to user.createdAt (day 1)
+ * Legacy tenant billing backfill:
+ * - Copy Manager modules to staff missing modules
+ * - Apply name-based policies (illustration, discounts)
+ * - On-hold tenants: no quarter counting until ReleaseTenantBillingHold
  *
  * Run from BackEnd/: node scripts/backfillLegacySubscription.js
  */
@@ -11,23 +11,16 @@ import {
   calculateSignupPricing,
   computeQuarterEndFromCreatedAt,
   modulesEmpty,
-  paidQuartersFromCreatedAt,
   parseModulesJson,
   tenantKey,
 } from "../lib/subscriptionPricing.js";
+import {
+  tenantNamePolicy,
+  resolveBillingAnchor,
+  paidQuartersFromAnchor,
+} from "../lib/tenantBilling.js";
 
 const prisma = new PrismaClient();
-
-const LEGACY_HOTEL_HINTS = [
-  "apex hotel",
-  "gebretsadik",
-  "ella kitchen",
-];
-
-function matchesLegacyHint(hotelName) {
-  const h = String(hotelName || "").toLowerCase();
-  return LEGACY_HOTEL_HINTS.some((hint) => h.includes(hint));
-}
 
 async function main() {
   const allUsers = await prisma.user.findMany({ orderBy: { id: "asc" } });
@@ -41,7 +34,7 @@ async function main() {
   }
 
   let modulesCopied = 0;
-  let tenantsBackfilled = 0;
+  let tenantsUpdated = 0;
 
   for (const [key, members] of byTenant) {
     const owner =
@@ -56,14 +49,24 @@ async function main() {
 
     const ownerModules = parseModulesJson(owner.modules);
     if (ownerModules.length === 0) {
-      console.warn(`[skip] ${key}: owner has no modules — set Manager modules first`);
+      console.warn(`[skip] ${key}: owner has no modules`);
       continue;
     }
 
     for (const staff of members) {
       if (staff.id === owner.id) continue;
       if (!modulesEmpty(staff.modules)) continue;
-      if (!["Store", "Finance", "CostControl", "HotelCashier", "Cashier", "Kitchen", "Barista"].includes(staff.Role)) {
+      if (
+        ![
+          "Store",
+          "Finance",
+          "CostControl",
+          "HotelCashier",
+          "Cashier",
+          "Kitchen",
+          "Barista",
+        ].includes(staff.Role)
+      ) {
         continue;
       }
 
@@ -72,31 +75,64 @@ async function main() {
         data: { modules: ownerModules },
       });
       modulesCopied++;
-      const label = `${staff.UserName} (${staff.Role}) @ ${staff.HotelName}`;
-      console.log(`[modules] ${label} ← owner modules`);
-      if (matchesLegacyHint(staff.HotelName)) {
-        console.log(`  ↳ legacy property match: ${staff.HotelName}`);
+      console.log(
+        `[modules] ${staff.UserName} (${staff.Role}) @ ${staff.HotelName}`,
+      );
+    }
+
+    const policy = tenantNamePolicy(owner.HotelName) ?? {};
+    const pricing = calculateSignupPricing(owner.businessType, ownerModules);
+    const isIllustration = Boolean(policy.isIllustrationTenant);
+
+    let setupFeeETB =
+      policy.setupFeeETB != null ? policy.setupFeeETB : pricing.setupFeeETB;
+    let quarterlyFeeETB = isIllustration ? 0 : pricing.quarterlyFeeETB;
+    let billingHold = owner.billingHold;
+    let billingStartedAt = owner.billingStartedAt;
+    let paidQuartersCount = owner.paidQuartersCount ?? 0;
+    let subscriptionPaidUntil = owner.subscriptionPaidUntil;
+    let subscriptionPaymentApproved = owner.subscriptionPaymentApproved;
+
+    if (isIllustration) {
+      billingHold = false;
+      setupFeeETB = 0;
+      quarterlyFeeETB = 0;
+      paidQuartersCount = 0;
+      subscriptionPaidUntil = null;
+      subscriptionPaymentApproved = true;
+      billingStartedAt = null;
+    } else if (billingHold) {
+      billingStartedAt = null;
+      paidQuartersCount = 0;
+      subscriptionPaidUntil = null;
+    } else {
+      const anchor = resolveBillingAnchor({
+        billingHold: false,
+        billingStartedAt,
+        createdAt: owner.createdAt,
+      });
+      if (anchor && quarterlyFeeETB > 0) {
+        paidQuartersCount = paidQuartersFromAnchor(anchor);
+        subscriptionPaidUntil = computeQuarterEndFromCreatedAt(
+          anchor,
+          paidQuartersCount,
+        );
+        subscriptionPaymentApproved = true;
       }
     }
 
-    const anchor = owner.createdAt ? new Date(owner.createdAt) : new Date();
-    const pricing = calculateSignupPricing(owner.businessType, ownerModules);
-    const billingApplies = pricing.quarterlyFeeETB > 0;
-    const paidQuarters = billingApplies
-      ? paidQuartersFromCreatedAt(anchor)
-      : 0;
-    const paidUntil = billingApplies
-      ? computeQuarterEndFromCreatedAt(anchor, paidQuarters)
-      : null;
-
     const ownerUpdate = {
       modules: ownerModules,
-      setupFeeETB: pricing.setupFeeETB,
-      quarterlyFeeETB: pricing.quarterlyFeeETB,
-      setupFeeApproved: true,
-      subscriptionPaymentApproved: billingApplies,
-      paidQuartersCount: billingApplies ? paidQuarters : 0,
-      subscriptionPaidUntil: paidUntil,
+      setupFeeETB,
+      quarterlyFeeETB,
+      setupFeeApproved: isIllustration || setupFeeETB === 0 || true,
+      isIllustrationTenant: isIllustration,
+      billingHold,
+      billingStartedAt,
+      billingNotes: policy.billingNotes ?? owner.billingNotes,
+      subscriptionPaymentApproved,
+      paidQuartersCount,
+      subscriptionPaidUntil,
     };
 
     await prisma.user.update({
@@ -118,14 +154,14 @@ async function main() {
       }
     }
 
-    tenantsBackfilled++;
+    tenantsUpdated++;
     console.log(
-      `[billing] ${owner.HotelName} (${key}): setup paid, ${ownerModules.join(", ")} → ${pricing.setupFeeETB}/${pricing.quarterlyFeeETB} ETB, Q${paidQuarters} until ${paidUntil?.toISOString?.() ?? "n/a"}`,
+      `[billing] ${owner.HotelName}: illustration=${isIllustration} hold=${billingHold} setup=${setupFeeETB} quarterly=${quarterlyFeeETB}`,
     );
   }
 
   console.log(
-    `\nDone. Modules copied to ${modulesCopied} staff row(s); ${tenantsBackfilled} tenant(s) billing backfilled.`,
+    `\nDone. ${modulesCopied} staff module(s); ${tenantsUpdated} tenant(s) updated.`,
   );
 }
 
