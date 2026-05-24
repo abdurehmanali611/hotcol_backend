@@ -22,6 +22,15 @@ import {
   ITEM_REG_VOID,
   isItemRegistrationActive,
 } from "./lib/hotelWorkflow.js";
+import {
+  computeQuarterEndFromCreatedAt,
+  daysBetweenCalendar,
+  paidQuartersFromCreatedAt,
+} from "./lib/subscriptionPricing.js";
+
+function computeQuarterEndFromRegistration(createdAt, paidQuartersCount) {
+  return computeQuarterEndFromCreatedAt(createdAt, paidQuartersCount);
+}
 
 const prisma = new PrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
@@ -131,7 +140,6 @@ function roleAllowedForModules(role, modules) {
   return tenantHasModule(modules, required);
 }
 
-const SUBSCRIPTION_QUARTER_DAYS = 90;
 const SUBSCRIPTION_WARNING_DAYS = 10;
 const SUBSCRIPTION_GRACE_DAYS = 10;
 
@@ -139,22 +147,10 @@ function subscriptionBillingApplies(quarterlyFeeETB) {
   return Number(quarterlyFeeETB) > 0;
 }
 
-function daysBetweenCalendar(start, end) {
-  const a = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-  const b = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-  return Math.round((b.getTime() - a.getTime()) / (24 * 60 * 60 * 1000));
-}
-
-function computeQuarterEndFromRegistration(registeredAt, paidQuartersCount) {
-  const end = new Date(registeredAt.getTime());
-  end.setDate(end.getDate() + paidQuartersCount * SUBSCRIPTION_QUARTER_DAYS);
-  return end;
-}
-
 function computeSubscriptionPeriodStatus(sub, now = new Date()) {
   const quarterlyFeeETB = sub.quarterlyFeeETB ?? 0;
   if (!subscriptionBillingApplies(quarterlyFeeETB)) return "exempt";
-  if (!sub.registeredAt) return "exempt";
+  if (!sub.createdAt) return "exempt";
   if (!sub.setupFeeApproved) return "setup_pending";
   if (!sub.subscriptionPaymentApproved) return "pending_approval";
   const paidUntil = sub.subscriptionPaidUntil
@@ -277,25 +273,18 @@ async function resolveTenantSubscription(prismaClient, user) {
     (await prismaClient.user.findFirst({
       where: {
         OR: orClauses,
-        registeredAt: { not: null },
+        Role: { in: ["Admin", "Manager"] },
       },
       orderBy: { id: "asc" },
-    })) ||
-    (await prismaClient.user.findFirst({
-      where: {
-        OR: orClauses,
-        setupFeeETB: { not: null },
-      },
-      orderBy: { id: "asc" },
-    }));
+    })) || user;
 
-  const row = owner || user;
+  const row = owner;
   return {
     modules: parseModulesJson(row.modules),
     setupFeeETB: row.setupFeeETB ?? 0,
     quarterlyFeeETB: row.quarterlyFeeETB ?? 0,
     setupFeeApproved: Boolean(row.setupFeeApproved),
-    registeredAt: row.registeredAt ?? null,
+    createdAt: row.createdAt ?? null,
     subscriptionPaidUntil: row.subscriptionPaidUntil ?? null,
     subscriptionPaymentApproved: Boolean(row.subscriptionPaymentApproved),
     paidQuartersCount: row.paidQuartersCount ?? 0,
@@ -309,7 +298,7 @@ function attachSubscriptionFields(user, subscription) {
     setupFeeETB: subscription.setupFeeETB,
     quarterlyFeeETB: subscription.quarterlyFeeETB,
     setupFeeApproved: subscription.setupFeeApproved,
-    registeredAt: subscription.registeredAt,
+    createdAt: subscription.createdAt,
     subscriptionPaidUntil: subscription.subscriptionPaidUntil,
     subscriptionPaymentApproved: subscription.subscriptionPaymentApproved,
     paidQuartersCount: subscription.paidQuartersCount,
@@ -421,7 +410,7 @@ const typeDefs = gql`
     quarterlyFeeETB: Int
     paymentChannel: String
     paymentTransactionRef: String
-    registeredAt: DateTime
+    createdAt: DateTime
     subscriptionPaidUntil: DateTime
     subscriptionPaymentApproved: Boolean
     setupFeeApproved: Boolean
@@ -1889,7 +1878,6 @@ const resolvers = {
           paymentTransactionRef: paymentTransactionRef
             ? String(paymentTransactionRef).trim()
             : null,
-          registeredAt: now,
           setupFeeApproved: !needsPaymentApproval,
           subscriptionPaymentApproved: !needsPaymentApproval,
           paidQuartersCount: billingApplies && !needsPaymentApproval ? 1 : 0,
@@ -2014,7 +2002,7 @@ const resolvers = {
       if (!tin) throw new Error("TIN is required");
 
       const owner = await prisma.user.findFirst({
-        where: { tinNumber: tin, registeredAt: { not: null } },
+        where: { tinNumber: tin, Role: { in: ["Admin", "Manager"] } },
         orderBy: { id: "asc" },
       });
       if (!owner) throw new Error("Business not found for this TIN");
@@ -2022,12 +2010,10 @@ const resolvers = {
         throw new Error("This property has no quarterly billing");
       }
 
-      const registeredAt = owner.registeredAt
-        ? new Date(owner.registeredAt)
-        : new Date();
+      const createdAt = owner.createdAt ? new Date(owner.createdAt) : new Date();
       const nextQuarters = (owner.paidQuartersCount ?? 0) + 1;
       const paidUntil = computeQuarterEndFromRegistration(
-        registeredAt,
+        createdAt,
         nextQuarters,
       );
       const now = new Date();
@@ -2057,15 +2043,13 @@ const resolvers = {
       if (!tin) throw new Error("TIN is required");
 
       const owner = await prisma.user.findFirst({
-        where: { tinNumber: tin, registeredAt: { not: null } },
+        where: { tinNumber: tin, Role: { in: ["Admin", "Manager"] } },
         orderBy: { id: "asc" },
       });
       if (!owner) throw new Error("Business not found for this TIN");
 
       const now = new Date();
-      const registeredAt = owner.registeredAt
-        ? new Date(owner.registeredAt)
-        : now;
+      const createdAt = owner.createdAt ? new Date(owner.createdAt) : now;
       const billingApplies = subscriptionBillingApplies(
         owner.quarterlyFeeETB ?? 0,
       );
@@ -2088,7 +2072,7 @@ const resolvers = {
           subscriptionPaymentApproved: billingApplies,
           paidQuartersCount: billingApplies ? 1 : 0,
           subscriptionPaidUntil: billingApplies
-            ? computeQuarterEndFromRegistration(registeredAt, 1)
+            ? computeQuarterEndFromRegistration(createdAt, 1)
             : null,
         },
       });
@@ -2156,7 +2140,7 @@ const resolvers = {
       });
 
       const owner = await prisma.user.findFirst({
-        where: { tinNumber: tin, registeredAt: { not: null } },
+        where: { tinNumber: tin, Role: { in: ["Admin", "Manager"] } },
         orderBy: { id: "asc" },
       });
       if (owner && kind === "setup") {

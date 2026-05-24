@@ -24,7 +24,6 @@ model user {
   quarterlyFeeETB             Int?
   paymentChannel              String?
   paymentTransactionRef       String?
-  registeredAt                DateTime?
   subscriptionPaidUntil       DateTime?
   subscriptionPaymentApproved Boolean   @default(false)
   setupFeeApproved            Boolean   @default(false)
