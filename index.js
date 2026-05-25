@@ -2566,6 +2566,15 @@ const resolvers = {
       if (String(order.payment || "").toLowerCase() === "paid") {
         throw new Error("Paid orders cannot be edited");
       }
+      if (String(order.status || "").toLowerCase() === "cancelled") {
+        throw new Error("Cancelled orders cannot be edited");
+      }
+      if (
+        new Date(order.createdAt).toDateString() !==
+        new Date().toDateString()
+      ) {
+        throw new Error("Only today's unpaid orders can be edited");
+      }
       const data = {};
       if (tableNo != null) {
         data.tableNo = tableNo;
@@ -2711,6 +2720,24 @@ const resolvers = {
       });
       if (!order || !tenantHotelReadMatches(context, order.HotelName)) {
         throw new Error("Order not found or not authorized");
+      }
+      const next = status != null ? String(status).trim() : "";
+      if (next.toLowerCase() === "cancelled") {
+        if (!["Cashier", "Admin", "Manager"].includes(context.user.Role)) {
+          throw new Error("Not authorized to remove live orders");
+        }
+        if (String(order.payment || "").toLowerCase() === "paid") {
+          throw new Error("Paid orders cannot be removed");
+        }
+        if (String(order.status || "").toLowerCase() === "cancelled") {
+          throw new Error("Order is already removed");
+        }
+        if (
+          new Date(order.createdAt).toDateString() !==
+          new Date().toDateString()
+        ) {
+          throw new Error("Only today's unpaid orders can be removed");
+        }
       }
       return await prisma.order.update({
         where: { id: id },
