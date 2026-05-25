@@ -28,9 +28,8 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "mariadb": "^3.4.0",
-    "nodemon": "^3.1.11"
-  },
-  "devDependencies": {
+    "nodemon": "^3.1.11",
     "prisma": "^7.0.0"
-  }
+  },
+  "devDependencies": {}
 }
