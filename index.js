@@ -2,7 +2,7 @@ import express from "express";
 import { ApolloServer, gql } from "apollo-server-express";
 import cors from "cors";
 import crypto from "crypto";
-import { PrismaClient } from "./generated/prisma/index.js";
+import { createPrismaClient } from "./lib/prismaClient.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
@@ -39,7 +39,7 @@ function computeQuarterEndFromRegistration(createdAt, paidQuartersCount) {
   return computeQuarterEndFromCreatedAt(createdAt, paidQuartersCount);
 }
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
 /** Default 14d — slow networks & regional users; override with JWT_EXPIRES_IN e.g. "30d". */
 const JWT_EXPIRES_IN =
@@ -257,6 +257,18 @@ function tenantScopeFromContext(ctx) {
   return null;
 }
 
+async function serviceCaptionForTableNo(tableNo, context) {
+  const scope = tenantScopeFromContext(context);
+  if (!scope) return null;
+  const row = await prisma.table.findFirst({
+    where: { tableNo: Number(tableNo), HotelName: scope },
+    select: { orderCaption: true },
+  });
+  const caption =
+    row?.orderCaption != null ? String(row.orderCaption).trim() : "";
+  return caption || null;
+}
+
 /**
  * Item/Order/… rows may still use legacy display strings in `HotelName` while the JWT
  * scopes by `tenantId` (TIN). Reads must OR-match so lists are not empty mid-migration.
@@ -441,6 +453,7 @@ const typeDefs = gql`
     credit: Boolean
     credittorName: String
     creditAmount: Float
+    serviceCaption: String
     createdAt: DateTime!
   }
 
@@ -485,6 +498,7 @@ const typeDefs = gql`
     payment: JSON
     incomeAt: JSON
     capacity: Int!
+    orderCaption: String
     createdAt: DateTime!
   }
 
@@ -841,6 +855,13 @@ const typeDefs = gql`
       imageUrl: String!
     ): Item!
     UpdateStatus(id: Int!, status: String): Order!
+    UpdateLiveOrder(
+      id: Int!
+      tableNo: Int
+      waiterName: String
+      orderAmount: Int
+      title: String
+    ): Order!
     CreateWaiter(
       name: String!
       age: Int!
@@ -849,7 +870,12 @@ const typeDefs = gql`
       phoneNumber: String!
       HotelName: String!
     ): waiter!
-    CreateTable(tableNo: Int!, capacity: Int!, HotelName: String!): table!
+    CreateTable(
+      tableNo: Int!
+      capacity: Int!
+      HotelName: String!
+      orderCaption: String
+    ): table!
     UpdatePaymentTable(id: Int!, payment: JSON!, price: JSON!, incomeAt: JSON!): table!
     UpdatePaymentWaiter(
       id: Int!
@@ -868,7 +894,12 @@ const typeDefs = gql`
       experience: Int!
       phoneNumber: String!
     ): waiter!
-    UpdateTable(id: Int!, tableNo: Int!, capacity: Int!): table!
+    UpdateTable(
+      id: Int!
+      tableNo: Int!
+      capacity: Int!
+      orderCaption: String
+    ): table!
     BatchOrderCreation(orders: [OrderInput!]!): [Order!]!
     CreateCreditLevel(
       level: String!
@@ -1722,13 +1753,6 @@ const resolvers = {
     },
     kitchenBarBeginnings: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const tenant = tenantScopeFromContext(context);
-      await prisma.$executeRaw`
-        UPDATE KitchenBarBeginning
-        SET calendarDate = CONCAT(monthPeriod, '-01')
-        WHERE HotelName = ${tenant}
-        AND (calendarDate = '' OR calendarDate IS NULL)
-      `;
       return await prisma.kitchenBarBeginning.findMany({
         where: tenantHotelReadWhere(context),
         orderBy: [{ calendarDate: "asc" }, { id: "asc" }],
@@ -1957,6 +1981,34 @@ const resolvers = {
       const valid = await bcrypt.compare(Password, user.Password);
       if (!valid) throw new Error("Invalid Password");
 
+      if (user.loginDisabled) {
+        throw new Error(
+          user.loginDisabledReason?.trim() ||
+            "This account has been disabled by Apex support. Contact Apex on WhatsApp for help.",
+        );
+      }
+
+      const tenantId =
+        user.tinNumber != null && String(user.tinNumber).trim() !== ""
+          ? String(user.tinNumber).trim()
+          : String(user.HotelName).trim();
+
+      const tenantAccount = await prisma.tenant_account.findUnique({
+        where: { tinNumber: tenantId },
+      });
+      if (tenantAccount?.accountStatus === "banned") {
+        throw new Error(
+          tenantAccount.bannedReason?.trim() ||
+            "This property has been banned. Contact Apex support for assistance.",
+        );
+      }
+      if (tenantAccount?.accountStatus === "suspended") {
+        throw new Error(
+          tenantAccount.suspendedReason?.trim() ||
+            "This property is temporarily suspended. Contact Apex support for assistance.",
+        );
+      }
+
       const subscription = await resolveTenantSubscription(prisma, user);
       if (!roleAllowedForModules(user.Role, subscription.modules)) {
         throw new Error(
@@ -1970,11 +2022,6 @@ const resolvers = {
       if (loginAccess.accessMode === "denied") {
         throw new Error(loginAccess.message);
       }
-
-      const tenantId =
-        user.tinNumber != null && String(user.tinNumber).trim() !== ""
-          ? String(user.tinNumber).trim()
-          : String(user.HotelName).trim();
 
       const token = jwt.sign(
         {
@@ -2335,21 +2382,28 @@ const resolvers = {
 
       try {
         const createdOrders = await prisma.$transaction(
-          orders.map((orderData) =>
-            prisma.order.create({
-              data: {
-                title: orderData.title,
-                imageUrl: orderData.imageUrl,
-                tableNo: orderData.tableNo,
-                waiterName: orderData.waiterName,
-                orderAmount: orderData.orderAmount,
-                HotelName: tenantScopeFromContext(context),
-                status: orderData.status || null,
-                payment: orderData.payment || "Unpaid",
-                category: orderData.category,
-                type: orderData.type,
-                price: orderData.price,
-              },
+          await Promise.all(
+            orders.map(async (orderData) => {
+              const serviceCaption = await serviceCaptionForTableNo(
+                orderData.tableNo,
+                context,
+              );
+              return prisma.order.create({
+                data: {
+                  title: orderData.title,
+                  imageUrl: orderData.imageUrl,
+                  tableNo: orderData.tableNo,
+                  waiterName: orderData.waiterName,
+                  orderAmount: orderData.orderAmount,
+                  HotelName: tenantScopeFromContext(context),
+                  status: orderData.status || null,
+                  payment: orderData.payment || "Unpaid",
+                  category: orderData.category,
+                  type: orderData.type,
+                  price: orderData.price,
+                  serviceCaption,
+                },
+              });
             }),
           ),
         );
@@ -2473,6 +2527,7 @@ const resolvers = {
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
       try {
+        const serviceCaption = await serviceCaptionForTableNo(tableNo, context);
         const order = await prisma.order.create({
           data: {
             title,
@@ -2486,6 +2541,7 @@ const resolvers = {
             category,
             type,
             price,
+            serviceCaption,
           },
         });
 
@@ -2493,6 +2549,35 @@ const resolvers = {
       } catch (error) {
         throw error;
       }
+    },
+    UpdateLiveOrder: async (
+      _,
+      { id, tableNo, waiterName, orderAmount, title },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      if (!["Cashier", "Admin", "Manager"].includes(context.user.Role)) {
+        throw new Error("Not authorized to update live orders");
+      }
+      const order = await prisma.order.findUnique({ where: { id } });
+      if (!order || !tenantHotelReadMatches(context, order.HotelName)) {
+        throw new Error("Order not found or not authorized");
+      }
+      if (String(order.payment || "").toLowerCase() === "paid") {
+        throw new Error("Paid orders cannot be edited");
+      }
+      const data = {};
+      if (tableNo != null) {
+        data.tableNo = tableNo;
+        data.serviceCaption = await serviceCaptionForTableNo(tableNo, context);
+      }
+      if (waiterName != null) data.waiterName = waiterName;
+      if (orderAmount != null) data.orderAmount = orderAmount;
+      if (title != null) data.title = title;
+      return await prisma.order.update({
+        where: { id },
+        data,
+      });
     },
     UpdatePayment: async (_, { id, payment, withBank }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -2655,13 +2740,16 @@ const resolvers = {
         },
       });
     },
-    CreateTable: async (_, { tableNo, capacity }, context) => {
+    CreateTable: async (_, { tableNo, capacity, orderCaption }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const caption =
+        orderCaption != null ? String(orderCaption).trim() : "";
       return await prisma.table.create({
         data: {
           tableNo,
           HotelName: tenantScopeFromContext(context),
           capacity,
+          orderCaption: caption || null,
           price: [], // default empty array
           payment: [], // default empty array
           incomeAt: [],
@@ -2772,7 +2860,7 @@ const resolvers = {
         },
       });
     },
-    UpdateTable: async (_, { id, tableNo, capacity }, context) => {
+    UpdateTable: async (_, { id, tableNo, capacity, orderCaption }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       const table = await prisma.table.findUnique({
         where: { id: id },
@@ -2780,9 +2868,14 @@ const resolvers = {
       if (!table || !tenantHotelReadMatches(context, table.HotelName)) {
         throw new Error("Table not found or not authorized");
       }
+      const data = { tableNo, capacity };
+      if (orderCaption !== undefined) {
+        const caption = String(orderCaption ?? "").trim();
+        data.orderCaption = caption || null;
+      }
       return await prisma.table.update({
         where: { id: id },
-        data: { tableNo: tableNo, capacity: capacity },
+        data,
       });
     },
     CreateCreditLevel: async (

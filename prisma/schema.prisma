@@ -1,11 +1,10 @@
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
   output   = "../generated/prisma"
 }
 
 datasource db {
   provider = "mysql"
-  url      = env("DATABASE_URL")
 }
 
 model user {
@@ -271,6 +270,8 @@ model Order {
   credit      Boolean?
   credittorName String?
   creditAmount  Float?
+  /// Copied from table.orderCaption at order time (e.g. Takeaway, Delivery).
+  serviceCaption String?
   createdAt   DateTime @default(now())
 }
 
@@ -290,14 +291,16 @@ model waiter {
 }
 
 model table {
-  id        Int      @id @default(autoincrement())
-  tableNo   Int
-  capacity  Int
-  price     Json     @default("[]")
-  payment   Json     @default("[]")
-  incomeAt  Json     @default("[]")
-  HotelName String
-  createdAt DateTime @default(now())
+  id           Int      @id @default(autoincrement())
+  tableNo      Int
+  capacity     Int
+  /// Optional label applied to orders from this table (e.g. Takeaway, Delivery).
+  orderCaption String?
+  price        Json     @default("[]")
+  payment      Json     @default("[]")
+  incomeAt     Json     @default("[]")
+  HotelName    String
+  createdAt    DateTime @default(now())
 }
 
 model creditLevel {
