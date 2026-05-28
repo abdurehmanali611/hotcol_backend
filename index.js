@@ -258,10 +258,13 @@ function tenantScopeFromContext(ctx) {
 }
 
 async function serviceCaptionForTableNo(tableNo, context) {
-  const scope = tenantScopeFromContext(context);
-  if (!scope) return null;
+  const tenantWhere = tenantHotelReadWhere(context);
+  const tableWhere =
+    tenantWhere.OR != null
+      ? { tableNo: Number(tableNo), OR: tenantWhere.OR }
+      : { tableNo: Number(tableNo), HotelName: tenantWhere.HotelName };
   const row = await prisma.table.findFirst({
-    where: { tableNo: Number(tableNo), HotelName: scope },
+    where: tableWhere,
     select: { orderCaption: true },
   });
   const caption =
@@ -1188,11 +1191,37 @@ function assertAuthenticated(context) {
   if (!context.user) throw new Error("Not Authenticated");
 }
 
+function normalizeRoleName(role) {
+  return String(role ?? "").trim();
+}
+
+function roleIsOneOf(user, allowedRoles) {
+  const role = normalizeRoleName(user?.Role).toLowerCase();
+  return allowedRoles.some(
+    (allowed) => normalizeRoleName(allowed).toLowerCase() === role,
+  );
+}
+
 function assertRole(context, allowed) {
   assertAuthenticated(context);
-  if (!allowed.includes(context.user.Role)) {
+  if (!roleIsOneOf(context.user, allowed)) {
     throw new Error("Not authorized");
   }
+}
+
+/** Same tenant filter used by `orders` query — avoids update failing on legacy HotelName values. */
+function tenantScopedRowWhere(ctx, extra = {}) {
+  const tenantWhere = tenantHotelReadWhere(ctx);
+  if (tenantWhere.OR) {
+    return { ...extra, OR: tenantWhere.OR };
+  }
+  return { ...extra, HotelName: tenantWhere.HotelName };
+}
+
+async function findTenantOrderById(ctx, prismaClient, id) {
+  return prismaClient.order.findFirst({
+    where: tenantScopedRowWhere(ctx, { id: Number(id) }),
+  });
 }
 
 function assertAdminOrManager(context) {
@@ -2556,11 +2585,11 @@ const resolvers = {
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
-      if (!["Cashier", "Admin", "Manager"].includes(context.user.Role)) {
+      if (!roleIsOneOf(context.user, ["Cashier", "Admin", "Manager"])) {
         throw new Error("Not authorized to update live orders");
       }
-      const order = await prisma.order.findUnique({ where: { id } });
-      if (!order || !tenantHotelReadMatches(context, order.HotelName)) {
+      const order = await findTenantOrderById(context, prisma, id);
+      if (!order) {
         throw new Error("Order not found or not authorized");
       }
       if (String(order.payment || "").toLowerCase() === "paid") {
@@ -2581,7 +2610,14 @@ const resolvers = {
         data.serviceCaption = await serviceCaptionForTableNo(tableNo, context);
       }
       if (waiterName != null) data.waiterName = waiterName;
-      if (orderAmount != null) data.orderAmount = orderAmount;
+      if (orderAmount != null) {
+        const nextAmount = Math.floor(Number(orderAmount));
+        if (nextAmount !== Math.floor(Number(order.orderAmount))) {
+          data.orderAmount = nextAmount;
+          // Re-queue same ticket at kitchen/bar with the new total quantity.
+          data.status = "Pending";
+        }
+      }
       if (title != null) data.title = title;
       return await prisma.order.update({
         where: { id },
@@ -2715,15 +2751,13 @@ const resolvers = {
     },
     UpdateStatus: async (_, { id, status }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const order = await prisma.order.findUnique({
-        where: { id: id },
-      });
-      if (!order || !tenantHotelReadMatches(context, order.HotelName)) {
+      const order = await findTenantOrderById(context, prisma, id);
+      if (!order) {
         throw new Error("Order not found or not authorized");
       }
       const next = status != null ? String(status).trim() : "";
       if (next.toLowerCase() === "cancelled") {
-        if (!["Cashier", "Admin", "Manager"].includes(context.user.Role)) {
+        if (!roleIsOneOf(context.user, ["Cashier", "Admin", "Manager"])) {
           throw new Error("Not authorized to remove live orders");
         }
         if (String(order.payment || "").toLowerCase() === "paid") {
