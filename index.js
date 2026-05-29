@@ -258,11 +258,12 @@ function tenantScopeFromContext(ctx) {
 }
 
 async function serviceCaptionForTableNo(tableNo, context) {
-  const tenantWhere = tenantHotelReadWhere(context);
+  const keys = tenantHotelKeysFromContext(context);
+  if (keys.length === 0) return null;
   const tableWhere =
-    tenantWhere.OR != null
-      ? { tableNo: Number(tableNo), OR: tenantWhere.OR }
-      : { tableNo: Number(tableNo), HotelName: tenantWhere.HotelName };
+    keys.length === 1
+      ? { tableNo: Number(tableNo), HotelName: keys[0] }
+      : { tableNo: Number(tableNo), HotelName: { in: keys } };
   const row = await prisma.table.findFirst({
     where: tableWhere,
     select: { orderCaption: true },
@@ -1182,13 +1183,19 @@ const authenticate = (req) => {
   const token = authHeader.replace("Bearer ", "");
   try {
     return jwt.verify(token, JWT_Secret);
-  } catch {
+  } catch (err) {
+    if (err?.name === "TokenExpiredError") {
+      return { __authExpired: true };
+    }
     return null;
   }
 };
 
 function assertAuthenticated(context) {
   if (!context.user) throw new Error("Not Authenticated");
+  if (context.user.__authExpired) {
+    throw new Error("JWT expired");
+  }
 }
 
 function normalizeRoleName(role) {
@@ -1196,10 +1203,45 @@ function normalizeRoleName(role) {
 }
 
 function roleIsOneOf(user, allowedRoles) {
-  const role = normalizeRoleName(user?.Role).toLowerCase();
+  const role = normalizeRoleName(user?.Role ?? user?.role).toLowerCase();
   return allowedRoles.some(
     (allowed) => normalizeRoleName(allowed).toLowerCase() === role,
   );
+}
+
+async function loadAuthUserFromDb(ctx, prismaClient) {
+  const userId = Number(ctx?.user?.userId);
+  if (!Number.isFinite(userId) || userId <= 0) return null;
+  return prismaClient.user.findUnique({
+    where: { id: userId },
+    select: { id: true, Role: true, HotelName: true, tinNumber: true },
+  });
+}
+
+/** Prefer DB role/tenant fields — JWT can be stale after credential edits. */
+function enrichContextUser(ctx, dbUser) {
+  if (!ctx?.user) return ctx;
+  if (!dbUser) return ctx;
+  const tin =
+    dbUser.tinNumber != null && String(dbUser.tinNumber).trim() !== ""
+      ? String(dbUser.tinNumber).trim()
+      : "";
+  const tenantId =
+    (ctx.user.tenantId != null && String(ctx.user.tenantId).trim() !== ""
+      ? String(ctx.user.tenantId).trim()
+      : "") ||
+    tin ||
+    String(dbUser.HotelName ?? "").trim();
+  return {
+    ...ctx,
+    user: {
+      ...ctx.user,
+      Role: dbUser.Role ?? ctx.user.Role ?? ctx.user.role,
+      HotelName: dbUser.HotelName ?? ctx.user.HotelName,
+      tinNumber: dbUser.tinNumber ?? ctx.user.tinNumber,
+      tenantId,
+    },
+  };
 }
 
 function assertRole(context, allowed) {
@@ -1211,11 +1253,14 @@ function assertRole(context, allowed) {
 
 /** Same tenant filter used by `orders` query — avoids update failing on legacy HotelName values. */
 function tenantScopedRowWhere(ctx, extra = {}) {
-  const tenantWhere = tenantHotelReadWhere(ctx);
-  if (tenantWhere.OR) {
-    return { ...extra, OR: tenantWhere.OR };
+  const keys = tenantHotelKeysFromContext(ctx);
+  if (keys.length === 0) {
+    return { ...extra, HotelName: "__no_scope__" };
   }
-  return { ...extra, HotelName: tenantWhere.HotelName };
+  if (keys.length === 1) {
+    return { ...extra, HotelName: keys[0] };
+  }
+  return { ...extra, HotelName: { in: keys } };
 }
 
 async function findTenantOrderById(ctx, prismaClient, id) {
@@ -2585,10 +2630,15 @@ const resolvers = {
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
-      if (!roleIsOneOf(context.user, ["Cashier", "Admin", "Manager"])) {
+      if (context.user.__authExpired) {
+        throw new Error("JWT expired");
+      }
+      const dbUser = await loadAuthUserFromDb(context, prisma);
+      const authCtx = enrichContextUser(context, dbUser);
+      if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager"])) {
         throw new Error("Not authorized to update live orders");
       }
-      const order = await findTenantOrderById(context, prisma, id);
+      const order = await findTenantOrderById(authCtx, prisma, id);
       if (!order) {
         throw new Error("Order not found or not authorized");
       }
@@ -2751,13 +2801,18 @@ const resolvers = {
     },
     UpdateStatus: async (_, { id, status }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const order = await findTenantOrderById(context, prisma, id);
+      if (context.user.__authExpired) {
+        throw new Error("JWT expired");
+      }
+      const dbUser = await loadAuthUserFromDb(context, prisma);
+      const authCtx = enrichContextUser(context, dbUser);
+      const order = await findTenantOrderById(authCtx, prisma, id);
       if (!order) {
         throw new Error("Order not found or not authorized");
       }
       const next = status != null ? String(status).trim() : "";
       if (next.toLowerCase() === "cancelled") {
-        if (!roleIsOneOf(context.user, ["Cashier", "Admin", "Manager"])) {
+        if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager"])) {
           throw new Error("Not authorized to remove live orders");
         }
         if (String(order.payment || "").toLowerCase() === "paid") {
