@@ -4,6 +4,10 @@ import cors from "cors";
 import crypto from "crypto";
 import { createPrismaClient } from "./lib/prismaClient.js";
 import { isSameCafeBusinessDay } from "./cafeBusinessDay.js";
+import {
+  isBarStationOrder,
+  isKitchenStationOrder,
+} from "./lib/cafeOrderStation.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
@@ -1210,33 +1214,18 @@ function roleIsOneOf(user, allowedRoles) {
   );
 }
 
-function orderCategoryKey(category) {
-  return String(category ?? "").trim().toLowerCase();
-}
-
-function isKitchenOrderCategory(category) {
-  const c = orderCategoryKey(category);
-  return c === "food" || c === "others";
-}
-
-function isBaristaOrderCategory(category) {
-  return orderCategoryKey(category) === "beverage";
-}
-
-/** Kitchen/Bar may cancel only their station's categories; cashier+ can cancel any live line. */
+/** Kitchen/Bar may cancel only their station's queue; cashier+ can cancel any live line. */
 function canCancelLiveOrder(user, order) {
   if (roleIsOneOf(user, ["Cashier", "Admin", "Manager"])) return true;
-  const role = normalizeRoleName(user?.Role ?? user?.role);
-  if (role === "Kitchen") return isKitchenOrderCategory(order.category);
-  if (role === "Barista") return isBaristaOrderCategory(order.category);
+  if (roleIsOneOf(user, ["Kitchen", "Chef"])) return isKitchenStationOrder(order);
+  if (roleIsOneOf(user, ["Barista", "Bar"])) return isBarStationOrder(order);
   return false;
 }
 
 function canCompleteLiveOrder(user, order) {
   if (roleIsOneOf(user, ["Cashier", "Admin", "Manager"])) return true;
-  const role = normalizeRoleName(user?.Role ?? user?.role);
-  if (role === "Kitchen") return isKitchenOrderCategory(order.category);
-  if (role === "Barista") return isBaristaOrderCategory(order.category);
+  if (roleIsOneOf(user, ["Kitchen", "Chef"])) return isKitchenStationOrder(order);
+  if (roleIsOneOf(user, ["Barista", "Bar"])) return isBarStationOrder(order);
   return false;
 }
 
@@ -1295,8 +1284,22 @@ function tenantScopedRowWhere(ctx, extra = {}) {
 }
 
 async function findTenantOrderById(ctx, prismaClient, id) {
+  const orderId = Number(id);
+  if (!Number.isFinite(orderId) || orderId <= 0) return null;
+  const scope = tenantHotelReadWhere(ctx);
+  if (
+    scope.HotelName === "__no_user__" ||
+    scope.HotelName === "__no_scope__"
+  ) {
+    return null;
+  }
+  const tenantClause = scope.OR
+    ? { OR: scope.OR }
+    : { HotelName: scope.HotelName };
   return prismaClient.order.findFirst({
-    where: tenantScopedRowWhere(ctx, { id: Number(id) }),
+    where: {
+      AND: [{ id: orderId }, tenantClause],
+    },
   });
 }
 
@@ -2704,10 +2707,13 @@ const resolvers = {
     },
     UpdatePayment: async (_, { id, payment, withBank }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const order = await prisma.order.findUnique({
-        where: { id: id },
-      });
-      if (!order || !tenantHotelReadMatches(context, order.HotelName)) {
+      const dbUser = await loadAuthUserFromDb(context, prisma);
+      const authCtx = enrichContextUser(context, dbUser);
+      if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager", "HotelCashier"])) {
+        throw new Error("Not authorized");
+      }
+      const order = await findTenantOrderById(authCtx, prisma, id);
+      if (!order) {
         throw new Error("Order not found or not authorized");
       }
       return await prisma.order.update({
@@ -2724,16 +2730,15 @@ const resolvers = {
       }
 
       try {
-        const order = await prisma.order.findUnique({
-          where: { id: id },
-        });
+        const dbUser = await loadAuthUserFromDb(context, prisma);
+        const authCtx = enrichContextUser(context, dbUser);
+        if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager"])) {
+          throw new Error("Not authorized");
+        }
+        const order = await findTenantOrderById(authCtx, prisma, id);
 
         if (!order) {
-          throw new Error("Order not found");
-        }
-
-        if (!tenantHotelReadMatches(context, order.HotelName)) {
-          throw new Error("Not authorized to update this order");
+          throw new Error("Order not found or not authorized");
         }
 
         const updatedOrder = await prisma.order.update({
