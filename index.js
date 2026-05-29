@@ -1210,6 +1210,36 @@ function roleIsOneOf(user, allowedRoles) {
   );
 }
 
+function orderCategoryKey(category) {
+  return String(category ?? "").trim().toLowerCase();
+}
+
+function isKitchenOrderCategory(category) {
+  const c = orderCategoryKey(category);
+  return c === "food" || c === "others";
+}
+
+function isBaristaOrderCategory(category) {
+  return orderCategoryKey(category) === "beverage";
+}
+
+/** Kitchen/Bar may cancel only their station's categories; cashier+ can cancel any live line. */
+function canCancelLiveOrder(user, order) {
+  if (roleIsOneOf(user, ["Cashier", "Admin", "Manager"])) return true;
+  const role = normalizeRoleName(user?.Role ?? user?.role);
+  if (role === "Kitchen") return isKitchenOrderCategory(order.category);
+  if (role === "Barista") return isBaristaOrderCategory(order.category);
+  return false;
+}
+
+function canCompleteLiveOrder(user, order) {
+  if (roleIsOneOf(user, ["Cashier", "Admin", "Manager"])) return true;
+  const role = normalizeRoleName(user?.Role ?? user?.role);
+  if (role === "Kitchen") return isKitchenOrderCategory(order.category);
+  if (role === "Barista") return isBaristaOrderCategory(order.category);
+  return false;
+}
+
 async function loadAuthUserFromDb(ctx, prismaClient) {
   const userId = Number(ctx?.user?.userId);
   if (!Number.isFinite(userId) || userId <= 0) return null;
@@ -2809,9 +2839,10 @@ const resolvers = {
         throw new Error("Order not found or not authorized");
       }
       const next = status != null ? String(status).trim() : "";
-      if (next.toLowerCase() === "cancelled") {
-        if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager"])) {
-          throw new Error("Not authorized to remove live orders");
+      const nextLower = next.toLowerCase();
+      if (nextLower === "cancelled") {
+        if (!canCancelLiveOrder(authCtx.user, order)) {
+          throw new Error("Not authorized to remove this order");
         }
         if (String(order.payment || "").toLowerCase() === "paid") {
           throw new Error("Paid orders cannot be removed");
@@ -2821,6 +2852,10 @@ const resolvers = {
         }
         if (!isSameCafeBusinessDay(order.createdAt)) {
           throw new Error("Only today's unpaid orders can be removed");
+        }
+      } else if (nextLower === "completed") {
+        if (!canCompleteLiveOrder(authCtx.user, order)) {
+          throw new Error("Not authorized to complete this order");
         }
       }
       return await prisma.order.update({

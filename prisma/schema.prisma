@@ -275,6 +275,9 @@ model Order {
   /// Copied from table.orderCaption at order time (e.g. Takeaway, Delivery).
   serviceCaption String?
   createdAt   DateTime @default(now())
+
+  @@index([HotelName])
+  @@index([HotelName, status])
 }
 
 model waiter {
