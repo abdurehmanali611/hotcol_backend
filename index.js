@@ -3,6 +3,7 @@ import { ApolloServer, gql } from "apollo-server-express";
 import cors from "cors";
 import crypto from "crypto";
 import { createPrismaClient } from "./lib/prismaClient.js";
+import { isSameCafeBusinessDay } from "./cafeBusinessDay.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
@@ -2648,10 +2649,7 @@ const resolvers = {
       if (String(order.status || "").toLowerCase() === "cancelled") {
         throw new Error("Cancelled orders cannot be edited");
       }
-      if (
-        new Date(order.createdAt).toDateString() !==
-        new Date().toDateString()
-      ) {
+      if (!isSameCafeBusinessDay(order.createdAt)) {
         throw new Error("Only today's unpaid orders can be edited");
       }
       const data = {};
@@ -2821,10 +2819,7 @@ const resolvers = {
         if (String(order.status || "").toLowerCase() === "cancelled") {
           throw new Error("Order is already removed");
         }
-        if (
-          new Date(order.createdAt).toDateString() !==
-          new Date().toDateString()
-        ) {
+        if (!isSameCafeBusinessDay(order.createdAt)) {
           throw new Error("Only today's unpaid orders can be removed");
         }
       }
