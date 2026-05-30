@@ -996,6 +996,8 @@ const typeDefs = gql`
       paidAmount: Float!
       HotelName: String!
       purchaseRequestId: Int
+      """Reuse an already-allocated voucher (e.g. other lines in the same batch)."""
+      voucherNumber: Int
     ): ItemRegistration!
 
     """Register multiple items at once — one voucher number for the whole batch."""
@@ -3272,6 +3274,7 @@ const resolvers = {
         supplierTinNumber,
         paidAmount,
         purchaseRequestId,
+        voucherNumber: sharedVoucherNumber,
       },
       context
     ) => {
@@ -3290,12 +3293,18 @@ const resolvers = {
           );
         }
       }
-      const { voucherNumber } = await allocateVoucherNumber(
-        prisma,
-        tenant,
-        VOUCHER_TYPES.ITEM_REGISTRATION,
-        tenantHotelKeysFromContext(context),
-      );
+      const shared = Math.floor(Number(sharedVoucherNumber) || 0);
+      const voucherNumber =
+        shared > 0
+          ? shared
+          : (
+              await allocateVoucherNumber(
+                prisma,
+                tenant,
+                VOUCHER_TYPES.ITEM_REGISTRATION,
+                tenantHotelKeysFromContext(context),
+              )
+            ).voucherNumber;
       const row = await prisma.itemRegistration.create({
         data: {
           name,
