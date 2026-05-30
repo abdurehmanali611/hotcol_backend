@@ -132,20 +132,6 @@ const ROLE_REQUIRED_MODULE = {
   HotelCashier: "Credit Management",
 };
 
-function parseModulesJson(raw) {
-  if (raw == null) return [];
-  let arr = raw;
-  if (typeof raw === "string") {
-    try {
-      arr = JSON.parse(raw);
-    } catch {
-      return [];
-    }
-  }
-  if (!Array.isArray(arr)) return [];
-  return arr.map((m) => String(m));
-}
-
 function tenantHasModule(modules, required) {
   if (!Array.isArray(modules) || modules.length === 0) return true;
   return modules.includes(required);
@@ -4945,34 +4931,35 @@ const resolvers = {
   },
 };
 
-async function startServer() {
-  const app = express();
-  app.use(cors());
+const app = express();
+app.use(cors());
 
-  const server = new ApolloServer({
-    typeDefs,
-    resolvers,
-    context: ({ req }) => {
-      const user = authenticate(req);
-      return { user, prisma };
-    },
+const server = new ApolloServer({
+  typeDefs,
+  resolvers,
+  context: ({ req }) => {
+    const user = authenticate(req);
+    return { user, prisma };
+  },
+});
+
+await server.start();
+server.applyMiddleware({ app, path: "/graphql" });
+
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    service: "GraphQL API",
   });
+});
 
-  await server.start();
-  server.applyMiddleware({ app, path: "/graphql" });
+/** Required for Vercel serverless — do not use app.listen() in production there. */
+export default app;
 
-  app.get("/health", (req, res) => {
-    res.status(200).json({
-      status: "OK",
-      timestamp: new Date().toISOString(),
-      service: "GraphQL API",
-    });
-  });
-
+if (!process.env.VERCEL) {
   const port = process.env.PORT || 4000;
   app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
   });
 }
-
-startServer();
