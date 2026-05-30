@@ -1851,6 +1851,7 @@ const resolvers = {
           : tenantWhere;
       const rows = await prisma.itemRegistration.findMany({
         where,
+        orderBy: [{ registrationDate: "asc" }, { id: "asc" }],
       });
       if (rows.length === 0) return rows;
       const names = [...new Set(rows.map((r) => String(r.name || "").trim()))];
@@ -1912,7 +1913,7 @@ const resolvers = {
       if (!context.user) throw new Error("Not Authenticated");
       const rows = await prisma.purchaseRequest.findMany({
         where: tenantHotelReadWhere(context),
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: "asc" },
       });
       return rows.map(withVoucherDisplay);
     },
@@ -1920,7 +1921,7 @@ const resolvers = {
       if (!context.user) throw new Error("Not Authenticated");
       const rows = await prisma.stockOutRequest.findMany({
         where: tenantHotelReadWhere(context),
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: "asc" },
       });
       return rows.map((r) =>
         withVoucherDisplay({
