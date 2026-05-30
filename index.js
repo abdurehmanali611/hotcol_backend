@@ -3364,6 +3364,9 @@ const resolvers = {
           voucherNumber,
           purchaseRequestId: purchaseRequestId ?? null,
           approvalStatus: isLodgingBusiness(context) ? PENDING_STORE : "AUTHORIZED",
+          statusBy: isLodgingBusiness(context)
+            ? String(context.user.UserName ?? "").trim()
+            : undefined,
         },
       });
       return withVoucherDisplay(row);
@@ -3418,6 +3421,10 @@ const resolvers = {
               voucherNumber,
               purchaseRequestId: line.purchaseRequestId ?? null,
               approvalStatus,
+              statusBy:
+                approvalStatus === PENDING_STORE
+                  ? String(context.user.UserName ?? "").trim()
+                  : undefined,
             },
           }),
         ),
