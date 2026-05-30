@@ -46,12 +46,12 @@ function computeQuarterEndFromRegistration(createdAt, paidQuartersCount) {
 
 const prisma = createPrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
-/** Default 14d — slow networks & regional users; override with JWT_EXPIRES_IN e.g. "30d". */
+/** Default 1d — set JWT_EXPIRES_IN in env to override (e.g. "7d", "30d"). */
 const JWT_EXPIRES_IN =
   process.env.JWT_EXPIRES_IN != null &&
   String(process.env.JWT_EXPIRES_IN).trim() !== ""
     ? String(process.env.JWT_EXPIRES_IN).trim()
-    : "14d";
+    : "1d";
 
 function isVatEnabled(flag) {
   if (flag === true) return true;
@@ -2681,6 +2681,9 @@ const resolvers = {
       }
       if (String(order.status || "").toLowerCase() === "cancelled") {
         throw new Error("Cancelled orders cannot be edited");
+      }
+      if (String(order.status || "").toLowerCase() === "completed") {
+        throw new Error("Completed orders cannot be edited");
       }
       if (!isSameCafeBusinessDay(order.createdAt)) {
         throw new Error("Only today's unpaid orders can be edited");
