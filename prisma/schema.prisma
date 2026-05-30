@@ -47,9 +47,37 @@ model user {
   loginDisabledByApexMemberId Int?
 
   loginDisabledBy apex_team_member? @relation("UserLoginDisabledBy", fields: [loginDisabledByApexMemberId], references: [id], onDelete: SetNull)
+  /// Apex locked custom fees — module changes won't auto-overwrite setup/quarterly ETB
+  feesManuallySet     Boolean   @default(false)
+  /// Last applied row from subscription_pricing_rule (if any)
+  pricingRuleId       Int?
+  pricingRule         subscription_pricing_rule? @relation(fields: [pricingRuleId], references: [id], onDelete: SetNull)
 
   @@index([tinNumber])
   @@index([loginDisabled])
+  @@index([pricingRuleId])
+}
+
+/// Module + business-type pricing catalog (setup & quarterly ETB). Sync this model to hotcol-user.
+model subscription_pricing_rule {
+  id               Int      @id @default(autoincrement())
+  businessType     String
+  /// Sorted module names joined with | e.g. "Cafe|Inventory"
+  modulesKey       String
+  modules          Json
+  setupFeeETB      Int
+  quarterlyFeeETB  Int
+  description      String?  @db.Text
+  isActive         Boolean  @default(true)
+  sortOrder        Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenants user[]
+
+  @@unique([businessType, modulesKey])
+  @@index([businessType])
+  @@index([isActive])
 }
 
 /// Setup & quarterly fee payment proofs awaiting Apex approval.

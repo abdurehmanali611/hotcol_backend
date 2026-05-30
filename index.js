@@ -31,7 +31,12 @@ import {
   computeQuarterEndFromCreatedAt,
   daysBetweenCalendar,
   paidQuartersFromCreatedAt,
+  parseModulesJson,
 } from "./lib/subscriptionPricing.js";
+import {
+  calculateSignupPricing,
+  resolveSignupPricing,
+} from "./lib/pricingRules.js";
 import {
   computeSubscriptionPeriodStatus,
   resolveLoginAccess,
@@ -781,6 +786,13 @@ const typeDefs = gql`
     hotelCreditParties(companyId: Int!): [HotelCreditParty!]!
     hotelCreditConsumptions(from: DateTime!, to: DateTime!): [HotelCreditConsumption!]!
     tenantFeedbackInbox(limit: Int): TenantFeedbackInbox!
+    signupPricingPreview(businessType: String!, modules: JSON!): SignupPricingPreview!
+  }
+
+  type SignupPricingPreview {
+    setupFeeETB: Int!
+    quarterlyFeeETB: Int!
+    source: String!
   }
 
   type Mutation {
@@ -1953,6 +1965,16 @@ const resolvers = {
         messages,
       };
     },
+
+    signupPricingPreview: async (_, { businessType, modules }) => {
+      const list = parseModulesJson(modules);
+      const fees = await resolveSignupPricing(businessType, list);
+      return {
+        setupFeeETB: fees.setupFeeETB,
+        quarterlyFeeETB: fees.quarterlyFeeETB,
+        source: fees.source,
+      };
+    },
   },
   Mutation: {
     CreateAdmin: async (
@@ -2001,16 +2023,24 @@ const resolvers = {
 
       const hashedPassword = await bcrypt.hash(Password, 12);
       const now = new Date();
-      const setupNum =
-        setupFeeETB != null && Number.isFinite(Number(setupFeeETB))
-          ? Number(setupFeeETB)
-          : 0;
-      const quarterlyNum =
-        quarterlyFeeETB != null && Number.isFinite(Number(quarterlyFeeETB))
-          ? Number(quarterlyFeeETB)
-          : 0;
+      const effectiveFees = await resolveSignupPricing(
+        businessType || null,
+        modulesJson,
+      );
+      const setupNum = effectiveFees.setupFeeETB;
+      const quarterlyNum = effectiveFees.quarterlyFeeETB;
       const billingApplies = quarterlyFeeApplies(quarterlyNum);
       const needsPaymentApproval = billingApplies && setupNum > 0;
+      if (
+        needsPaymentApproval &&
+        (!paymentChannel ||
+          !paymentTransactionRef ||
+          String(paymentTransactionRef).trim().length < 4)
+      ) {
+        throw new Error(
+          "Setup fee payment channel and transaction reference are required",
+        );
+      }
 
       const created = await prisma.user.create({
         data: {
@@ -2024,6 +2054,8 @@ const resolvers = {
           modules: modulesJson,
           setupFeeETB: setupNum,
           quarterlyFeeETB: quarterlyNum,
+          pricingRuleId: effectiveFees.pricingRuleId,
+          feesManuallySet: false,
           paymentChannel: paymentChannel
             ? String(paymentChannel).trim()
             : null,
