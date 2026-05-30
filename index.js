@@ -3758,15 +3758,12 @@ const resolvers = {
       },
       context,
     ) => {
-      const storeUser = assertStoreUser(context);
+      assertStoreUser(context);
       const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
       if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
         throw new Error("Purchase request not found");
       }
       assertPurchasePendingStore(pr);
-      if (!matchesStoreOwner(pr.storeUserName, storeUser)) {
-        throw new Error("You can only edit your own requests");
-      }
       const data = {};
       if (itemName != null) data.itemName = String(itemName).trim();
       if (quantity != null) data.quantity = quantity;
@@ -3781,15 +3778,12 @@ const resolvers = {
     },
 
     deletePurchaseRequestStoreDraft: async (_, { id }, context) => {
-      const storeUser = assertStoreUser(context);
+      assertStoreUser(context);
       const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
       if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
         throw new Error("Purchase request not found");
       }
       assertPurchasePendingStore(pr);
-      if (!matchesStoreOwner(pr.storeUserName, storeUser)) {
-        throw new Error("You can only delete your own requests");
-      }
       await prisma.purchaseRequest.delete({ where: { id } });
       return true;
     },
@@ -4420,15 +4414,12 @@ const resolvers = {
       { id, movementType, amount, stakeHolderOrReason },
       context,
     ) => {
-      const storeUser = assertStoreUser(context);
+      assertStoreUser(context);
       const reqRow = await prisma.stockOutRequest.findUnique({ where: { id } });
       if (!reqRow || !tenantHotelReadMatches(context, reqRow.HotelName)) {
         throw new Error("Request not found");
       }
       assertStockPendingStore(reqRow);
-      if (!matchesStoreOwner(reqRow.requestedByUserName, storeUser)) {
-        throw new Error("You can only edit your own requests");
-      }
       const item = await prisma.itemRegistration.findUnique({
         where: { id: reqRow.itemRegistrationId },
       });
@@ -4475,15 +4466,12 @@ const resolvers = {
     },
 
     deleteStockOutRequestStoreDraft: async (_, { id }, context) => {
-      const storeUser = assertStoreUser(context);
+      assertStoreUser(context);
       const reqRow = await prisma.stockOutRequest.findUnique({ where: { id } });
       if (!reqRow || !tenantHotelReadMatches(context, reqRow.HotelName)) {
         throw new Error("Request not found");
       }
       assertStockPendingStore(reqRow);
-      if (!matchesStoreOwner(reqRow.requestedByUserName, storeUser)) {
-        throw new Error("You can only delete your own requests");
-      }
       await prisma.stockOutRequest.delete({ where: { id } });
       return true;
     },
