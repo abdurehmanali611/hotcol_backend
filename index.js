@@ -18,8 +18,17 @@ import {
 } from "./lib/hotelVoucher.js";
 import { requireRejectionReason } from "./lib/hotelRejection.js";
 import {
+  PENDING_STORE,
+  assertStoreUser,
+  matchesStoreOwner,
+  assertPurchasePendingStore,
+  assertStockPendingStore,
+  assertRegistrationPendingStore,
+} from "./lib/storeDraftWorkflow.js";
+import {
   isPurchaseRequestAuthorized,
   itemRegistrationInventoryWhere,
+  itemRegistrationStoreReadWhere,
   isCompanyAuthorized,
   normalizeStockOutStatus,
   isStockOutPendingCC,
@@ -1003,6 +1012,8 @@ const typeDefs = gql`
     """Register multiple items at once — one voucher number for the whole batch."""
     createItemRegistrationsBatch(lines: [ItemRegistrationLineInput!]!): [ItemRegistration!]!
 
+    submitItemRegistrationsToCostControl(ids: [Int!]!): [ItemRegistration!]!
+
     checkItemRegistrationCC(id: Int!, costControllerProfileId: Int!): ItemRegistration!
     rejectItemRegistrationCC(id: Int!, reason: String): ItemRegistration!
     approveItemRegistrationFinance(id: Int!): ItemRegistration!
@@ -1091,6 +1102,22 @@ const typeDefs = gql`
     """Submit multiple purchase lines at once — one voucher number for the whole batch."""
     createPurchaseRequestsBatch(lines: [PurchaseRequestLineInput!]!): [PurchaseRequest!]!
 
+    updatePurchaseRequestStoreDraft(
+      id: Int!
+      itemName: String
+      quantity: Float
+      measuredBy: String
+      notes: String
+      estimatedUnitPrice: Float
+      supplierName: String
+      supplierPhone: String
+      category: String
+    ): PurchaseRequest!
+
+    deletePurchaseRequestStoreDraft(id: Int!): Boolean!
+
+    submitPurchaseRequestsToCostControl(ids: [Int!]!): [PurchaseRequest!]!
+
     approvePurchaseRequestCC(id: Int!, costControllerProfileId: Int!): PurchaseRequest!
     approvePurchaseRequestsCCBatch(ids: [Int!]!, costControllerProfileId: Int!): [PurchaseRequest!]!
     rejectPurchaseRequestCC(id: Int!, reason: String): PurchaseRequest!
@@ -1125,6 +1152,17 @@ const typeDefs = gql`
 
     """Submit multiple stock movements at once — one voucher number for the whole batch."""
     createStockOutRequestsBatch(lines: [StockOutRequestLineInput!]!): [StockOutRequest!]!
+
+    updateStockOutRequestStoreDraft(
+      id: Int!
+      movementType: String
+      amount: Float
+      stakeHolderOrReason: String
+    ): StockOutRequest!
+
+    deleteStockOutRequestStoreDraft(id: Int!): Boolean!
+
+    submitStockOutRequestsToCostControl(ids: [Int!]!): [StockOutRequest!]!
 
     checkStockOutRequestCC(id: Int!, costControllerProfileId: Int!): StockOutRequest!
     approveStockOutRequestsBatch(ids: [Int!]!, costControllerProfileId: Int!): [StockOutRequest!]!
@@ -1847,7 +1885,7 @@ const resolvers = {
       const role = String(context.user.Role || "");
       const where =
         role === "Store"
-          ? { AND: [tenantWhere, itemRegistrationInventoryWhere()] }
+          ? { AND: [tenantWhere, itemRegistrationStoreReadWhere()] }
           : tenantWhere;
       const rows = await prisma.itemRegistration.findMany({
         where,
@@ -3325,7 +3363,7 @@ const resolvers = {
           HotelName: tenant,
           voucherNumber,
           purchaseRequestId: purchaseRequestId ?? null,
-          approvalStatus: isLodgingBusiness(context) ? "PENDING_CC" : "AUTHORIZED",
+          approvalStatus: isLodgingBusiness(context) ? PENDING_STORE : "AUTHORIZED",
         },
       });
       return withVoucherDisplay(row);
@@ -3341,7 +3379,7 @@ const resolvers = {
         VOUCHER_TYPES.ITEM_REGISTRATION,
       );
       const approvalStatus = isLodgingBusiness(context)
-        ? "PENDING_CC"
+        ? PENDING_STORE
         : "AUTHORIZED";
       for (const line of items) {
         if (line.purchaseRequestId != null) {
@@ -3436,6 +3474,14 @@ const resolvers = {
         !tenantHotelReadMatches(context, itemRegistration.HotelName)
       ) {
         throw new Error("Item Registration not found or not authorized");
+      }
+      if (
+        context.user.Role === "Store" &&
+        itemRegistration.approvalStatus !== PENDING_STORE
+      ) {
+        throw new Error(
+          "Only registrations awaiting your review can be deleted",
+        );
       }
       return await prisma.itemRegistration.delete({
         where: { id: id },
@@ -3548,6 +3594,14 @@ const resolvers = {
       if (!itemReg || !tenantHotelReadMatches(context, itemReg.HotelName)) {
         throw new Error("Item Registration not found or not authorized");
       }
+      if (
+        context.user.Role === "Store" &&
+        itemReg.approvalStatus !== PENDING_STORE
+      ) {
+        throw new Error(
+          "Only registrations awaiting your review can be edited",
+        );
+      }
       return await prisma.itemRegistration.update({
         where: { id: id },
         data: {
@@ -3568,6 +3622,32 @@ const resolvers = {
         },
       });
     },
+
+    submitItemRegistrationsToCostControl: async (_, { ids }, context) => {
+      assertStoreUser(context);
+      const uniqueIds = [...new Set((ids || []).map((x) => Math.floor(Number(x))).filter((x) => x > 0))];
+      if (!uniqueIds.length) throw new Error("Select at least one line");
+      const rows = await prisma.itemRegistration.findMany({
+        where: { id: { in: uniqueIds } },
+      });
+      if (rows.length !== uniqueIds.length) {
+        throw new Error("One or more registrations were not found");
+      }
+      const updated = [];
+      for (const item of rows) {
+        if (!tenantHotelReadMatches(context, item.HotelName)) {
+          throw new Error("Registration not found");
+        }
+        assertRegistrationPendingStore(item);
+        const row = await prisma.itemRegistration.update({
+          where: { id: item.id },
+          data: { approvalStatus: "PENDING_CC" },
+        });
+        updated.push(withVoucherDisplay(row));
+      }
+      return updated;
+    },
+
     createCostControllerProfile: async (_, { displayName }, context) => {
       assertRole(context, ["Manager"]);
       const tenant = tenantScopeFromContext(context);
@@ -3623,7 +3703,7 @@ const resolvers = {
           supplierName: supplierName ?? "",
           supplierPhone: supplierPhone ?? "",
           category: category ?? "Others",
-          status: "PENDING_CC",
+          status: PENDING_STORE,
           storeUserName: context.user.UserName,
           voucherNumber,
         },
@@ -3653,7 +3733,7 @@ const resolvers = {
               supplierName: line.supplierName ?? "",
               supplierPhone: line.supplierPhone ?? "",
               category: line.category ?? "Others",
-              status: "PENDING_CC",
+              status: PENDING_STORE,
               storeUserName: context.user.UserName,
               voucherNumber,
             },
@@ -3661,6 +3741,82 @@ const resolvers = {
         ),
       );
       return rows.map(withVoucherDisplay);
+    },
+
+    updatePurchaseRequestStoreDraft: async (
+      _,
+      {
+        id,
+        itemName,
+        quantity,
+        measuredBy,
+        notes,
+        estimatedUnitPrice,
+        supplierName,
+        supplierPhone,
+        category,
+      },
+      context,
+    ) => {
+      const storeUser = assertStoreUser(context);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
+      if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
+        throw new Error("Purchase request not found");
+      }
+      assertPurchasePendingStore(pr);
+      if (!matchesStoreOwner(pr.storeUserName, storeUser)) {
+        throw new Error("You can only edit your own requests");
+      }
+      const data = {};
+      if (itemName != null) data.itemName = String(itemName).trim();
+      if (quantity != null) data.quantity = quantity;
+      if (measuredBy != null) data.measuredBy = measuredBy;
+      if (notes != null) data.notes = notes;
+      if (estimatedUnitPrice != null) data.estimatedUnitPrice = estimatedUnitPrice;
+      if (supplierName != null) data.supplierName = supplierName;
+      if (supplierPhone != null) data.supplierPhone = supplierPhone;
+      if (category != null) data.category = category;
+      const row = await prisma.purchaseRequest.update({ where: { id }, data });
+      return withVoucherDisplay(row);
+    },
+
+    deletePurchaseRequestStoreDraft: async (_, { id }, context) => {
+      const storeUser = assertStoreUser(context);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
+      if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
+        throw new Error("Purchase request not found");
+      }
+      assertPurchasePendingStore(pr);
+      if (!matchesStoreOwner(pr.storeUserName, storeUser)) {
+        throw new Error("You can only delete your own requests");
+      }
+      await prisma.purchaseRequest.delete({ where: { id } });
+      return true;
+    },
+
+    submitPurchaseRequestsToCostControl: async (_, { ids }, context) => {
+      assertStoreUser(context);
+      const uniqueIds = [...new Set((ids || []).map((x) => Math.floor(Number(x))).filter((x) => x > 0))];
+      if (!uniqueIds.length) throw new Error("Select at least one line");
+      const rows = await prisma.purchaseRequest.findMany({
+        where: { id: { in: uniqueIds } },
+      });
+      if (rows.length !== uniqueIds.length) {
+        throw new Error("One or more purchase requests were not found");
+      }
+      const updated = [];
+      for (const pr of rows) {
+        if (!tenantHotelReadMatches(context, pr.HotelName)) {
+          throw new Error("Purchase request not found");
+        }
+        assertPurchasePendingStore(pr);
+        const row = await prisma.purchaseRequest.update({
+          where: { id: pr.id },
+          data: { status: "PENDING_CC" },
+        });
+        updated.push(withVoucherDisplay(row));
+      }
+      return updated;
     },
 
     approvePurchaseRequestCC: async (
@@ -4191,7 +4347,7 @@ const resolvers = {
           movementType: String(movementType),
           amount: amt,
           stakeHolderOrReason: stakeText,
-          status: "PENDING_CC",
+          status: PENDING_STORE,
           voucherNumber,
           requestedByUserName: context.user.UserName,
         },
@@ -4249,7 +4405,7 @@ const resolvers = {
               movementType: String(line.movementType),
               amount: Number(line.amount),
               stakeHolderOrReason: String(line.stakeHolderOrReason ?? "").trim(),
-              status: "PENDING_CC",
+              status: PENDING_STORE,
               voucherNumber,
               requestedByUserName: context.user.UserName,
             },
@@ -4257,6 +4413,109 @@ const resolvers = {
         }),
       );
       return rows.map(withVoucherDisplay);
+    },
+
+    updateStockOutRequestStoreDraft: async (
+      _,
+      { id, movementType, amount, stakeHolderOrReason },
+      context,
+    ) => {
+      const storeUser = assertStoreUser(context);
+      const reqRow = await prisma.stockOutRequest.findUnique({ where: { id } });
+      if (!reqRow || !tenantHotelReadMatches(context, reqRow.HotelName)) {
+        throw new Error("Request not found");
+      }
+      assertStockPendingStore(reqRow);
+      if (!matchesStoreOwner(reqRow.requestedByUserName, storeUser)) {
+        throw new Error("You can only edit your own requests");
+      }
+      const item = await prisma.itemRegistration.findUnique({
+        where: { id: reqRow.itemRegistrationId },
+      });
+      if (!item) throw new Error("Item not found");
+      const data = {};
+      if (movementType != null) {
+        data.movementType = String(movementType);
+      }
+      if (stakeHolderOrReason != null) {
+        const stakeText = String(stakeHolderOrReason).trim();
+        const stakeKey = normalizeKitchenBarStation(stakeText);
+        if (stakeKey === "MANAGEMENT") {
+          throw new Error(
+            "Management stock issue must be recorded from station daily count.",
+          );
+        }
+        data.stakeHolderOrReason = stakeText;
+      }
+      if (amount != null) {
+        const amt = Number(amount);
+        if (!(amt > 0)) throw new Error("Amount must be positive");
+        const otherPending = await prisma.stockOutRequest.aggregate({
+          where: {
+            itemRegistrationId: reqRow.itemRegistrationId,
+            status: PENDING_STORE,
+            id: { not: id },
+          },
+          _sum: { amount: true },
+        });
+        const reserved =
+          Number(otherPending._sum.amount || 0) + amt;
+        if (item.amount - reserved < 1) {
+          throw new Error(
+            "At least 1 unit must remain in stock for every item.",
+          );
+        }
+        data.amount = amt;
+      }
+      const row = await prisma.stockOutRequest.update({ where: { id }, data });
+      return withVoucherDisplay({
+        ...row,
+        status: normalizeStockOutStatus(row.status),
+      });
+    },
+
+    deleteStockOutRequestStoreDraft: async (_, { id }, context) => {
+      const storeUser = assertStoreUser(context);
+      const reqRow = await prisma.stockOutRequest.findUnique({ where: { id } });
+      if (!reqRow || !tenantHotelReadMatches(context, reqRow.HotelName)) {
+        throw new Error("Request not found");
+      }
+      assertStockPendingStore(reqRow);
+      if (!matchesStoreOwner(reqRow.requestedByUserName, storeUser)) {
+        throw new Error("You can only delete your own requests");
+      }
+      await prisma.stockOutRequest.delete({ where: { id } });
+      return true;
+    },
+
+    submitStockOutRequestsToCostControl: async (_, { ids }, context) => {
+      assertStoreUser(context);
+      const uniqueIds = [...new Set((ids || []).map((x) => Math.floor(Number(x))).filter((x) => x > 0))];
+      if (!uniqueIds.length) throw new Error("Select at least one line");
+      const rows = await prisma.stockOutRequest.findMany({
+        where: { id: { in: uniqueIds } },
+      });
+      if (rows.length !== uniqueIds.length) {
+        throw new Error("One or more movement requests were not found");
+      }
+      const updated = [];
+      for (const reqRow of rows) {
+        if (!tenantHotelReadMatches(context, reqRow.HotelName)) {
+          throw new Error("Request not found");
+        }
+        assertStockPendingStore(reqRow);
+        const row = await prisma.stockOutRequest.update({
+          where: { id: reqRow.id },
+          data: { status: "PENDING_CC" },
+        });
+        updated.push(
+          withVoucherDisplay({
+            ...row,
+            status: normalizeStockOutStatus(row.status),
+          }),
+        );
+      }
+      return updated;
     },
 
     checkStockOutRequestCC: async (
