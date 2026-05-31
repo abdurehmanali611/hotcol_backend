@@ -61,12 +61,34 @@ function computeQuarterEndFromRegistration(createdAt, paidQuartersCount) {
 
 const prisma = createPrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
-/** Default 1d — set JWT_EXPIRES_IN in env to override (e.g. "7d", "30d"). */
-const JWT_EXPIRES_IN =
-  process.env.JWT_EXPIRES_IN != null &&
-  String(process.env.JWT_EXPIRES_IN).trim() !== ""
-    ? String(process.env.JWT_EXPIRES_IN).trim()
-    : "1d";
+
+/**
+ * Default 1 day. Rejects bare small integers (e.g. JWT_EXPIRES_IN=1 → 1 second in jsonwebtoken).
+ * Use explicit units: "1d", "24h", "86400" (seconds, min 1 hour).
+ */
+function resolveJwtExpiresIn() {
+  const raw = process.env.JWT_EXPIRES_IN;
+  if (raw == null || String(raw).trim() === "") return "1d";
+  const s = String(raw).trim();
+  if (/^\d+[smhdw]$/i.test(s)) return s;
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    if (n >= 86400) return n;
+    console.warn(
+      `[hotcol] JWT_EXPIRES_IN="${s}" is shorter than 1 day; using "1d". Use "1d", "24h", or seconds >= 86400.`,
+    );
+    return "1d";
+  }
+  return s;
+}
+
+const JWT_EXPIRES_IN = resolveJwtExpiresIn();
+
+if (!JWT_Secret || String(JWT_Secret).trim() === "") {
+  console.error(
+    "[hotcol] JWT_Secret is missing — login tokens will fail verification. Set JWT_Secret in the environment.",
+  );
+}
 
 function isVatEnabled(flag) {
   if (flag === true) return true;
