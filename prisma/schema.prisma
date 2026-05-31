@@ -302,6 +302,8 @@ model Order {
   creditAmount  Float?
   /// Copied from table.orderCaption at order time (e.g. Takeaway, Delivery).
   serviceCaption String?
+  /// Role/station that cancelled the line (Cashier, Chef/Kitchen, Barista, etc.).
+  cancelledBy   String?
   createdAt   DateTime @default(now())
 
   @@index([HotelName])

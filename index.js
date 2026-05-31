@@ -464,6 +464,7 @@ const typeDefs = gql`
     credittorName: String
     creditAmount: Float
     serviceCaption: String
+    cancelledBy: String
     createdAt: DateTime!
   }
 
@@ -1313,6 +1314,16 @@ function canCancelLiveOrder(user, order) {
   if (roleIsOneOf(user, ["Kitchen", "Chef"])) return isKitchenStationOrder(order);
   if (roleIsOneOf(user, ["Barista", "Bar"])) return isBarStationOrder(order);
   return false;
+}
+
+/** Human-readable label stored on Order.cancelledBy when a line is removed. */
+function cancelledByLabelFromUser(user) {
+  if (roleIsOneOf(user, ["Cashier"])) return "Cashier";
+  if (roleIsOneOf(user, ["Admin"])) return "Admin";
+  if (roleIsOneOf(user, ["Manager"])) return "Manager";
+  if (roleIsOneOf(user, ["Kitchen", "Chef"])) return "Chef/Kitchen";
+  if (roleIsOneOf(user, ["Barista", "Bar"])) return "Barista";
+  return "Staff";
 }
 
 function canCompleteLiveOrder(user, order) {
@@ -2995,11 +3006,13 @@ const resolvers = {
           throw new Error("Not authorized to complete this order");
         }
       }
+      const updateData = { status: status };
+      if (nextLower === "cancelled") {
+        updateData.cancelledBy = cancelledByLabelFromUser(authCtx.user);
+      }
       return await prisma.order.update({
         where: { id: id },
-        data: {
-          status: status,
-        },
+        data: updateData,
       });
     },
     CreateWaiter: async (
