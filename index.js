@@ -3229,7 +3229,7 @@ const resolvers = {
       const type = String(registrantType || "STAFF").trim().toUpperCase();
       const approvalStatus = role === "Admin" ? "AUTHORIZED" : "PENDING_ADMIN";
       const adminActorName =
-        role === "Admin" ? String(context.user.userName || "").trim() : null;
+        role === "Admin" ? String(context.user.UserName || "").trim() : null;
       const adminAuthorizedAt = role === "Admin" ? new Date() : null;
       return await prisma.creditRegistration.create({
         data: {
@@ -3269,7 +3269,7 @@ const resolvers = {
         data: {
           approvalStatus: "AUTHORIZED",
           rejectionReason: null,
-          adminActorName: String(context.user.userName || "").trim() || null,
+          adminActorName: String(context.user.UserName || "").trim() || null,
           adminAuthorizedAt: new Date(),
         },
       });
@@ -3290,7 +3290,7 @@ const resolvers = {
         data: {
           approvalStatus: "REJECTED",
           rejectionReason: String(reason || "").trim() || "Rejected by admin",
-          adminActorName: String(context.user.userName || "").trim() || null,
+          adminActorName: String(context.user.UserName || "").trim() || null,
           adminAuthorizedAt: new Date(),
         },
       });

@@ -404,6 +404,8 @@ model ItemRegistration {
   supplierTinNumber String   @default("")
   paidAmount        Float
   HotelName         String
+  /// Store staff who registered this line (hotel draft / review workflow).
+  statusBy          String?
   /// Per-hotel sequential voucher (display padded to 4+ digits).
   voucherNumber     Int?
   /// Linked purchase request voucher when goods are received against a PR.
