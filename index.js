@@ -62,6 +62,7 @@ import {
   fetchLeaderMap,
   registrationReceiptSnapshots,
   requestReceiptSnapshots,
+  PURCHASE_REQUESTED_BY_DEPARTMENTS,
 } from "./lib/departmentLeaders.js";
 
 function computeQuarterEndFromRegistration(createdAt, paidQuartersCount) {
@@ -526,6 +527,7 @@ const typeDefs = gql`
     supplierName: String
     supplierPhone: String
     category: String
+    purchaseWithVat: Boolean
   }
 
   """One line in a multi-item registration (shared voucher per batch)."""
@@ -713,6 +715,7 @@ const typeDefs = gql`
     supplierName: String!
     supplierPhone: String!
     category: String!
+    purchaseWithVat: Boolean!
     status: String!
     storeUserName: String!
     voucherNumber: Int
@@ -1162,6 +1165,7 @@ const typeDefs = gql`
       supplierName: String
       supplierPhone: String
       category: String
+      purchaseWithVat: Boolean
     ): PurchaseRequest!
 
     """Submit multiple purchase lines at once — one voucher number for the whole batch."""
@@ -1180,6 +1184,7 @@ const typeDefs = gql`
       supplierName: String
       supplierPhone: String
       category: String
+      purchaseWithVat: Boolean
     ): PurchaseRequest!
 
     deletePurchaseRequestStoreDraft(id: Int!): Boolean!
@@ -3836,6 +3841,7 @@ const resolvers = {
         supplierName,
         supplierPhone,
         category,
+        purchaseWithVat,
       },
       context,
     ) => {
@@ -3858,6 +3864,7 @@ const resolvers = {
           supplierName: supplierName ?? "",
           supplierPhone: supplierPhone ?? "",
           category: category ?? "Others",
+          purchaseWithVat: isVatEnabled(purchaseWithVat),
           status: PENDING_STORE,
           storeUserName: context.user.UserName,
           voucherNumber,
@@ -3875,7 +3882,7 @@ const resolvers = {
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one purchase line is required");
       const deptCode = String(requestedByDepartment ?? "").trim();
-      if (!REQUESTED_BY_DEPARTMENTS.includes(deptCode)) {
+      if (!PURCHASE_REQUESTED_BY_DEPARTMENTS.includes(deptCode)) {
         throw new Error("Requested by department is invalid");
       }
       const { tenant, voucherNumber } = await allocateSharedVoucherForTenant(
@@ -3898,6 +3905,7 @@ const resolvers = {
               supplierName: line.supplierName ?? "",
               supplierPhone: line.supplierPhone ?? "",
               category: line.category ?? "Others",
+              purchaseWithVat: isVatEnabled(line.purchaseWithVat),
               status: PENDING_STORE,
               storeUserName: context.user.UserName,
               voucherNumber,
@@ -3921,6 +3929,7 @@ const resolvers = {
         supplierName,
         supplierPhone,
         category,
+        purchaseWithVat,
       },
       context,
     ) => {
@@ -3939,6 +3948,9 @@ const resolvers = {
       if (supplierName != null) data.supplierName = supplierName;
       if (supplierPhone != null) data.supplierPhone = supplierPhone;
       if (category != null) data.category = category;
+      if (purchaseWithVat != null) {
+        data.purchaseWithVat = isVatEnabled(purchaseWithVat);
+      }
       const row = await prisma.purchaseRequest.update({ where: { id }, data });
       return withVoucherDisplay(row);
     },

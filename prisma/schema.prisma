@@ -496,6 +496,7 @@ model PurchaseRequest {
   supplierName        String    @default("")
   supplierPhone       String    @default("")
   category            String    @default("Others")
+  purchaseWithVat     Boolean   @default(true)
   /// PENDING_CC | CHECKED_CC | PENDING_FINANCE | PENDING_MANAGER | AUTHORIZED | REJECTED_* | legacy APPROVED_FINANCE
   status              String
   storeUserName       String
