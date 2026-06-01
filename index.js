@@ -54,6 +54,15 @@ import {
   tenantBillingRowFromOwner,
   resolveBillingAnchor,
 } from "./lib/tenantBilling.js";
+import {
+  HOTEL_DEPARTMENTS,
+  REGISTRATION_RECEIVED_BY_DEPARTMENTS,
+  REQUESTED_BY_DEPARTMENTS,
+  departmentLabel,
+  fetchLeaderMap,
+  registrationReceiptSnapshots,
+  requestReceiptSnapshots,
+} from "./lib/departmentLeaders.js";
 
 function computeQuarterEndFromRegistration(createdAt, paidQuartersCount) {
   return computeQuarterEndFromCreatedAt(createdAt, paidQuartersCount);
@@ -647,6 +656,10 @@ const typeDefs = gql`
     rejectionReason: String
     pendingUnitPrice: Float
     unitPriceChangeStatus: String
+    receivedByDepartment: String
+    receivedByLeaderName: String
+    financeDeptLeaderName: String
+    gmDeptLeaderName: String
   }
 
   type ItemStatus {
@@ -679,6 +692,16 @@ const typeDefs = gql`
     createdAt: DateTime!
   }
 
+  type DepartmentLeader {
+    id: Int!
+    department: String!
+    leaderName: String!
+    departmentLabel: String!
+    HotelName: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+  }
+
   type PurchaseRequest {
     id: Int!
     HotelName: String!
@@ -704,6 +727,12 @@ const typeDefs = gql`
     rejectionReason: String
     pendingUnitPrice: Float
     unitPriceChangeStatus: String
+    requestedByDepartment: String
+    requestedByLeaderName: String
+    requestedByDepartmentLabel: String
+    preparedByLeaderName: String
+    financeDeptLeaderName: String
+    gmDeptLeaderName: String
     createdAt: DateTime!
   }
 
@@ -729,6 +758,12 @@ const typeDefs = gql`
     managerAuthorizedAt: DateTime
     decidedAt: DateTime
     rejectionReason: String
+    requestedByDepartment: String
+    requestedByLeaderName: String
+    requestedByDepartmentLabel: String
+    preparedByLeaderName: String
+    financeDeptLeaderName: String
+    gmDeptLeaderName: String
     createdAt: DateTime!
   }
 
@@ -835,6 +870,7 @@ const typeDefs = gql`
     ItemRegistration: [ItemRegistration!]!
     ItemStatus: [ItemStatus!]!
     costControllerProfiles: [CostControllerProfile!]!
+    departmentLeaders: [DepartmentLeader!]!
     purchaseRequests: [PurchaseRequest!]!
     stockOutRequests: [StockOutRequest!]!
     kitchenBarBeginnings: [KitchenBarBeginning!]!
@@ -1033,7 +1069,10 @@ const typeDefs = gql`
     ): ItemRegistration!
 
     """Register multiple items at once — one voucher number for the whole batch."""
-    createItemRegistrationsBatch(lines: [ItemRegistrationLineInput!]!): [ItemRegistration!]!
+    createItemRegistrationsBatch(
+      lines: [ItemRegistrationLineInput!]!
+      receivedByDepartment: String!
+    ): [ItemRegistration!]!
 
     submitItemRegistrationsToCostControl(ids: [Int!]!): [ItemRegistration!]!
 
@@ -1111,6 +1150,9 @@ const typeDefs = gql`
     createCostControllerProfile(displayName: String!): CostControllerProfile!
     deleteCostControllerProfile(id: Int!): Boolean!
 
+    upsertDepartmentLeader(department: String!, leaderName: String!): DepartmentLeader!
+    deleteDepartmentLeader(department: String!): Boolean!
+
     createPurchaseRequest(
       itemName: String!
       quantity: Float!
@@ -1123,7 +1165,10 @@ const typeDefs = gql`
     ): PurchaseRequest!
 
     """Submit multiple purchase lines at once — one voucher number for the whole batch."""
-    createPurchaseRequestsBatch(lines: [PurchaseRequestLineInput!]!): [PurchaseRequest!]!
+    createPurchaseRequestsBatch(
+      lines: [PurchaseRequestLineInput!]!
+      requestedByDepartment: String!
+    ): [PurchaseRequest!]!
 
     updatePurchaseRequestStoreDraft(
       id: Int!
@@ -1174,7 +1219,10 @@ const typeDefs = gql`
     ): StockOutRequest!
 
     """Submit multiple stock movements at once — one voucher number for the whole batch."""
-    createStockOutRequestsBatch(lines: [StockOutRequestLineInput!]!): [StockOutRequest!]!
+    createStockOutRequestsBatch(
+      lines: [StockOutRequestLineInput!]!
+      requestedByDepartment: String!
+    ): [StockOutRequest!]!
 
     updateStockOutRequestStoreDraft(
       id: Int!
@@ -1790,11 +1838,15 @@ const resolvers = {
     periodFrom: (p) => periodBoundsFromSnapshotMonthPeriod(p.monthPeriod).from,
     periodTo: (p) => periodBoundsFromSnapshotMonthPeriod(p.monthPeriod).to,
   },
+  DepartmentLeader: {
+    departmentLabel: (p) => departmentLabel(p.department),
+  },
   PurchaseRequest: {
     voucherDisplay: (p) =>
       p.voucherNumber != null && Number(p.voucherNumber) > 0
         ? formatVoucherNumber(p.voucherNumber)
         : null,
+    requestedByDepartmentLabel: (p) => departmentLabel(p.requestedByDepartment),
   },
   ItemRegistration: {
     voucherDisplay: (p) =>
@@ -1813,6 +1865,7 @@ const resolvers = {
       p.voucherNumber != null && Number(p.voucherNumber) > 0
         ? formatVoucherNumber(p.voucherNumber)
         : null,
+    requestedByDepartmentLabel: (p) => departmentLabel(p.requestedByDepartment),
     itemName: async (parent, _, { prisma }) => {
       const snap = String(parent.itemNameSnapshot ?? "").trim();
       if (snap) return snap;
@@ -1978,6 +2031,13 @@ const resolvers = {
       return await prisma.costControllerProfile.findMany({
         where: tenantHotelReadWhere(context),
         orderBy: { createdAt: "asc" },
+      });
+    },
+    departmentLeaders: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.departmentLeader.findMany({
+        where: tenantHotelReadWhere(context),
+        orderBy: { department: "asc" },
       });
     },
     purchaseRequests: async (_, __, context) => {
@@ -3407,15 +3467,25 @@ const resolvers = {
       return withVoucherDisplay(row);
     },
 
-    createItemRegistrationsBatch: async (_, { lines }, context) => {
+    createItemRegistrationsBatch: async (
+      _,
+      { lines, receivedByDepartment },
+      context,
+    ) => {
       assertRole(context, ["Store"]);
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one registration line is required");
+      const deptCode = String(receivedByDepartment ?? "").trim();
+      if (!REGISTRATION_RECEIVED_BY_DEPARTMENTS.includes(deptCode)) {
+        throw new Error("Received by must be Store, Kitchen, or Bar");
+      }
       const { tenant, voucherNumber } = await allocateSharedVoucherForTenant(
         prisma,
         context,
         VOUCHER_TYPES.ITEM_REGISTRATION,
       );
+      const leaderMap = await fetchLeaderMap(prisma, tenant);
+      const receiptSnap = registrationReceiptSnapshots(leaderMap, deptCode);
       const approvalStatus = isLodgingBusiness(context)
         ? PENDING_STORE
         : "AUTHORIZED";
@@ -3460,6 +3530,7 @@ const resolvers = {
                 approvalStatus === PENDING_STORE
                   ? String(context.user.UserName ?? "").trim()
                   : undefined,
+              ...receiptSnap,
             },
           }),
         ),
@@ -3712,6 +3783,48 @@ const resolvers = {
       return true;
     },
 
+    upsertDepartmentLeader: async (_, { department, leaderName }, context) => {
+      assertRole(context, ["Manager"]);
+      const dept = String(department ?? "").trim();
+      const name = String(leaderName ?? "").trim();
+      if (!HOTEL_DEPARTMENTS.includes(dept)) {
+        throw new Error("Invalid department");
+      }
+      if (name.length < 2) {
+        throw new Error("Leader name must be at least 2 characters");
+      }
+      const tenant = tenantScopeFromContext(context);
+      const row = await prisma.departmentLeader.upsert({
+        where: {
+          HotelName_department: { HotelName: tenant, department: dept },
+        },
+        create: { HotelName: tenant, department: dept, leaderName: name },
+        update: { leaderName: name },
+      });
+      return row;
+    },
+
+    deleteDepartmentLeader: async (_, { department }, context) => {
+      assertRole(context, ["Manager"]);
+      const dept = String(department ?? "").trim();
+      if (!HOTEL_DEPARTMENTS.includes(dept)) {
+        throw new Error("Invalid department");
+      }
+      const tenant = tenantScopeFromContext(context);
+      const row = await prisma.departmentLeader.findUnique({
+        where: {
+          HotelName_department: { HotelName: tenant, department: dept },
+        },
+      });
+      if (!row) throw new Error("Department leader not found");
+      await prisma.departmentLeader.delete({
+        where: {
+          HotelName_department: { HotelName: tenant, department: dept },
+        },
+      });
+      return true;
+    },
+
     createPurchaseRequest: async (
       _,
       {
@@ -3753,15 +3866,25 @@ const resolvers = {
       return withVoucherDisplay(row);
     },
 
-    createPurchaseRequestsBatch: async (_, { lines }, context) => {
+    createPurchaseRequestsBatch: async (
+      _,
+      { lines, requestedByDepartment },
+      context,
+    ) => {
       assertRole(context, ["Store"]);
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one purchase line is required");
+      const deptCode = String(requestedByDepartment ?? "").trim();
+      if (!REQUESTED_BY_DEPARTMENTS.includes(deptCode)) {
+        throw new Error("Requested by department is invalid");
+      }
       const { tenant, voucherNumber } = await allocateSharedVoucherForTenant(
         prisma,
         context,
         VOUCHER_TYPES.PURCHASE_REQUEST,
       );
+      const leaderMap = await fetchLeaderMap(prisma, tenant);
+      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode);
       const rows = await prisma.$transaction(
         items.map((line) =>
           prisma.purchaseRequest.create({
@@ -3778,6 +3901,7 @@ const resolvers = {
               status: PENDING_STORE,
               storeUserName: context.user.UserName,
               voucherNumber,
+              ...receiptSnap,
             },
           }),
         ),
@@ -4391,10 +4515,18 @@ const resolvers = {
       return withVoucherDisplay(row);
     },
 
-    createStockOutRequestsBatch: async (_, { lines }, context) => {
+    createStockOutRequestsBatch: async (
+      _,
+      { lines, requestedByDepartment },
+      context,
+    ) => {
       assertRole(context, ["Store"]);
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one movement line is required");
+      const deptCode = String(requestedByDepartment ?? "").trim();
+      if (!REQUESTED_BY_DEPARTMENTS.includes(deptCode)) {
+        throw new Error("Requested by department is invalid");
+      }
       const itemIds = [
         ...new Set(
           items.map((l) => Math.floor(Number(l.itemRegistrationId))).filter((id) => id > 0),
@@ -4430,6 +4562,8 @@ const resolvers = {
         context,
         VOUCHER_TYPES.STOCK_MOVEMENT,
       );
+      const leaderMap = await fetchLeaderMap(prisma, tenant);
+      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode);
       const rows = await prisma.$transaction(
         items.map((line) => {
           const item = itemById.get(line.itemRegistrationId);
@@ -4444,6 +4578,7 @@ const resolvers = {
               status: PENDING_STORE,
               voucherNumber,
               requestedByUserName: context.user.UserName,
+              ...receiptSnap,
             },
           });
         }),

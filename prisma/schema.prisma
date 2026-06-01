@@ -425,6 +425,11 @@ model ItemRegistration {
   /// Unit price revision after initial authorization (same 3-tier flow as purchase requests).
   pendingUnitPrice    Float?
   unitPriceChangeStatus String?
+  /// STORE | KITCHEN | BAR — receiving department for goods.
+  receivedByDepartment  String?
+  receivedByLeaderName  String?
+  financeDeptLeaderName String?
+  gmDeptLeaderName      String?
 
   @@index([HotelName])
   @@index([approvalStatus])
@@ -454,6 +459,19 @@ model ItemStatus {
 
   @@index([HotelName])
   @@index([stockOutRequestId])
+}
+
+/// One named leader per department per hotel (manager-maintained).
+model DepartmentLeader {
+  id         Int      @id @default(autoincrement())
+  HotelName  String
+  department String
+  leaderName String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([HotelName, department])
+  @@index([HotelName])
 }
 
 /// Named individuals sharing the Cost Control login — selected when approving.
@@ -493,6 +511,11 @@ model PurchaseRequest {
   /// Unit price revision after initial approval (same 3-tier flow).
   pendingUnitPrice    Float?
   unitPriceChangeStatus String?
+  requestedByDepartment String?
+  requestedByLeaderName String?
+  preparedByLeaderName  String?
+  financeDeptLeaderName String?
+  gmDeptLeaderName      String?
   createdAt           DateTime  @default(now())
 
   @@index([HotelName])
@@ -523,6 +546,11 @@ model StockOutRequest {
   managerAuthorizedAt  DateTime?
   decidedAt            DateTime?
   rejectionReason      String?
+  requestedByDepartment String?
+  requestedByLeaderName String?
+  preparedByLeaderName  String?
+  financeDeptLeaderName String?
+  gmDeptLeaderName      String?
   createdAt            DateTime @default(now())
 
   @@index([HotelName])
