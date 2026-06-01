@@ -11,7 +11,9 @@
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:backfill-receipt-snapshots": "node scripts/backfill-receipt-snapshots.js",
-    "db:backfill-receipt-snapshots:dry": "node scripts/backfill-receipt-snapshots.js --dry-run"
+    "db:backfill-receipt-snapshots:dry": "node scripts/backfill-receipt-snapshots.js --dry-run",
+    "db:backfill-purchase-vat": "node scripts/backfill-purchase-vat.js",
+    "db:backfill-purchase-vat:dry": "node scripts/backfill-purchase-vat.js --dry-run"
   },
   "keywords": [],
   "author": "",
