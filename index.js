@@ -467,7 +467,8 @@ const typeDefs = gql`
     creditAmount: Float
     serviceCaption: String
     cancelledBy: String
-    quantityRevisedAt: DateTime
+    orderRevisedAt: DateTime
+    orderRevisionCount: Int
     createdAt: DateTime!
   }
 
@@ -2948,19 +2949,43 @@ const resolvers = {
         throw new Error("Only today's unpaid orders can be edited");
       }
       const data = {};
+      let kitchenRelevantChange = false;
+      const normWaiter = (v) => String(v ?? "").trim();
+      const normTable = (v) => Math.floor(Number(v));
+
       if (tableNo != null) {
-        data.tableNo = tableNo;
-        data.serviceCaption = await serviceCaptionForTableNo(tableNo, authCtx);
+        const nextTable = normTable(tableNo);
+        if (nextTable !== normTable(order.tableNo)) {
+          data.tableNo = nextTable;
+          data.serviceCaption = await serviceCaptionForTableNo(
+            nextTable,
+            authCtx,
+          );
+          kitchenRelevantChange = true;
+        }
       }
-      if (waiterName != null) data.waiterName = waiterName;
+      if (waiterName != null) {
+        const nextWaiter = normWaiter(waiterName);
+        if (nextWaiter !== normWaiter(order.waiterName)) {
+          data.waiterName = nextWaiter;
+          kitchenRelevantChange = true;
+        }
+      }
       if (orderAmount != null) {
         const nextAmount = Math.floor(Number(orderAmount));
         if (nextAmount !== Math.floor(Number(order.orderAmount))) {
           data.orderAmount = nextAmount;
           // Re-queue same ticket at kitchen/bar with the new total quantity.
           data.status = "Pending";
-          data.quantityRevisedAt = new Date();
+          kitchenRelevantChange = true;
         }
+      }
+      if (kitchenRelevantChange) {
+        const prevCount =
+          Number(order.orderRevisionCount) ||
+          (order.orderRevisedAt || order.quantityRevisedAt ? 1 : 0);
+        data.orderRevisionCount = prevCount + 1;
+        data.orderRevisedAt = new Date();
       }
       if (title != null) data.title = title;
       return await prisma.order.update({
@@ -3131,7 +3156,8 @@ const resolvers = {
         updateData.cancelledBy = cancelledByLabelFromUser(authCtx.user);
       }
       if (nextLower === "completed" || nextLower === "cancelled") {
-        updateData.quantityRevisedAt = null;
+        updateData.orderRevisedAt = null;
+        updateData.orderRevisionCount = 0;
       }
       return await prisma.order.update({
         where: { id: id },
