@@ -1462,24 +1462,23 @@ function tenantScopedRowWhere(ctx, extra = {}) {
   return { ...extra, HotelName: { in: keys } };
 }
 
+/** Load DB user onto context so tenant scope matches login (JWT can be stale). */
+async function resolveAuthContext(context, prismaClient) {
+  if (!context?.user) return null;
+  if (context.user.__authExpired) return null;
+  const dbUser = await loadAuthUserFromDb(context, prismaClient);
+  return enrichContextUser(context, dbUser);
+}
+
 async function findTenantOrderById(ctx, prismaClient, id) {
   const orderId = Number(id);
   if (!Number.isFinite(orderId) || orderId <= 0) return null;
-  const scope = tenantHotelReadWhere(ctx);
-  if (
-    scope.HotelName === "__no_user__" ||
-    scope.HotelName === "__no_scope__"
-  ) {
-    return null;
-  }
-  const tenantClause = scope.OR
-    ? { OR: scope.OR }
-    : { HotelName: scope.HotelName };
-  return prismaClient.order.findFirst({
-    where: {
-      AND: [{ id: orderId }, tenantClause],
-    },
+  const order = await prismaClient.order.findUnique({
+    where: { id: orderId },
   });
+  if (!order) return null;
+  if (!tenantHotelReadMatches(ctx, order.HotelName)) return null;
+  return order;
 }
 
 function assertAdminOrManager(context) {
@@ -1896,9 +1895,10 @@ const resolvers = {
       });
     },
     orders: async (_, __, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
+      const authCtx = await resolveAuthContext(context, prisma);
+      if (!authCtx) throw new Error("Not Authenticated");
       return await prisma.order.findMany({
-        where: tenantHotelReadWhere(context),
+        where: tenantHotelReadWhere(authCtx),
       });
     },
     me: async (_, __, context) => {
@@ -2713,15 +2713,16 @@ const resolvers = {
       });
     },
     BatchOrderCreation: async (_, { orders }, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
+      const authCtx = await resolveAuthContext(context, prisma);
+      if (!authCtx) throw new Error("Not Authenticated");
 
-      const hotelName = tenantScopeFromContext(context);
+      const hotelName = tenantScopeFromContext(authCtx);
       const ordersWithCaptions = await Promise.all(
         orders.map(async (orderData) => ({
           orderData,
-          serviceCaption: await serviceCaptionForTableNo(
+              serviceCaption: await serviceCaptionForTableNo(
             orderData.tableNo,
-            context,
+            authCtx,
           ),
         })),
       );
@@ -2861,9 +2862,10 @@ const resolvers = {
       },
       context,
     ) => {
-      if (!context.user) throw new Error("Not Authenticated");
+      const authCtx = await resolveAuthContext(context, prisma);
+      if (!authCtx) throw new Error("Not Authenticated");
       try {
-        const serviceCaption = await serviceCaptionForTableNo(tableNo, context);
+        const serviceCaption = await serviceCaptionForTableNo(tableNo, authCtx);
         const order = await prisma.order.create({
           data: {
             title,
@@ -2872,7 +2874,7 @@ const resolvers = {
             waiterName,
             orderAmount,
             status,
-            HotelName: tenantScopeFromContext(context),
+            HotelName: tenantScopeFromContext(authCtx),
             payment,
             category,
             type,
@@ -2891,12 +2893,11 @@ const resolvers = {
       { id, tableNo, waiterName, orderAmount, title },
       context,
     ) => {
-      if (!context.user) throw new Error("Not Authenticated");
-      if (context.user.__authExpired) {
+      const authCtx = await resolveAuthContext(context, prisma);
+      if (!authCtx) throw new Error("Not Authenticated");
+      if (context.user?.__authExpired) {
         throw new Error("JWT expired");
       }
-      const dbUser = await loadAuthUserFromDb(context, prisma);
-      const authCtx = enrichContextUser(context, dbUser);
       if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager"])) {
         throw new Error("Not authorized to update live orders");
       }
@@ -2919,7 +2920,7 @@ const resolvers = {
       const data = {};
       if (tableNo != null) {
         data.tableNo = tableNo;
-        data.serviceCaption = await serviceCaptionForTableNo(tableNo, context);
+        data.serviceCaption = await serviceCaptionForTableNo(tableNo, authCtx);
       }
       if (waiterName != null) data.waiterName = waiterName;
       if (orderAmount != null) {
