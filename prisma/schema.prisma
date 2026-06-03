@@ -304,6 +304,8 @@ model Order {
   serviceCaption String?
   /// Role/station that cancelled the line (Cashier, Chef/Kitchen, Barista, etc.).
   cancelledBy   String?
+  /// Set when cashier changes quantity — highlights ticket on kitchen/bar screens.
+  quantityRevisedAt DateTime?
   createdAt   DateTime @default(now())
 
   @@index([HotelName])

@@ -467,6 +467,7 @@ const typeDefs = gql`
     creditAmount: Float
     serviceCaption: String
     cancelledBy: String
+    quantityRevisedAt: DateTime
     createdAt: DateTime!
   }
 
@@ -2958,6 +2959,7 @@ const resolvers = {
           data.orderAmount = nextAmount;
           // Re-queue same ticket at kitchen/bar with the new total quantity.
           data.status = "Pending";
+          data.quantityRevisedAt = new Date();
         }
       }
       if (title != null) data.title = title;
@@ -3127,6 +3129,9 @@ const resolvers = {
       const updateData = { status: status };
       if (nextLower === "cancelled") {
         updateData.cancelledBy = cancelledByLabelFromUser(authCtx.user);
+      }
+      if (nextLower === "completed" || nextLower === "cancelled") {
+        updateData.quantityRevisedAt = null;
       }
       return await prisma.order.update({
         where: { id: id },
