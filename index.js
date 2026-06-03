@@ -2715,38 +2715,39 @@ const resolvers = {
     BatchOrderCreation: async (_, { orders }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
 
-      try {
-        const createdOrders = await prisma.$transaction(
-          await Promise.all(
-            orders.map(async (orderData) => {
-              const serviceCaption = await serviceCaptionForTableNo(
-                orderData.tableNo,
-                context,
-              );
-              return prisma.order.create({
-                data: {
-                  title: orderData.title,
-                  imageUrl: orderData.imageUrl,
-                  tableNo: orderData.tableNo,
-                  waiterName: orderData.waiterName,
-                  orderAmount: orderData.orderAmount,
-                  HotelName: tenantScopeFromContext(context),
-                  status: orderData.status || null,
-                  payment: orderData.payment || "Unpaid",
-                  category: orderData.category,
-                  type: orderData.type,
-                  price: orderData.price,
-                  serviceCaption,
-                },
-              });
-            }),
+      const hotelName = tenantScopeFromContext(context);
+      const ordersWithCaptions = await Promise.all(
+        orders.map(async (orderData) => ({
+          orderData,
+          serviceCaption: await serviceCaptionForTableNo(
+            orderData.tableNo,
+            context,
           ),
-        );
+        })),
+      );
 
-        return createdOrders;
-      } catch (error) {
-        throw error;
-      }
+      const createdOrders = await prisma.$transaction(
+        ordersWithCaptions.map(({ orderData, serviceCaption }) =>
+          prisma.order.create({
+            data: {
+              title: orderData.title,
+              imageUrl: orderData.imageUrl,
+              tableNo: orderData.tableNo,
+              waiterName: orderData.waiterName,
+              orderAmount: orderData.orderAmount,
+              HotelName: hotelName,
+              status: orderData.status || null,
+              payment: orderData.payment || "Unpaid",
+              category: orderData.category,
+              type: orderData.type,
+              price: orderData.price,
+              serviceCaption,
+            },
+          }),
+        ),
+      );
+
+      return createdOrders;
     },
     UpdateAdminCredential: async (_, { Password }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
