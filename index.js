@@ -951,7 +951,6 @@ const typeDefs = gql`
       orderAmount: Int
       title: String
     ): Order!
-    AcknowledgeOrderQuantityRevision(id: Int!): Order!
     CreateWaiter(
       name: String!
       age: Int!
@@ -2967,36 +2966,6 @@ const resolvers = {
       return await prisma.order.update({
         where: { id },
         data,
-      });
-    },
-    AcknowledgeOrderQuantityRevision: async (_, { id }, context) => {
-      const authCtx = await resolveAuthContext(context, prisma);
-      if (!authCtx) throw new Error("Not Authenticated");
-      if (
-        !roleIsOneOf(authCtx.user, [
-          "Cashier",
-          "Admin",
-          "Manager",
-          "Kitchen",
-          "Barista",
-        ])
-      ) {
-        throw new Error("Not authorized");
-      }
-      const order = await findTenantOrderById(authCtx, prisma, id);
-      if (!order) {
-        throw new Error("Order not found or not authorized");
-      }
-      if (!order.quantityRevisedAt) {
-        return order;
-      }
-      const statusLower = String(order.status ?? "").toLowerCase();
-      if (statusLower === "completed" || statusLower === "cancelled") {
-        throw new Error("Order is no longer active");
-      }
-      return await prisma.order.update({
-        where: { id },
-        data: { quantityRevisedAt: null },
       });
     },
     UpdatePayment: async (_, { id, payment, withBank }, context) => {
