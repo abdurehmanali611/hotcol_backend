@@ -286,11 +286,11 @@ function attachSubscriptionFields(user, subscription) {
 function tenantScopeFromContext(ctx) {
   const u = ctx?.user;
   if (!u) return null;
+  const tin = u.tinNumber != null ? String(u.tinNumber).trim() : "";
+  if (tin) return tin;
   if (u.tenantId != null && String(u.tenantId).trim() !== "") {
     return String(u.tenantId).trim();
   }
-  const t = u.tinNumber != null ? String(u.tinNumber).trim() : "";
-  if (t) return t;
   if (u.HotelName) return String(u.HotelName).trim();
   return null;
 }
@@ -318,23 +318,7 @@ async function serviceCaptionForTableNo(tableNo, context) {
 function tenantHotelReadWhere(ctx) {
   const u = ctx?.user;
   if (!u) return { HotelName: "__no_user__" };
-  const keys = new Set();
-  const tid =
-    u.tenantId != null && String(u.tenantId).trim() !== ""
-      ? String(u.tenantId).trim()
-      : "";
-  const tin =
-    u.tinNumber != null && String(u.tinNumber).trim() !== ""
-      ? String(u.tinNumber).trim()
-      : "";
-  const disp =
-    u.HotelName != null && String(u.HotelName).trim() !== ""
-      ? String(u.HotelName).trim()
-      : "";
-  if (tid) keys.add(tid);
-  if (tin) keys.add(tin);
-  if (disp) keys.add(disp);
-  const list = [...keys];
+  const list = collectTenantHotelKeysFromUser(u);
   if (list.length === 0) return { HotelName: "__no_scope__" };
   if (list.length === 1) return { HotelName: list[0] };
   return { OR: list.map((HotelName) => ({ HotelName })) };
@@ -353,26 +337,12 @@ function isLodgingBusiness(ctx) {
 }
 
 function tenantHotelReadMatches(ctx, rowHotelName) {
-  const u = ctx?.user;
-  if (!u) return false;
   const row =
     rowHotelName != null && String(rowHotelName).trim() !== ""
       ? String(rowHotelName).trim()
       : "";
   if (!row) return false;
-  const tid =
-    u.tenantId != null && String(u.tenantId).trim() !== ""
-      ? String(u.tenantId).trim()
-      : "";
-  const tin =
-    u.tinNumber != null && String(u.tinNumber).trim() !== ""
-      ? String(u.tinNumber).trim()
-      : "";
-  const disp =
-    u.HotelName != null && String(u.HotelName).trim() !== ""
-      ? String(u.HotelName).trim()
-      : "";
-  return row === tid || row === tin || row === disp;
+  return collectTenantHotelKeysFromUser(ctx?.user).includes(row);
 }
 
 /** Filter `user` rows in the same organization. */
@@ -1409,7 +1379,7 @@ function canCompleteLiveOrder(user, order) {
 }
 
 async function loadAuthUserFromDb(ctx, prismaClient) {
-  const userId = Number(ctx?.user?.userId);
+  const userId = Number(ctx?.user?.userId ?? ctx?.user?.id);
   if (!Number.isFinite(userId) || userId <= 0) return null;
   return prismaClient.user.findUnique({
     where: { id: userId },
@@ -1417,28 +1387,72 @@ async function loadAuthUserFromDb(ctx, prismaClient) {
   });
 }
 
+/** Every value that may appear on Order/Item `HotelName` for this session. */
+function collectTenantHotelKeysFromUser(u) {
+  if (!u) return [];
+  if (Array.isArray(u.allTenantHotelKeys) && u.allTenantHotelKeys.length > 0) {
+    return u.allTenantHotelKeys;
+  }
+  const keys = new Set();
+  const add = (v) => {
+    const s = String(v ?? "").trim();
+    if (s) keys.add(s);
+  };
+  add(u.tenantId);
+  add(u.tinNumber);
+  add(u.HotelName);
+  return [...keys];
+}
+
 /** Prefer DB role/tenant fields — JWT can be stale after credential edits. */
 function enrichContextUser(ctx, dbUser) {
   if (!ctx?.user) return ctx;
-  if (!dbUser) return ctx;
+  if (!dbUser) {
+    const jwtTid =
+      ctx.user.tenantId != null && String(ctx.user.tenantId).trim() !== ""
+        ? String(ctx.user.tenantId).trim()
+        : "";
+    const jwtTin =
+      ctx.user.tinNumber != null && String(ctx.user.tinNumber).trim() !== ""
+        ? String(ctx.user.tinNumber).trim()
+        : "";
+    const disp =
+      ctx.user.HotelName != null && String(ctx.user.HotelName).trim() !== ""
+        ? String(ctx.user.HotelName).trim()
+        : "";
+    const allTenantHotelKeys = [
+      ...new Set([jwtTin, jwtTid, disp].filter(Boolean)),
+    ];
+    return allTenantHotelKeys.length
+      ? { ...ctx, user: { ...ctx.user, allTenantHotelKeys } }
+      : ctx;
+  }
   const tin =
     dbUser.tinNumber != null && String(dbUser.tinNumber).trim() !== ""
       ? String(dbUser.tinNumber).trim()
       : "";
-  const tenantId =
-    (ctx.user.tenantId != null && String(ctx.user.tenantId).trim() !== ""
+  const disp = String(dbUser.HotelName ?? ctx.user.HotelName ?? "").trim();
+  const jwtTid =
+    ctx.user.tenantId != null && String(ctx.user.tenantId).trim() !== ""
       ? String(ctx.user.tenantId).trim()
-      : "") ||
-    tin ||
-    String(dbUser.HotelName ?? "").trim();
+      : "";
+  const jwtTin =
+    ctx.user.tinNumber != null && String(ctx.user.tinNumber).trim() !== ""
+      ? String(ctx.user.tinNumber).trim()
+      : "";
+  const tenantId = tin || jwtTid || jwtTin || disp;
+  const allTenantHotelKeys = [
+    ...new Set([tin, jwtTid, jwtTin, disp, tenantId].filter(Boolean)),
+  ];
   return {
     ...ctx,
     user: {
       ...ctx.user,
       Role: dbUser.Role ?? ctx.user.Role ?? ctx.user.role,
-      HotelName: dbUser.HotelName ?? ctx.user.HotelName,
-      tinNumber: dbUser.tinNumber ?? ctx.user.tinNumber,
+      HotelName: disp || ctx.user.HotelName,
+      tinNumber: tin || jwtTin || ctx.user.tinNumber,
       tenantId,
+      allTenantHotelKeys,
     },
   };
 }
@@ -1473,12 +1487,27 @@ async function resolveAuthContext(context, prismaClient) {
 async function findTenantOrderById(ctx, prismaClient, id) {
   const orderId = Number(id);
   if (!Number.isFinite(orderId) || orderId <= 0) return null;
-  const order = await prismaClient.order.findUnique({
+  const scope = tenantHotelReadWhere(ctx);
+  if (
+    scope.HotelName === "__no_user__" ||
+    scope.HotelName === "__no_scope__"
+  ) {
+    return null;
+  }
+  const tenantClause = scope.OR
+    ? { OR: scope.OR }
+    : { HotelName: scope.HotelName };
+  const order = await prismaClient.order.findFirst({
+    where: {
+      AND: [{ id: orderId }, tenantClause],
+    },
+  });
+  if (order) return order;
+  const row = await prismaClient.order.findUnique({
     where: { id: orderId },
   });
-  if (!order) return null;
-  if (!tenantHotelReadMatches(ctx, order.HotelName)) return null;
-  return order;
+  if (!row) return null;
+  return tenantHotelReadMatches(ctx, row.HotelName) ? row : null;
 }
 
 function assertAdminOrManager(context) {
