@@ -60,6 +60,8 @@ import {
   REQUESTED_BY_DEPARTMENTS,
   departmentLabel,
   fetchLeaderMap,
+  migrateLegacyHouseKeepingDepartmentLeaders,
+  normalizeDepartmentCode,
   registrationReceiptSnapshots,
   requestReceiptSnapshots,
   PURCHASE_REQUESTED_BY_DEPARTMENTS,
@@ -2071,8 +2073,17 @@ const resolvers = {
     },
     departmentLeaders: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const where = tenantHotelReadWhere(context);
+      const scopedHotels = await prisma.departmentLeader.findMany({
+        where,
+        select: { HotelName: true },
+        distinct: ["HotelName"],
+      });
+      for (const row of scopedHotels) {
+        await migrateLegacyHouseKeepingDepartmentLeaders(prisma, row.HotelName);
+      }
       return await prisma.departmentLeader.findMany({
-        where: tenantHotelReadWhere(context),
+        where,
         orderBy: { department: "asc" },
       });
     },
@@ -3943,7 +3954,7 @@ const resolvers = {
       assertRole(context, ["Store"]);
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one purchase line is required");
-      const deptCode = String(requestedByDepartment ?? "").trim();
+      const deptCode = normalizeDepartmentCode(String(requestedByDepartment ?? "").trim());
       if (!PURCHASE_REQUESTED_BY_DEPARTMENTS.includes(deptCode)) {
         throw new Error("Requested by department is invalid");
       }
@@ -4597,7 +4608,7 @@ const resolvers = {
       assertRole(context, ["Store"]);
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one movement line is required");
-      const deptCode = String(requestedByDepartment ?? "").trim();
+      const deptCode = normalizeDepartmentCode(String(requestedByDepartment ?? "").trim());
       if (!REQUESTED_BY_DEPARTMENTS.includes(deptCode)) {
         throw new Error("Requested by department is invalid");
       }

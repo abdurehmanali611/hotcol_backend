@@ -20,7 +20,8 @@ import {
 const DUMMY_LEADER_NAMES = {
   KITCHEN: "Abebe Kitchen",
   BAR: "Sara Bar",
-  HOUSE_KEEPING: "Helen Housekeeping",
+  HOUSE_KEEPING_ROOM: "Helen Housekeeping (Room)",
+  HOUSE_KEEPING_PUBLIC: "Helen Housekeeping (Public)",
   SECURITY: "Tadesse Security",
   MAINTENANCE: "Dawit Maintenance",
   FINANCE: "Meron Finance",
