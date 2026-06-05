@@ -1804,6 +1804,25 @@ function uniquePositiveIds(ids) {
   return [...new Set((ids || []).map((id) => Math.floor(Number(id))).filter((id) => id > 0))];
 }
 
+/** One round-trip batch update — avoids Prisma interactive tx timeouts on large queues. */
+async function batchUpdatePurchaseRequests(prisma, unique, whereExtra, data) {
+  const result = await prisma.purchaseRequest.updateMany({
+    where: { id: { in: unique }, ...whereExtra },
+    data,
+  });
+  if (result.count !== unique.length) return null;
+  return prisma.purchaseRequest.findMany({ where: { id: { in: unique } } });
+}
+
+async function batchUpdateStockOutRequests(prisma, unique, whereExtra, data) {
+  const result = await prisma.stockOutRequest.updateMany({
+    where: { id: { in: unique }, ...whereExtra },
+    data,
+  });
+  if (result.count !== unique.length) return null;
+  return prisma.stockOutRequest.findMany({ where: { id: { in: unique } } });
+}
+
 async function allocateSharedVoucherForTenant(prisma, context, legacyType) {
   const tenant = tenantScopeFromContext(context);
   const { voucherNumber } = await allocateVoucherNumber(
@@ -4137,20 +4156,21 @@ const resolvers = {
         throw new Error("Select a registered cost controller identity");
       }
       const now = new Date();
-      const updated = await prisma.$transaction(
-        unique.map((id) =>
-          prisma.purchaseRequest.update({
-            where: { id },
-            data: {
-              status: "PENDING_FINANCE",
-              ccProfileId: prof.id,
-              ccActorName: prof.displayName,
-              ccApprovedAt: now,
-              rejectionReason: null,
-            },
-          }),
-        ),
+      const updated = await batchUpdatePurchaseRequests(
+        prisma,
+        unique,
+        { HotelName: hotel, status: "PENDING_CC" },
+        {
+          status: "PENDING_FINANCE",
+          ccProfileId: prof.id,
+          ccActorName: prof.displayName,
+          ccApprovedAt: now,
+          rejectionReason: null,
+        },
       );
+      if (!updated) {
+        throw new Error("One or more requests are not awaiting cost control check");
+      }
       return updated.map(withVoucherDisplay);
     },
 
@@ -4188,17 +4208,18 @@ const resolvers = {
       if (!rows.every((r) => r.status === "PENDING_CC")) {
         throw new Error("One or more requests are not awaiting cost control approval");
       }
-      const updated = await prisma.$transaction(
-        unique.map((id) =>
-          prisma.purchaseRequest.update({
-            where: { id },
-            data: {
-              status: "REJECTED_CC",
-              rejectionReason,
-            },
-          }),
-        ),
+      const updated = await batchUpdatePurchaseRequests(
+        prisma,
+        unique,
+        { status: "PENDING_CC" },
+        {
+          status: "REJECTED_CC",
+          rejectionReason,
+        },
       );
+      if (!updated) {
+        throw new Error("One or more requests are not awaiting cost control approval");
+      }
       return updated.map(withVoucherDisplay);
     },
 
@@ -4239,19 +4260,20 @@ const resolvers = {
       }
       const now = new Date();
       const actor = context.user.UserName;
-      const updated = await prisma.$transaction(
-        unique.map((id) =>
-          prisma.purchaseRequest.update({
-            where: { id },
-            data: {
-              status: "PENDING_MANAGER",
-              financeApprovedAt: now,
-              financeActorName: actor,
-              rejectionReason: null,
-            },
-          }),
-        ),
+      const updated = await batchUpdatePurchaseRequests(
+        prisma,
+        unique,
+        { status: "PENDING_FINANCE" },
+        {
+          status: "PENDING_MANAGER",
+          financeApprovedAt: now,
+          financeActorName: actor,
+          rejectionReason: null,
+        },
       );
+      if (!updated) {
+        throw new Error("One or more requests are not awaiting finance approval");
+      }
       return updated.map(withVoucherDisplay);
     },
 
@@ -4310,17 +4332,18 @@ const resolvers = {
       if (!rows.every((r) => r.status === "PENDING_FINANCE")) {
         throw new Error("Request is not awaiting finance approval");
       }
-      const updated = await prisma.$transaction(
-        unique.map((id) =>
-          prisma.purchaseRequest.update({
-            where: { id },
-            data: {
-              status: "REJECTED_FINANCE",
-              rejectionReason,
-            },
-          }),
-        ),
+      const updated = await batchUpdatePurchaseRequests(
+        prisma,
+        unique,
+        { status: "PENDING_FINANCE" },
+        {
+          status: "REJECTED_FINANCE",
+          rejectionReason,
+        },
       );
+      if (!updated) {
+        throw new Error("Request is not awaiting finance approval");
+      }
       return updated.map(withVoucherDisplay);
     },
 
@@ -4843,20 +4866,21 @@ const resolvers = {
         throw new Error("Select a registered cost controller identity");
       }
       const now = new Date();
-      const updated = await prisma.$transaction(
-        unique.map((id) =>
-          prisma.stockOutRequest.update({
-            where: { id },
-            data: {
-              status: "PENDING_FINANCE",
-              ccProfileId: prof.id,
-              ccActorName: prof.displayName,
-              ccCheckedAt: now,
-              rejectionReason: null,
-            },
-          }),
-        ),
+      const updated = await batchUpdateStockOutRequests(
+        prisma,
+        unique,
+        { HotelName: hotel, status: { in: ["PENDING", "PENDING_CC"] } },
+        {
+          status: "PENDING_FINANCE",
+          ccProfileId: prof.id,
+          ccActorName: prof.displayName,
+          ccCheckedAt: now,
+          rejectionReason: null,
+        },
       );
+      if (!updated) {
+        throw new Error("One or more requests are not awaiting cost control check");
+      }
       return updated.map(withVoucherDisplay);
     },
 
@@ -4977,18 +5001,19 @@ const resolvers = {
         throw new Error("One or more requests are not awaiting cost control check");
       }
       const now = new Date();
-      const updated = await prisma.$transaction(
-        unique.map((id) =>
-          prisma.stockOutRequest.update({
-            where: { id },
-            data: {
-              status: "REJECTED",
-              decidedAt: now,
-              rejectionReason,
-            },
-          }),
-        ),
+      const updated = await batchUpdateStockOutRequests(
+        prisma,
+        unique,
+        { status: { in: ["PENDING", "PENDING_CC"] } },
+        {
+          status: "REJECTED",
+          decidedAt: now,
+          rejectionReason,
+        },
       );
+      if (!updated) {
+        throw new Error("One or more requests are not awaiting cost control check");
+      }
       return updated.map(withVoucherDisplay);
     },
 
