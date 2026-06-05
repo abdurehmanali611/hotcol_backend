@@ -1056,11 +1056,17 @@ const typeDefs = gql`
     submitItemRegistrationsToCostControl(ids: [Int!]!): [ItemRegistration!]!
 
     checkItemRegistrationCC(id: Int!, costControllerProfileId: Int!): ItemRegistration!
+    checkItemRegistrationsCCBatch(ids: [Int!]!, costControllerProfileId: Int!): [ItemRegistration!]!
     rejectItemRegistrationCC(id: Int!, reason: String): ItemRegistration!
+    rejectItemRegistrationsCCBatch(ids: [Int!]!, reason: String): [ItemRegistration!]!
     approveItemRegistrationFinance(id: Int!): ItemRegistration!
+    approveItemRegistrationsFinanceBatch(ids: [Int!]!): [ItemRegistration!]!
     rejectItemRegistrationFinance(id: Int!, reason: String): ItemRegistration!
+    rejectItemRegistrationsFinanceBatch(ids: [Int!]!, reason: String): [ItemRegistration!]!
     authorizeItemRegistrationManager(id: Int!): ItemRegistration!
+    authorizeItemRegistrationsManagerBatch(ids: [Int!]!): [ItemRegistration!]!
     rejectItemRegistrationManager(id: Int!, reason: String): ItemRegistration!
+    rejectItemRegistrationsManagerBatch(ids: [Int!]!, reason: String): [ItemRegistration!]!
     DeleteCreditLevel(id: Int!): creditLevel!
     DeletePityCash(id: Int!): pityCash!
     DeleteCreditRegistration(id: Int!): CreditRegistration!
@@ -1821,6 +1827,15 @@ async function batchUpdateStockOutRequests(prisma, unique, whereExtra, data) {
   });
   if (result.count !== unique.length) return null;
   return prisma.stockOutRequest.findMany({ where: { id: { in: unique } } });
+}
+
+async function batchUpdateItemRegistrations(prisma, unique, whereExtra, data) {
+  const result = await prisma.itemRegistration.updateMany({
+    where: { id: { in: unique }, ...whereExtra },
+    data,
+  });
+  if (result.count !== unique.length) return null;
+  return prisma.itemRegistration.findMany({ where: { id: { in: unique } } });
 }
 
 async function allocateSharedVoucherForTenant(prisma, context, legacyType) {
@@ -5047,6 +5062,51 @@ const resolvers = {
       return withVoucherDisplay(updated);
     },
 
+    checkItemRegistrationsCCBatch: async (
+      _,
+      { ids, costControllerProfileId },
+      context,
+    ) => {
+      assertRole(context, ["CostControl"]);
+      const unique = uniquePositiveIds(ids);
+      if (!unique.length) return [];
+      const rows = await prisma.itemRegistration.findMany({
+        where: { id: { in: unique } },
+      });
+      if (!rows.length) throw new Error("Registration not found");
+      const hotel = rows[0].HotelName;
+      if (!rows.every((r) => tenantHotelReadMatches(context, r.HotelName))) {
+        throw new Error("Registration not found");
+      }
+      if (!rows.every((r) => r.HotelName === hotel)) {
+        throw new Error("All registrations must belong to the same property");
+      }
+      if (!rows.every((r) => r.approvalStatus === "PENDING_CC")) {
+        throw new Error("One or more registrations are not awaiting cost control check");
+      }
+      const prof = await prisma.costControllerProfile.findFirst({
+        where: { id: costControllerProfileId, HotelName: hotel },
+      });
+      if (!prof) throw new Error("Select a registered cost controller identity");
+      const now = new Date();
+      const updated = await batchUpdateItemRegistrations(
+        prisma,
+        unique,
+        { HotelName: hotel, approvalStatus: "PENDING_CC" },
+        {
+          approvalStatus: "PENDING_FINANCE",
+          ccProfileId: prof.id,
+          ccActorName: prof.displayName,
+          ccCheckedAt: now,
+          rejectionReason: null,
+        },
+      );
+      if (!updated) {
+        throw new Error("One or more registrations are not awaiting cost control check");
+      }
+      return updated.map(withVoucherDisplay);
+    },
+
     rejectItemRegistrationCC: async (_, { id, reason }, context) => {
       assertRole(context, ["CostControl"]);
       const rejectionReason = requireRejectionReason(reason);
@@ -5065,6 +5125,36 @@ const resolvers = {
         },
       });
       return withVoucherDisplay(updated);
+    },
+
+    rejectItemRegistrationsCCBatch: async (_, { ids, reason }, context) => {
+      assertRole(context, ["CostControl"]);
+      const rejectionReason = requireRejectionReason(reason);
+      const unique = uniquePositiveIds(ids);
+      if (!unique.length) return [];
+      const rows = await prisma.itemRegistration.findMany({
+        where: { id: { in: unique } },
+      });
+      if (!rows.length) throw new Error("Registration not found");
+      if (!rows.every((r) => tenantHotelReadMatches(context, r.HotelName))) {
+        throw new Error("Registration not found");
+      }
+      if (!rows.every((r) => r.approvalStatus === "PENDING_CC")) {
+        throw new Error("One or more registrations are not awaiting cost control check");
+      }
+      const updated = await batchUpdateItemRegistrations(
+        prisma,
+        unique,
+        { approvalStatus: "PENDING_CC" },
+        {
+          approvalStatus: "REJECTED_CC",
+          rejectionReason,
+        },
+      );
+      if (!updated) {
+        throw new Error("One or more registrations are not awaiting cost control check");
+      }
+      return updated.map(withVoucherDisplay);
     },
 
     approveItemRegistrationFinance: async (_, { id }, context) => {
@@ -5088,6 +5178,39 @@ const resolvers = {
       return withVoucherDisplay(updated);
     },
 
+    approveItemRegistrationsFinanceBatch: async (_, { ids }, context) => {
+      assertRole(context, ["Finance"]);
+      const unique = uniquePositiveIds(ids);
+      if (!unique.length) return [];
+      const rows = await prisma.itemRegistration.findMany({
+        where: { id: { in: unique } },
+      });
+      if (!rows.length) throw new Error("Registration not found");
+      if (!rows.every((r) => tenantHotelReadMatches(context, r.HotelName))) {
+        throw new Error("Registration not found");
+      }
+      if (!rows.every((r) => r.approvalStatus === "PENDING_FINANCE")) {
+        throw new Error("One or more registrations are not awaiting finance approval");
+      }
+      const now = new Date();
+      const actor = context.user.UserName;
+      const updated = await batchUpdateItemRegistrations(
+        prisma,
+        unique,
+        { approvalStatus: "PENDING_FINANCE" },
+        {
+          approvalStatus: "PENDING_MANAGER",
+          financeApprovedAt: now,
+          financeActorName: actor,
+          rejectionReason: null,
+        },
+      );
+      if (!updated) {
+        throw new Error("One or more registrations are not awaiting finance approval");
+      }
+      return updated.map(withVoucherDisplay);
+    },
+
     rejectItemRegistrationFinance: async (_, { id, reason }, context) => {
       assertRole(context, ["Finance"]);
       const rejectionReason = requireRejectionReason(reason);
@@ -5106,6 +5229,36 @@ const resolvers = {
         },
       });
       return withVoucherDisplay(updated);
+    },
+
+    rejectItemRegistrationsFinanceBatch: async (_, { ids, reason }, context) => {
+      assertRole(context, ["Finance"]);
+      const rejectionReason = requireRejectionReason(reason);
+      const unique = uniquePositiveIds(ids);
+      if (!unique.length) return [];
+      const rows = await prisma.itemRegistration.findMany({
+        where: { id: { in: unique } },
+      });
+      if (!rows.length) throw new Error("Registration not found");
+      if (!rows.every((r) => tenantHotelReadMatches(context, r.HotelName))) {
+        throw new Error("Registration not found");
+      }
+      if (!rows.every((r) => r.approvalStatus === "PENDING_FINANCE")) {
+        throw new Error("One or more registrations are not awaiting finance approval");
+      }
+      const updated = await batchUpdateItemRegistrations(
+        prisma,
+        unique,
+        { approvalStatus: "PENDING_FINANCE" },
+        {
+          approvalStatus: ITEM_REG_VOID,
+          rejectionReason,
+        },
+      );
+      if (!updated) {
+        throw new Error("One or more registrations are not awaiting finance approval");
+      }
+      return updated.map(withVoucherDisplay);
     },
 
     authorizeItemRegistrationManager: async (_, { id }, context) => {
@@ -5129,6 +5282,39 @@ const resolvers = {
       return withVoucherDisplay(updated);
     },
 
+    authorizeItemRegistrationsManagerBatch: async (_, { ids }, context) => {
+      assertRole(context, ["Manager"]);
+      const unique = uniquePositiveIds(ids);
+      if (!unique.length) return [];
+      const rows = await prisma.itemRegistration.findMany({
+        where: { id: { in: unique } },
+      });
+      if (!rows.length) throw new Error("Registration not found");
+      if (!rows.every((r) => tenantHotelReadMatches(context, r.HotelName))) {
+        throw new Error("Registration not found");
+      }
+      if (!rows.every((r) => r.approvalStatus === "PENDING_MANAGER")) {
+        throw new Error("One or more registrations are not awaiting manager authorization");
+      }
+      const now = new Date();
+      const actor = context.user.UserName;
+      const updated = await batchUpdateItemRegistrations(
+        prisma,
+        unique,
+        { approvalStatus: "PENDING_MANAGER" },
+        {
+          approvalStatus: "AUTHORIZED",
+          managerAuthorizedAt: now,
+          managerActorName: actor,
+          rejectionReason: null,
+        },
+      );
+      if (!updated) {
+        throw new Error("One or more registrations are not awaiting manager authorization");
+      }
+      return updated.map(withVoucherDisplay);
+    },
+
     rejectItemRegistrationManager: async (_, { id, reason }, context) => {
       assertRole(context, ["Manager"]);
       const rejectionReason = requireRejectionReason(reason);
@@ -5147,6 +5333,36 @@ const resolvers = {
         },
       });
       return withVoucherDisplay(updated);
+    },
+
+    rejectItemRegistrationsManagerBatch: async (_, { ids, reason }, context) => {
+      assertRole(context, ["Manager"]);
+      const rejectionReason = requireRejectionReason(reason);
+      const unique = uniquePositiveIds(ids);
+      if (!unique.length) return [];
+      const rows = await prisma.itemRegistration.findMany({
+        where: { id: { in: unique } },
+      });
+      if (!rows.length) throw new Error("Registration not found");
+      if (!rows.every((r) => tenantHotelReadMatches(context, r.HotelName))) {
+        throw new Error("Registration not found");
+      }
+      if (!rows.every((r) => r.approvalStatus === "PENDING_MANAGER")) {
+        throw new Error("One or more registrations are not awaiting manager authorization");
+      }
+      const updated = await batchUpdateItemRegistrations(
+        prisma,
+        unique,
+        { approvalStatus: "PENDING_MANAGER" },
+        {
+          approvalStatus: "REJECTED_MANAGER",
+          rejectionReason,
+        },
+      );
+      if (!updated) {
+        throw new Error("One or more registrations are not awaiting manager authorization");
+      }
+      return updated.map(withVoucherDisplay);
     },
 
     createKitchenBarBeginning: async (
