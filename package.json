@@ -13,7 +13,9 @@
     "db:backfill-receipt-snapshots": "node scripts/backfill-receipt-snapshots.js",
     "db:backfill-receipt-snapshots:dry": "node scripts/backfill-receipt-snapshots.js --dry-run",
     "db:backfill-purchase-vat": "node scripts/backfill-purchase-vat.js",
-    "db:backfill-purchase-vat:dry": "node scripts/backfill-purchase-vat.js --dry-run"
+    "db:backfill-purchase-vat:dry": "node scripts/backfill-purchase-vat.js --dry-run",
+    "db:backfill-purchase-entrance-date": "node scripts/backfill-purchase-entrance-date.js",
+    "db:backfill-purchase-entrance-date:dry": "node scripts/backfill-purchase-entrance-date.js --dry-run"
   },
   "keywords": [],
   "author": "",
