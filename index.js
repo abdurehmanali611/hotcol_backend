@@ -496,6 +496,7 @@ const typeDefs = gql`
     itemName: String!
     quantity: Float!
     measuredBy: String!
+    entranceDate: DateTime
     notes: String
     estimatedUnitPrice: Float
     supplierName: String
@@ -710,6 +711,7 @@ const typeDefs = gql`
     preparedByLeaderName: String
     financeDeptLeaderName: String
     gmDeptLeaderName: String
+    entranceDate: DateTime!
     createdAt: DateTime!
   }
 
@@ -1134,6 +1136,7 @@ const typeDefs = gql`
       itemName: String!
       quantity: Float!
       measuredBy: String!
+      entranceDate: DateTime
       notes: String
       estimatedUnitPrice: Float
       supplierName: String
@@ -1153,6 +1156,7 @@ const typeDefs = gql`
       itemName: String
       quantity: Float
       measuredBy: String
+      entranceDate: DateTime
       notes: String
       estimatedUnitPrice: Float
       supplierName: String
@@ -3909,6 +3913,7 @@ const resolvers = {
         itemName,
         quantity,
         measuredBy,
+        entranceDate,
         notes,
         estimatedUnitPrice,
         supplierName,
@@ -3932,6 +3937,7 @@ const resolvers = {
           itemName: String(itemName).trim(),
           quantity,
           measuredBy,
+          entranceDate: entranceDate ?? new Date(),
           notes: notes ?? "",
           estimatedUnitPrice: estimatedUnitPrice ?? 0,
           supplierName: supplierName ?? "",
@@ -3973,6 +3979,7 @@ const resolvers = {
               itemName: String(line.itemName).trim(),
               quantity: line.quantity,
               measuredBy: line.measuredBy,
+              entranceDate: line.entranceDate ?? new Date(),
               notes: line.notes ?? "",
               estimatedUnitPrice: line.estimatedUnitPrice ?? 0,
               supplierName: line.supplierName ?? "",
@@ -3997,6 +4004,7 @@ const resolvers = {
         itemName,
         quantity,
         measuredBy,
+        entranceDate,
         notes,
         estimatedUnitPrice,
         supplierName,
@@ -4016,6 +4024,7 @@ const resolvers = {
       if (itemName != null) data.itemName = String(itemName).trim();
       if (quantity != null) data.quantity = quantity;
       if (measuredBy != null) data.measuredBy = measuredBy;
+      if (entranceDate != null) data.entranceDate = entranceDate;
       if (notes != null) data.notes = notes;
       if (estimatedUnitPrice != null) data.estimatedUnitPrice = estimatedUnitPrice;
       if (supplierName != null) data.supplierName = supplierName;

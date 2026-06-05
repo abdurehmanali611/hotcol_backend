@@ -520,6 +520,7 @@ model PurchaseRequest {
   preparedByLeaderName  String?
   financeDeptLeaderName String?
   gmDeptLeaderName      String?
+  entranceDate        DateTime  @default(now())
   createdAt           DateTime  @default(now())
 
   @@index([HotelName])
