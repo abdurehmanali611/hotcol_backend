@@ -1205,6 +1205,7 @@ const typeDefs = gql`
       movementType: String!
       amount: Float!
       stakeHolderOrReason: String!
+      requestedByDepartment: String!
     ): StockOutRequest!
 
     """Submit multiple stock movements at once — one voucher number for the whole batch."""
@@ -1849,6 +1850,15 @@ async function allocateSharedVoucherForTenant(prisma, context, legacyType) {
   return { tenant, voucherNumber };
 }
 
+function assertMovableStockAmount(onHand, requested, reserved = 0) {
+  const amt = Number(requested);
+  if (!(amt > 0)) throw new Error("Amount must be positive");
+  const available = Number(onHand) - Number(reserved || 0);
+  if (amt > available) {
+    throw new Error("Requested quantity exceeds stock on hand.");
+  }
+}
+
 async function applyStockOutToInventory(tx, reqRow, actorName) {
   const item = await tx.itemRegistration.findUnique({
     where: { id: reqRow.itemRegistrationId },
@@ -1856,11 +1866,8 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
   if (!item || item.HotelName !== reqRow.HotelName) {
     throw new Error("Source stock row missing");
   }
-  if (item.amount - reqRow.amount < 1) {
-    throw new Error(
-      "Approval would violate minimum stock rule (≥1). Reject or adjust inventory.",
-    );
-  }
+  assertMovableStockAmount(item.amount, reqRow.amount);
+  const newAmount = Number(item.amount) - Number(reqRow.amount);
   const statusLabel =
     reqRow.movementType === "STOCK_OUT"
       ? "Stock Out"
@@ -1890,10 +1897,14 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
       stockOutRequestId: reqRow.id,
     },
   });
-  await tx.itemRegistration.update({
-    where: { id: item.id },
-    data: { amount: item.amount - reqRow.amount },
-  });
+  if (newAmount === 0) {
+    await tx.itemRegistration.delete({ where: { id: item.id } });
+  } else {
+    await tx.itemRegistration.update({
+      where: { id: item.id },
+      data: { amount: newAmount },
+    });
+  }
   if (reqRow.movementType === "STOCK_OUT") {
     await reconcileKitchenBarDailyRows(
       tx,
@@ -4600,7 +4611,13 @@ const resolvers = {
 
     createStockOutRequest: async (
       _,
-      { itemRegistrationId, movementType, amount, stakeHolderOrReason },
+      {
+        itemRegistrationId,
+        movementType,
+        amount,
+        stakeHolderOrReason,
+        requestedByDepartment,
+      },
       context,
     ) => {
       assertRole(context, ["Store"]);
@@ -4611,7 +4628,6 @@ const resolvers = {
         throw new Error("Item not found");
       }
       const amt = Number(amount);
-      if (!(amt > 0)) throw new Error("Amount must be positive");
       const stakeText = String(stakeHolderOrReason ?? "").trim();
       const stakeKey = normalizeKitchenBarStation(stakeText);
       if (stakeKey === "MANAGEMENT") {
@@ -4619,10 +4635,12 @@ const resolvers = {
           "Management stock issue must be recorded from station daily count, not store stock-out.",
         );
       }
-      if (item.amount - amt < 1) {
-        throw new Error(
-          "At least 1 unit must remain in stock for every item. Reduce the requested quantity.",
-        );
+      assertMovableStockAmount(item.amount, amt);
+      const deptCode = normalizeDepartmentCode(
+        String(requestedByDepartment ?? "").trim(),
+      );
+      if (!REQUESTED_BY_DEPARTMENTS.includes(deptCode)) {
+        throw new Error("Requested by department is invalid");
       }
       const tenant = tenantScopeFromContext(context);
       const { voucherNumber } = await allocateVoucherNumber(
@@ -4631,6 +4649,8 @@ const resolvers = {
         VOUCHER_TYPES.STOCK_MOVEMENT,
         tenantHotelKeysFromContext(context),
       );
+      const leaderMap = await fetchLeaderMap(prisma, tenant);
+      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode);
       const row = await prisma.stockOutRequest.create({
         data: {
           HotelName: tenant,
@@ -4642,6 +4662,7 @@ const resolvers = {
           status: PENDING_STORE,
           voucherNumber,
           requestedByUserName: context.user.UserName,
+          ...receiptSnap,
         },
       });
       return withVoucherDisplay(row);
@@ -4675,7 +4696,6 @@ const resolvers = {
           throw new Error("Item not found");
         }
         const amt = Number(line.amount);
-        if (!(amt > 0)) throw new Error("Amount must be positive");
         const stakeText = String(line.stakeHolderOrReason ?? "").trim();
         const stakeKey = normalizeKitchenBarStation(stakeText);
         if (stakeKey === "MANAGEMENT") {
@@ -4683,11 +4703,7 @@ const resolvers = {
             "Management stock issue must be recorded from station daily count, not store stock-out.",
           );
         }
-        if (item.amount - amt < 1) {
-          throw new Error(
-            "At least 1 unit must remain in stock for every item. Reduce the requested quantity.",
-          );
-        }
+        assertMovableStockAmount(item.amount, amt);
       }
       const { voucherNumber } = await allocateSharedVoucherForTenant(
         prisma,
@@ -4749,7 +4765,6 @@ const resolvers = {
       }
       if (amount != null) {
         const amt = Number(amount);
-        if (!(amt > 0)) throw new Error("Amount must be positive");
         const otherPending = await prisma.stockOutRequest.aggregate({
           where: {
             itemRegistrationId: reqRow.itemRegistrationId,
@@ -4758,13 +4773,8 @@ const resolvers = {
           },
           _sum: { amount: true },
         });
-        const reserved =
-          Number(otherPending._sum.amount || 0) + amt;
-        if (item.amount - reserved < 1) {
-          throw new Error(
-            "At least 1 unit must remain in stock for every item.",
-          );
-        }
+        const reserved = Number(otherPending._sum.amount || 0);
+        assertMovableStockAmount(item.amount, amt, reserved);
         data.amount = amt;
       }
       const row = await prisma.stockOutRequest.update({ where: { id }, data });
