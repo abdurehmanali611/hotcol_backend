@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `Item` ADD COLUMN `showStationPrepQty` BOOLEAN NOT NULL DEFAULT true;
