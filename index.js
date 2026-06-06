@@ -2551,7 +2551,6 @@ const resolvers = {
       if (!owner) throw new Error("Business not found for this TIN");
 
       const now = new Date();
-      const createdAt = owner.createdAt ? new Date(owner.createdAt) : now;
       const billingApplies = quarterlyFeeApplies(owner.quarterlyFeeETB ?? 0);
 
       const pending = await prisma.tenant_payment_submission.findFirst({
@@ -2573,7 +2572,7 @@ const resolvers = {
           paidQuartersCount: billingApplies ? 1 : 0,
           billingStartedAt: billingApplies ? now : null,
           subscriptionPaidUntil: billingApplies
-            ? computeQuarterEndFromRegistration(createdAt, 1)
+            ? computeQuarterEndFromRegistration(now, 1)
             : null,
         },
       });
@@ -2642,6 +2641,15 @@ const resolvers = {
         throw new Error(
           "Payment submission is not required for this property (illustration or billing hold).",
         );
+      }
+
+      if (kind === "quarterly") {
+        const periodStatus = computeSubscriptionPeriodStatus(subscription);
+        if (periodStatus !== "grace" && periodStatus !== "expired") {
+          throw new Error(
+            "Quarterly payment can only be submitted after your quarter ends (during the 10-day grace period).",
+          );
+        }
       }
 
       const tin = await tenantTinFromUser(creator || context.user);
