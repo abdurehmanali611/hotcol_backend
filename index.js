@@ -50,6 +50,7 @@ import {
 import {
   computeSubscriptionPeriodStatus,
   resolveLoginAccess,
+  selfSignupAwaitingSetup,
   subscriptionAllowsFullSystemAccess,
   tenantBillingRowFromOwner,
   resolveBillingAnchor,
@@ -262,7 +263,8 @@ async function resolveTenantSubscription(prismaClient, user) {
   };
 }
 
-function attachSubscriptionFields(user, subscription) {
+function attachSubscriptionFields(user, subscription, options = {}) {
+  const { pendingSetupSubmission = false } = options;
   return {
     ...user,
     modules: subscription.modules,
@@ -278,6 +280,11 @@ function attachSubscriptionFields(user, subscription) {
     subscriptionPaidUntil: subscription.subscriptionPaidUntil,
     subscriptionPaymentApproved: subscription.subscriptionPaymentApproved,
     paidQuartersCount: subscription.paidQuartersCount,
+    paymentTransactionRef: subscription.paymentTransactionRef ?? null,
+    awaitingSelfSignupSetup: selfSignupAwaitingSetup(
+      subscription,
+      pendingSetupSubmission,
+    ),
   };
 }
 
@@ -382,6 +389,7 @@ const typeDefs = gql`
     billingStartedAt: DateTime
     freeTrialEndsAt: DateTime
     billingNotes: String
+    awaitingSelfSignupSetup: Boolean
     Role: String!
     LogoUrl: String
   }
@@ -2444,7 +2452,23 @@ const resolvers = {
         );
       }
 
-      const periodStatus = computeSubscriptionPeriodStatus(subscription);
+      const tinForBilling = await tenantTinFromUser(user);
+      const pendingSetupSubmission = tinForBilling
+        ? Boolean(
+            await prisma.tenant_payment_submission.findFirst({
+              where: {
+                tinNumber: tinForBilling,
+                paymentKind: "setup",
+                status: "pending",
+              },
+              select: { id: true },
+            }),
+          )
+        : false;
+
+      const periodStatus = computeSubscriptionPeriodStatus(subscription, new Date(), {
+        pendingSetupSubmission,
+      });
       const loginAccess = resolveLoginAccess(user, subscription, periodStatus);
 
       if (loginAccess.accessMode === "denied") {
@@ -2480,6 +2504,7 @@ const resolvers = {
             businessType: user.businessType,
           },
           subscription,
+          { pendingSetupSubmission },
         ),
       };
     },
