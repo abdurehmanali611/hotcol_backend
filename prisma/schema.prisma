@@ -302,6 +302,10 @@ model Order {
   credit      Boolean?
   credittorName String?
   creditAmount  Float?
+  /// Actual bank transfer received (may exceed line total when tip included).
+  bankTransferAmount   Float?
+  /// Cash withdrawn from till for waiter tip on bank payments.
+  bankTipCashDeduction Float?
   /// Copied from table.orderCaption at order time (e.g. Takeaway, Delivery).
   serviceCaption String?
   /// Role/station that cancelled the line (Cashier, Chef/Kitchen, Barista, etc.).

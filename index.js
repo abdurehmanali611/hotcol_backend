@@ -476,6 +476,8 @@ const typeDefs = gql`
     credit: Boolean
     credittorName: String
     creditAmount: Float
+    bankTransferAmount: Float
+    bankTipCashDeduction: Float
     serviceCaption: String
     cancelledBy: String
     orderRevisedAt: DateTime
@@ -941,7 +943,13 @@ const typeDefs = gql`
       price: Float!
       HotelName: String!
     ): Order!
-    UpdatePayment(id: Int!, payment: String, withBank: Boolean): Order!
+    UpdatePayment(
+      id: Int!
+      payment: String
+      withBank: Boolean
+      bankTransferAmount: Float
+      bankTipCashDeduction: Float
+    ): Order!
     UpdateCredit(id: Int!, credittorName: String, creditAmount: Float): Order!
     UpdatePityDeduction(id: Int!, amount: Float!): pityCash!
     UpdateCreditRegistrantDeduction(
@@ -3088,7 +3096,11 @@ const resolvers = {
         data,
       });
     },
-    UpdatePayment: async (_, { id, payment, withBank }, context) => {
+    UpdatePayment: async (
+      _,
+      { id, payment, withBank, bankTransferAmount, bankTipCashDeduction },
+      context,
+    ) => {
       if (!context.user) throw new Error("Not Authenticated");
       const dbUser = await loadAuthUserFromDb(context, prisma);
       const authCtx = enrichContextUser(context, dbUser);
@@ -3099,12 +3111,24 @@ const resolvers = {
       if (!order) {
         throw new Error("Order not found or not authorized");
       }
+      const data = {
+        payment: payment,
+        withBank: withBank,
+      };
+      if (withBank === false) {
+        data.bankTransferAmount = null;
+        data.bankTipCashDeduction = null;
+      } else if (withBank === true) {
+        if (bankTransferAmount != null) {
+          data.bankTransferAmount = bankTransferAmount;
+        }
+        if (bankTipCashDeduction != null) {
+          data.bankTipCashDeduction = bankTipCashDeduction;
+        }
+      }
       return await prisma.order.update({
         where: { id: id },
-        data: {
-          payment: payment,
-          withBank: withBank,
-        },
+        data,
       });
     },
     UpdateCredit: async (_, { id, credittorName, creditAmount }, context) => {
