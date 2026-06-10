@@ -1440,7 +1440,13 @@ function collectTenantHotelKeysFromUser(u) {
 /** Prefer DB role/tenant fields — JWT can be stale after credential edits. */
 function enrichContextUser(ctx, dbUser) {
   if (!ctx?.user) return ctx;
-  if (!dbUser) {
+  const user = { ...ctx.user };
+  if (dbUser) {
+    const tin =
+      dbUser.tinNumber != null && String(dbUser.tinNumber).trim() !== ""
+        ? String(dbUser.tinNumber).trim()
+        : "";
+    const disp = String(dbUser.HotelName ?? ctx.user.HotelName ?? "").trim();
     const jwtTid =
       ctx.user.tenantId != null && String(ctx.user.tenantId).trim() !== ""
         ? String(ctx.user.tenantId).trim()
@@ -1449,45 +1455,13 @@ function enrichContextUser(ctx, dbUser) {
       ctx.user.tinNumber != null && String(ctx.user.tinNumber).trim() !== ""
         ? String(ctx.user.tinNumber).trim()
         : "";
-    const disp =
-      ctx.user.HotelName != null && String(ctx.user.HotelName).trim() !== ""
-        ? String(ctx.user.HotelName).trim()
-        : "";
-    const allTenantHotelKeys = [
-      ...new Set([jwtTin, jwtTid, disp].filter(Boolean)),
-    ];
-    return allTenantHotelKeys.length
-      ? { ...ctx, user: { ...ctx.user, allTenantHotelKeys } }
-      : ctx;
+    user.Role = dbUser.Role ?? ctx.user.Role ?? ctx.user.role;
+    user.HotelName = disp || ctx.user.HotelName;
+    user.tinNumber = tin || jwtTin || ctx.user.tinNumber;
+    user.tenantId = tin || jwtTid || jwtTin || disp;
   }
-  const tin =
-    dbUser.tinNumber != null && String(dbUser.tinNumber).trim() !== ""
-      ? String(dbUser.tinNumber).trim()
-      : "";
-  const disp = String(dbUser.HotelName ?? ctx.user.HotelName ?? "").trim();
-  const jwtTid =
-    ctx.user.tenantId != null && String(ctx.user.tenantId).trim() !== ""
-      ? String(ctx.user.tenantId).trim()
-      : "";
-  const jwtTin =
-    ctx.user.tinNumber != null && String(ctx.user.tinNumber).trim() !== ""
-      ? String(ctx.user.tinNumber).trim()
-      : "";
-  const tenantId = tin || jwtTid || jwtTin || disp;
-  const allTenantHotelKeys = [
-    ...new Set([tin, jwtTid, jwtTin, disp, tenantId].filter(Boolean)),
-  ];
-  return {
-    ...ctx,
-    user: {
-      ...ctx.user,
-      Role: dbUser.Role ?? ctx.user.Role ?? ctx.user.role,
-      HotelName: disp || ctx.user.HotelName,
-      tinNumber: tin || jwtTin || ctx.user.tinNumber,
-      tenantId,
-      allTenantHotelKeys,
-    },
-  };
+  user.allTenantHotelKeys = collectTenantHotelKeysFromUser(user);
+  return { ...ctx, user };
 }
 
 function assertRole(context, allowed) {
@@ -1510,10 +1484,18 @@ function tenantScopedRowWhere(ctx, extra = {}) {
 }
 
 /** Load DB user onto context so tenant scope matches login (JWT can be stale). */
+async function loadAuthUserFromDbWithRetry(ctx, prismaClient) {
+  let dbUser = await loadAuthUserFromDb(ctx, prismaClient);
+  if (dbUser) return dbUser;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  return loadAuthUserFromDb(ctx, prismaClient);
+}
+
+/** Load DB user onto context so tenant scope matches login (JWT can be stale). */
 async function resolveAuthContext(context, prismaClient) {
   if (!context?.user) return null;
   if (context.user.__authExpired) return null;
-  const dbUser = await loadAuthUserFromDb(context, prismaClient);
+  const dbUser = await loadAuthUserFromDbWithRetry(context, prismaClient);
   return enrichContextUser(context, dbUser);
 }
 
@@ -1989,9 +1971,10 @@ const resolvers = {
       });
     },
     items: async (_, __, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
+      const authCtx = await resolveAuthContext(context, prisma);
+      if (!authCtx) throw new Error("Not Authenticated");
       return await prisma.item.findMany({
-        where: tenantHotelReadWhere(context),
+        where: tenantHotelReadWhere(authCtx),
       });
     },
     orders: async (_, __, context) => {
@@ -2016,15 +1999,17 @@ const resolvers = {
       });
     },
     waiters: async (_, __, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
+      const authCtx = await resolveAuthContext(context, prisma);
+      if (!authCtx) throw new Error("Not Authenticated");
       return await prisma.waiter.findMany({
-        where: tenantHotelReadWhere(context),
+        where: tenantHotelReadWhere(authCtx),
       });
     },
     tables: async (_, __, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
+      const authCtx = await resolveAuthContext(context, prisma);
+      if (!authCtx) throw new Error("Not Authenticated");
       return await prisma.table.findMany({
-        where: tenantHotelReadWhere(context),
+        where: tenantHotelReadWhere(authCtx),
       });
     },
     cashouts: async (_, __, context) => {
@@ -3028,9 +3013,10 @@ const resolvers = {
       context,
     ) => {
       const authCtx = await resolveAuthContext(context, prisma);
-      if (!authCtx) throw new Error("Not Authenticated");
-      if (context.user?.__authExpired) {
-        throw new Error("JWT expired");
+      if (!authCtx) {
+        throw new Error(
+          context.user?.__authExpired ? "JWT expired" : "Not Authenticated",
+        );
       }
       if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager"])) {
         throw new Error("Not authorized to update live orders");
@@ -3260,12 +3246,12 @@ const resolvers = {
       });
     },
     UpdateStatus: async (_, { id, status }, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
-      if (context.user.__authExpired) {
-        throw new Error("JWT expired");
+      const authCtx = await resolveAuthContext(context, prisma);
+      if (!authCtx) {
+        throw new Error(
+          context.user?.__authExpired ? "JWT expired" : "Not Authenticated",
+        );
       }
-      const dbUser = await loadAuthUserFromDb(context, prisma);
-      const authCtx = enrichContextUser(context, dbUser);
       const order = await findTenantOrderById(authCtx, prisma, id);
       if (!order) {
         throw new Error("Order not found or not authorized");
@@ -4094,7 +4080,9 @@ const resolvers = {
         VOUCHER_TYPES.PURCHASE_REQUEST,
       );
       const leaderMap = await fetchLeaderMap(prisma, tenant);
-      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode);
+      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode, {
+        storeUserName: context.user.UserName,
+      });
       const rows = await prisma.$transaction(
         items.map((line) =>
           prisma.purchaseRequest.create({
@@ -4729,7 +4717,9 @@ const resolvers = {
         tenantHotelKeysFromContext(context),
       );
       const leaderMap = await fetchLeaderMap(prisma, tenant);
-      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode);
+      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode, {
+        storeUserName: context.user.UserName,
+      });
       const row = await prisma.stockOutRequest.create({
         data: {
           HotelName: tenant,
@@ -4790,7 +4780,9 @@ const resolvers = {
         VOUCHER_TYPES.STOCK_MOVEMENT,
       );
       const leaderMap = await fetchLeaderMap(prisma, tenant);
-      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode);
+      const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode, {
+        storeUserName: context.user.UserName,
+      });
       const rows = await prisma.$transaction(
         items.map((line) => {
           const item = itemById.get(line.itemRegistrationId);
