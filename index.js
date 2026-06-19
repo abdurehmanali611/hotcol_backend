@@ -1839,6 +1839,9 @@ async function batchUpdateItemRegistrations(prisma, unique, whereExtra, data) {
   return prisma.itemRegistration.findMany({ where: { id: { in: unique } } });
 }
 
+/** Sequential creates inside one tx — parallel create arrays timeout on large serverless batches. */
+const LARGE_BATCH_TRANSACTION_OPTS = { timeout: 60_000, maxWait: 15_000 };
+
 async function allocateSharedVoucherForTenant(prisma, context, legacyType) {
   const tenant = tenantScopeFromContext(context);
   const { voucherNumber } = await allocateVoucherNumber(
@@ -1857,6 +1860,173 @@ function assertMovableStockAmount(onHand, requested, reserved = 0) {
   if (amt > available) {
     throw new Error("Requested quantity exceeds stock on hand.");
   }
+}
+
+/** Pending store drafts already earmark stock — batch + single create must respect them. */
+async function pendingStockOutAmountByRegistration(prisma, itemIds) {
+  const ids = [...new Set((itemIds || []).map((id) => Math.floor(Number(id))).filter((id) => id > 0))];
+  if (!ids.length) return new Map();
+  const rows = await prisma.stockOutRequest.groupBy({
+    by: ["itemRegistrationId"],
+    where: {
+      itemRegistrationId: { in: ids },
+      status: PENDING_STORE,
+    },
+    _sum: { amount: true },
+  });
+  return new Map(
+    rows.map((r) => [r.itemRegistrationId, Number(r._sum.amount || 0)]),
+  );
+}
+
+function validateStockOutMovementLines(items, itemById, context, pendingByRegId) {
+  const batchSumByRegId = new Map();
+  for (const line of items) {
+    const regId = Math.floor(Number(line.itemRegistrationId));
+    const item = itemById.get(regId);
+    if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+      throw new Error("Item not found");
+    }
+    const amt = Number(line.amount);
+    const stakeText = String(line.stakeHolderOrReason ?? "").trim();
+    const stakeKey = normalizeKitchenBarStation(stakeText);
+    if (stakeKey === "MANAGEMENT") {
+      throw new Error(
+        "Management stock issue must be recorded from station daily count, not store stock-out.",
+      );
+    }
+    const batchSum = (batchSumByRegId.get(regId) || 0) + amt;
+    batchSumByRegId.set(regId, batchSum);
+    const reserved = Number(pendingByRegId.get(regId) || 0);
+    assertMovableStockAmount(item.amount, batchSum, reserved);
+  }
+}
+
+/** Sequential interactive tx — avoids serverless timeouts from large parallel create batches. */
+async function createStockOutRequestRowsInTransaction(
+  prisma,
+  items,
+  itemById,
+  tenant,
+  voucherNumber,
+  receiptSnap,
+  storeUserName,
+) {
+  return prisma.$transaction(
+    async (tx) => {
+      const rows = [];
+      for (const line of items) {
+        const item = itemById.get(line.itemRegistrationId);
+        rows.push(
+          await tx.stockOutRequest.create({
+            data: {
+              HotelName: tenant,
+              itemRegistrationId: line.itemRegistrationId,
+              itemNameSnapshot: String(item?.name ?? "").trim(),
+              movementType: String(line.movementType),
+              amount: Number(line.amount),
+              stakeHolderOrReason: String(line.stakeHolderOrReason ?? "").trim(),
+              status: PENDING_STORE,
+              voucherNumber,
+              requestedByUserName: storeUserName,
+              ...receiptSnap,
+            },
+          }),
+        );
+      }
+      return rows;
+    },
+    LARGE_BATCH_TRANSACTION_OPTS,
+  );
+}
+
+async function createPurchaseRequestRowsInTransaction(
+  prisma,
+  items,
+  tenant,
+  voucherNumber,
+  receiptSnap,
+  storeUserName,
+) {
+  return prisma.$transaction(
+    async (tx) => {
+      const rows = [];
+      for (const line of items) {
+        rows.push(
+          await tx.purchaseRequest.create({
+            data: {
+              HotelName: tenant,
+              itemName: String(line.itemName).trim(),
+              quantity: line.quantity,
+              measuredBy: line.measuredBy,
+              entranceDate: line.entranceDate ?? new Date(),
+              notes: line.notes ?? "",
+              estimatedUnitPrice: line.estimatedUnitPrice ?? 0,
+              supplierName: line.supplierName ?? "",
+              supplierPhone: line.supplierPhone ?? "",
+              category: line.category ?? "Others",
+              purchaseWithVat: isVatEnabled(line.purchaseWithVat),
+              status: PENDING_STORE,
+              storeUserName,
+              voucherNumber,
+              ...receiptSnap,
+            },
+          }),
+        );
+      }
+      return rows;
+    },
+    LARGE_BATCH_TRANSACTION_OPTS,
+  );
+}
+
+async function createItemRegistrationRowsInTransaction(
+  prisma,
+  items,
+  tenant,
+  voucherNumber,
+  receiptSnap,
+  approvalStatus,
+  storeUserName,
+) {
+  return prisma.$transaction(
+    async (tx) => {
+      const rows = [];
+      for (const line of items) {
+        rows.push(
+          await tx.itemRegistration.create({
+            data: {
+              name: line.name,
+              imageUrl: line.imageUrl,
+              category: line.category,
+              amount: line.amount,
+              measuredBy: line.measuredBy,
+              unitPrice: line.unitPrice,
+              registrationDate: line.registrationDate,
+              expireDate: line.expireDate,
+              supplierName: line.supplierName,
+              supplierPhone: line.supplierPhone,
+              Address: line.Address,
+              purchaseWithVat: isVatEnabled(line.purchaseWithVat),
+              supplierTinNumber: String(line.supplierTinNumber ?? "").trim(),
+              paidAmount: line.paidAmount,
+              HotelName: tenant,
+              voucherNumber,
+              purchaseRequestId: line.purchaseRequestId ?? null,
+              approvalStatus,
+              statusBy:
+                approvalStatus === PENDING_STORE
+                  ? String(storeUserName ?? "").trim()
+                  : undefined,
+              ...receiptSnap,
+            },
+          }),
+        );
+      }
+      return rows;
+    },
+    LARGE_BATCH_TRANSACTION_OPTS,
+  );
 }
 
 async function applyStockOutToInventory(tx, reqRow, actorName) {
@@ -2847,24 +3017,31 @@ const resolvers = {
       );
 
       const createdOrders = await prisma.$transaction(
-        ordersWithCaptions.map(({ orderData, serviceCaption }) =>
-          prisma.order.create({
-            data: {
-              title: orderData.title,
-              imageUrl: orderData.imageUrl,
-              tableNo: orderData.tableNo,
-              waiterName: orderData.waiterName,
-              orderAmount: orderData.orderAmount,
-              HotelName: hotelName,
-              status: orderData.status || null,
-              payment: orderData.payment || "Unpaid",
-              category: orderData.category,
-              type: orderData.type,
-              price: orderData.price,
-              serviceCaption,
-            },
-          }),
-        ),
+        async (tx) => {
+          const rows = [];
+          for (const { orderData, serviceCaption } of ordersWithCaptions) {
+            rows.push(
+              await tx.order.create({
+                data: {
+                  title: orderData.title,
+                  imageUrl: orderData.imageUrl,
+                  tableNo: orderData.tableNo,
+                  waiterName: orderData.waiterName,
+                  orderAmount: orderData.orderAmount,
+                  HotelName: hotelName,
+                  status: orderData.status || null,
+                  payment: orderData.payment || "Unpaid",
+                  category: orderData.category,
+                  type: orderData.type,
+                  price: orderData.price,
+                  serviceCaption,
+                },
+              }),
+            );
+          }
+          return rows;
+        },
+        LARGE_BATCH_TRANSACTION_OPTS,
       );
 
       return createdOrders;
@@ -3696,36 +3873,14 @@ const resolvers = {
           }
         }
       }
-      const rows = await prisma.$transaction(
-        items.map((line) =>
-          prisma.itemRegistration.create({
-            data: {
-              name: line.name,
-              imageUrl: line.imageUrl,
-              category: line.category,
-              amount: line.amount,
-              measuredBy: line.measuredBy,
-              unitPrice: line.unitPrice,
-              registrationDate: line.registrationDate,
-              expireDate: line.expireDate,
-              supplierName: line.supplierName,
-              supplierPhone: line.supplierPhone,
-              Address: line.Address,
-              purchaseWithVat: isVatEnabled(line.purchaseWithVat),
-              supplierTinNumber: String(line.supplierTinNumber ?? "").trim(),
-              paidAmount: line.paidAmount,
-              HotelName: tenant,
-              voucherNumber,
-              purchaseRequestId: line.purchaseRequestId ?? null,
-              approvalStatus,
-              statusBy:
-                approvalStatus === PENDING_STORE
-                  ? String(context.user.UserName ?? "").trim()
-                  : undefined,
-              ...receiptSnap,
-            },
-          }),
-        ),
+      const rows = await createItemRegistrationRowsInTransaction(
+        prisma,
+        items,
+        tenant,
+        voucherNumber,
+        receiptSnap,
+        approvalStatus,
+        context.user.UserName,
       );
       return rows.map(withVoucherDisplay);
     },
@@ -3938,19 +4093,22 @@ const resolvers = {
       if (rows.length !== uniqueIds.length) {
         throw new Error("One or more registrations were not found");
       }
-      const updated = [];
       for (const item of rows) {
         if (!tenantHotelReadMatches(context, item.HotelName)) {
           throw new Error("Registration not found");
         }
         assertRegistrationPendingStore(item);
-        const row = await prisma.itemRegistration.update({
-          where: { id: item.id },
-          data: { approvalStatus: "PENDING_CC" },
-        });
-        updated.push(withVoucherDisplay(row));
       }
-      return updated;
+      const batchUpdated = await batchUpdateItemRegistrations(
+        prisma,
+        uniqueIds,
+        { approvalStatus: PENDING_STORE },
+        { approvalStatus: "PENDING_CC" },
+      );
+      if (!batchUpdated) {
+        throw new Error("One or more registrations could not be submitted");
+      }
+      return batchUpdated.map(withVoucherDisplay);
     },
 
     createCostControllerProfile: async (_, { displayName }, context) => {
@@ -4083,28 +4241,13 @@ const resolvers = {
       const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode, {
         storeUserName: context.user.UserName,
       });
-      const rows = await prisma.$transaction(
-        items.map((line) =>
-          prisma.purchaseRequest.create({
-            data: {
-              HotelName: tenant,
-              itemName: String(line.itemName).trim(),
-              quantity: line.quantity,
-              measuredBy: line.measuredBy,
-              entranceDate: line.entranceDate ?? new Date(),
-              notes: line.notes ?? "",
-              estimatedUnitPrice: line.estimatedUnitPrice ?? 0,
-              supplierName: line.supplierName ?? "",
-              supplierPhone: line.supplierPhone ?? "",
-              category: line.category ?? "Others",
-              purchaseWithVat: isVatEnabled(line.purchaseWithVat),
-              status: PENDING_STORE,
-              storeUserName: context.user.UserName,
-              voucherNumber,
-              ...receiptSnap,
-            },
-          }),
-        ),
+      const rows = await createPurchaseRequestRowsInTransaction(
+        prisma,
+        items,
+        tenant,
+        voucherNumber,
+        receiptSnap,
+        context.user.UserName,
       );
       return rows.map(withVoucherDisplay);
     },
@@ -4170,19 +4313,22 @@ const resolvers = {
       if (rows.length !== uniqueIds.length) {
         throw new Error("One or more purchase requests were not found");
       }
-      const updated = [];
       for (const pr of rows) {
         if (!tenantHotelReadMatches(context, pr.HotelName)) {
           throw new Error("Purchase request not found");
         }
         assertPurchasePendingStore(pr);
-        const row = await prisma.purchaseRequest.update({
-          where: { id: pr.id },
-          data: { status: "PENDING_CC" },
-        });
-        updated.push(withVoucherDisplay(row));
       }
-      return updated;
+      const batchUpdated = await batchUpdatePurchaseRequests(
+        prisma,
+        uniqueIds,
+        { status: PENDING_STORE },
+        { status: "PENDING_CC" },
+      );
+      if (!batchUpdated) {
+        throw new Error("One or more purchase requests could not be submitted");
+      }
+      return batchUpdated.map(withVoucherDisplay);
     },
 
     approvePurchaseRequestCC: async (
@@ -4702,7 +4848,11 @@ const resolvers = {
           "Management stock issue must be recorded from station daily count, not store stock-out.",
         );
       }
-      assertMovableStockAmount(item.amount, amt);
+      const pendingByRegId = await pendingStockOutAmountByRegistration(prisma, [
+        itemRegistrationId,
+      ]);
+      const reserved = Number(pendingByRegId.get(itemRegistrationId) || 0);
+      assertMovableStockAmount(item.amount, amt, reserved);
       const deptCode = normalizeDepartmentCode(
         String(requestedByDepartment ?? "").trim(),
       );
@@ -4759,21 +4909,11 @@ const resolvers = {
       });
       const itemById = new Map(stockItems.map((i) => [i.id, i]));
       const tenant = tenantScopeFromContext(context);
-      for (const line of items) {
-        const item = itemById.get(line.itemRegistrationId);
-        if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
-          throw new Error("Item not found");
-        }
-        const amt = Number(line.amount);
-        const stakeText = String(line.stakeHolderOrReason ?? "").trim();
-        const stakeKey = normalizeKitchenBarStation(stakeText);
-        if (stakeKey === "MANAGEMENT") {
-          throw new Error(
-            "Management stock issue must be recorded from station daily count, not store stock-out.",
-          );
-        }
-        assertMovableStockAmount(item.amount, amt);
-      }
+      const pendingByRegId = await pendingStockOutAmountByRegistration(
+        prisma,
+        itemIds,
+      );
+      validateStockOutMovementLines(items, itemById, context, pendingByRegId);
       const { voucherNumber } = await allocateSharedVoucherForTenant(
         prisma,
         context,
@@ -4783,24 +4923,14 @@ const resolvers = {
       const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode, {
         storeUserName: context.user.UserName,
       });
-      const rows = await prisma.$transaction(
-        items.map((line) => {
-          const item = itemById.get(line.itemRegistrationId);
-          return prisma.stockOutRequest.create({
-            data: {
-              HotelName: tenant,
-              itemRegistrationId: line.itemRegistrationId,
-              itemNameSnapshot: String(item?.name ?? "").trim(),
-              movementType: String(line.movementType),
-              amount: Number(line.amount),
-              stakeHolderOrReason: String(line.stakeHolderOrReason ?? "").trim(),
-              status: PENDING_STORE,
-              voucherNumber,
-              requestedByUserName: context.user.UserName,
-              ...receiptSnap,
-            },
-          });
-        }),
+      const rows = await createStockOutRequestRowsInTransaction(
+        prisma,
+        items,
+        itemById,
+        tenant,
+        voucherNumber,
+        receiptSnap,
+        context.user.UserName,
       );
       return rows.map(withVoucherDisplay);
     },
@@ -4876,24 +5006,27 @@ const resolvers = {
       if (rows.length !== uniqueIds.length) {
         throw new Error("One or more movement requests were not found");
       }
-      const updated = [];
       for (const reqRow of rows) {
         if (!tenantHotelReadMatches(context, reqRow.HotelName)) {
           throw new Error("Request not found");
         }
         assertStockPendingStore(reqRow);
-        const row = await prisma.stockOutRequest.update({
-          where: { id: reqRow.id },
-          data: { status: "PENDING_CC" },
-        });
-        updated.push(
-          withVoucherDisplay({
-            ...row,
-            status: normalizeStockOutStatus(row.status),
-          }),
-        );
       }
-      return updated;
+      const batchUpdated = await batchUpdateStockOutRequests(
+        prisma,
+        uniqueIds,
+        { status: PENDING_STORE },
+        { status: "PENDING_CC" },
+      );
+      if (!batchUpdated) {
+        throw new Error("One or more movement requests could not be submitted");
+      }
+      return batchUpdated.map((row) =>
+        withVoucherDisplay({
+          ...row,
+          status: normalizeStockOutStatus(row.status),
+        }),
+      );
     },
 
     checkStockOutRequestCC: async (
@@ -6235,7 +6368,11 @@ const server = new ApolloServer({
 });
 
 await server.start();
-server.applyMiddleware({ app, path: "/graphql" });
+server.applyMiddleware({
+  app,
+  path: "/graphql",
+  bodyParserConfig: { limit: "2mb" },
+});
 
 app.get("/health", (req, res) => {
   res.status(200).json({
