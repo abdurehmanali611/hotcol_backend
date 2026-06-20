@@ -38,7 +38,6 @@ import {
   isItemRegistrationActive,
 } from "./lib/hotelWorkflow.js";
 import {
-  computeQuarterEndFromCreatedAt,
   daysBetweenCalendar,
   paidQuartersFromCreatedAt,
   parseModulesJson,
@@ -54,7 +53,13 @@ import {
   subscriptionAllowsFullSystemAccess,
   tenantBillingRowFromOwner,
   resolveBillingAnchor,
+  computePaidUntilForOwner,
 } from "./lib/tenantBilling.js";
+import {
+  computeSubscriptionPaidUntil,
+  subscriptionRenewalAmountETB,
+  subscriptionRenewalPaymentKind,
+} from "./lib/subscriptionBillingPeriod.js";
 import {
   HOTEL_DEPARTMENTS,
   REGISTRATION_RECEIVED_BY_DEPARTMENTS,
@@ -67,10 +72,6 @@ import {
   requestReceiptSnapshots,
   PURCHASE_REQUESTED_BY_DEPARTMENTS,
 } from "./lib/departmentLeaders.js";
-
-function computeQuarterEndFromRegistration(createdAt, paidQuartersCount) {
-  return computeQuarterEndFromCreatedAt(createdAt, paidQuartersCount);
-}
 
 const prisma = createPrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
@@ -2531,7 +2532,7 @@ const resolvers = {
             billingApplies && !needsPaymentApproval ? now : null,
           subscriptionPaidUntil:
             billingApplies && !needsPaymentApproval
-              ? computeQuarterEndFromRegistration(now, 1)
+              ? computeSubscriptionPaidUntil(now, 1, businessType || null)
               : null,
         },
       });
@@ -2695,21 +2696,20 @@ const resolvers = {
       });
       if (!owner) throw new Error("Business not found for this TIN");
       if (!quarterlyFeeApplies(owner.quarterlyFeeETB ?? 0)) {
-        throw new Error("This property has no quarterly billing");
+        throw new Error("This property has no subscription billing");
       }
 
-      const createdAt =
-        resolveBillingAnchor(tenantBillingRowFromOwner(owner)) ||
-        (owner.createdAt ? new Date(owner.createdAt) : new Date());
-      const nextQuarters = (owner.paidQuartersCount ?? 0) + 1;
-      const paidUntil = computeQuarterEndFromRegistration(
-        createdAt,
-        nextQuarters,
-      );
+      const renewalKind = subscriptionRenewalPaymentKind(owner.businessType);
+      const nextPeriods = (owner.paidQuartersCount ?? 0) + 1;
+      const paidUntil = computePaidUntilForOwner(owner, nextPeriods);
       const now = new Date();
 
       const pending = await prisma.tenant_payment_submission.findFirst({
-        where: { tinNumber: tin, paymentKind: "quarterly", status: "pending" },
+        where: {
+          tinNumber: tin,
+          paymentKind: renewalKind,
+          status: "pending",
+        },
         orderBy: { submittedAt: "desc" },
       });
       if (pending) {
@@ -2723,7 +2723,7 @@ const resolvers = {
         where: { id: owner.id },
         data: {
           subscriptionPaymentApproved: true,
-          paidQuartersCount: nextQuarters,
+          paidQuartersCount: nextPeriods,
           subscriptionPaidUntil: paidUntil,
         },
       });
@@ -2760,7 +2760,7 @@ const resolvers = {
           paidQuartersCount: billingApplies ? 1 : 0,
           billingStartedAt: billingApplies ? now : null,
           subscriptionPaidUntil: billingApplies
-            ? computeQuarterEndFromRegistration(now, 1)
+            ? computeSubscriptionPaidUntil(now, 1, owner.businessType ?? null)
             : null,
         },
       });
@@ -2784,7 +2784,7 @@ const resolvers = {
       const now = new Date();
       const billingApplies = quarterlyFeeApplies(owner.quarterlyFeeETB ?? 0);
       const paidUntil = billingApplies
-        ? computeQuarterEndFromRegistration(now, 1)
+        ? computeSubscriptionPaidUntil(now, 1, owner.businessType ?? null)
         : null;
 
       return await prisma.user.update({
@@ -2810,8 +2810,8 @@ const resolvers = {
       }
 
       const kind = String(paymentKind || "").trim().toLowerCase();
-      if (kind !== "setup" && kind !== "quarterly") {
-        throw new Error("paymentKind must be setup or quarterly");
+      if (kind !== "setup" && kind !== "quarterly" && kind !== "yearly") {
+        throw new Error("paymentKind must be setup, quarterly, or yearly");
       }
       const ref = String(transactionRef || "").trim();
       if (!ref) throw new Error("Transaction reference is required");
@@ -2831,11 +2831,24 @@ const resolvers = {
         );
       }
 
-      if (kind === "quarterly") {
+      const businessType =
+        creator?.businessType ?? context.user.businessType ?? null;
+      const expectedRenewalKind = subscriptionRenewalPaymentKind(businessType);
+
+      if (kind === "quarterly" || kind === "yearly") {
+        if (kind !== expectedRenewalKind) {
+          throw new Error(
+            expectedRenewalKind === "yearly"
+              ? "Hotels must submit yearly subscription payment"
+              : "Café and restaurant properties must submit quarterly subscription payment",
+          );
+        }
         const periodStatus = computeSubscriptionPeriodStatus(subscription);
         if (periodStatus !== "grace" && periodStatus !== "expired") {
           throw new Error(
-            "Quarterly payment can only be submitted after your quarter ends (during the 10-day grace period).",
+            expectedRenewalKind === "yearly"
+              ? "Yearly payment can only be submitted after your subscription year ends (during the 10-day grace period)."
+              : "Quarterly payment can only be submitted after your quarter ends (during the 10-day grace period).",
           );
         }
       }
@@ -2845,13 +2858,16 @@ const resolvers = {
       const amountETB =
         kind === "setup"
           ? Number(subscription.setupFeeETB) || 0
-          : Number(subscription.quarterlyFeeETB) || 0;
+          : subscriptionRenewalAmountETB(
+              subscription.quarterlyFeeETB,
+              businessType,
+            );
       if (amountETB <= 0) {
         throw new Error("No payment amount configured for this property");
       }
 
       const quarterNumber =
-        kind === "quarterly"
+        kind === "quarterly" || kind === "yearly"
           ? (subscription.paidQuartersCount ?? 0) + 1
           : null;
 
@@ -2870,7 +2886,7 @@ const resolvers = {
         data: {
           paymentChannel: channel,
           paymentTransactionRef: ref,
-          ...(kind === "quarterly"
+          ...(kind === "quarterly" || kind === "yearly"
             ? { subscriptionPaymentApproved: false }
             : {}),
         },

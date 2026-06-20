@@ -84,7 +84,7 @@ model subscription_pricing_rule {
 model tenant_payment_submission {
   id                Int       @id @default(autoincrement())
   tinNumber         String
-  /// setup | quarterly
+  /// setup | quarterly | yearly
   paymentKind       String
   amountETB         Int
   paymentChannel    String
