@@ -446,6 +446,7 @@ const typeDefs = gql`
     type: String!
     imageUrl: String!
     showStationPrepQty: Boolean!
+    isSuspended: Boolean!
     createdAt: DateTime!
   }
 
@@ -967,6 +968,7 @@ const typeDefs = gql`
       imageUrl: String!
     ): Item!
     UpdateItemStationPrepQty(id: Int!, showStationPrepQty: Boolean!): Item!
+    UpdateItemSuspension(id: Int!, isSuspended: Boolean!): Item!
     UpdateStatus(id: Int!, status: String): Order!
     UpdateLiveOrder(
       id: Int!
@@ -3436,6 +3438,26 @@ const resolvers = {
       return prisma.item.update({
         where: { id },
         data: { showStationPrepQty: Boolean(showStationPrepQty) },
+      });
+    },
+    UpdateItemSuspension: async (
+      _,
+      { id, isSuspended },
+      context,
+    ) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      if (!roleIsOneOf(context.user, ["Admin"])) {
+        throw new Error("Not authorized to suspend items");
+      }
+      const item = await prisma.item.findUnique({
+        where: { id },
+      });
+      if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
+        throw new Error("Item not found or not authorized");
+      }
+      return prisma.item.update({
+        where: { id },
+        data: { isSuspended: Boolean(isSuspended) },
       });
     },
     UpdateStatus: async (_, { id, status }, context) => {
