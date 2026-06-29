@@ -22,6 +22,7 @@ import {
   assertStoreUser,
   matchesStoreOwner,
   assertPurchasePendingStore,
+  assertPurchaseAuthorizedForManagerEdit,
   assertStockPendingStore,
   assertRegistrationPendingStore,
 } from "./lib/storeDraftWorkflow.js";
@@ -1194,6 +1195,24 @@ const typeDefs = gql`
     ): PurchaseRequest!
 
     deletePurchaseRequestStoreDraft(id: Int!): Boolean!
+
+  """Manager: edit a manager-authorized purchase request (same fields as store draft)."""
+    updatePurchaseRequest(
+      id: Int!
+      itemName: String
+      quantity: Float
+      measuredBy: String
+      entranceDate: DateTime
+      notes: String
+      estimatedUnitPrice: Float
+      supplierName: String
+      supplierPhone: String
+      category: String
+      purchaseWithVat: Boolean
+    ): PurchaseRequest!
+
+  """Manager: delete an authorized purchase request if no stock has been received against it."""
+    deletePurchaseRequest(id: Int!): Boolean!
 
     submitPurchaseRequestsToCostControl(ids: [Int!]!): [PurchaseRequest!]!
 
@@ -4338,6 +4357,65 @@ const resolvers = {
         throw new Error("Purchase request not found");
       }
       assertPurchasePendingStore(pr);
+      await prisma.purchaseRequest.delete({ where: { id } });
+      return true;
+    },
+
+    updatePurchaseRequest: async (
+      _,
+      {
+        id,
+        itemName,
+        quantity,
+        measuredBy,
+        entranceDate,
+        notes,
+        estimatedUnitPrice,
+        supplierName,
+        supplierPhone,
+        category,
+        purchaseWithVat,
+      },
+      context,
+    ) => {
+      assertRole(context, ["Manager"]);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
+      if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
+        throw new Error("Purchase request not found");
+      }
+      assertPurchaseAuthorizedForManagerEdit(pr);
+      const data = {};
+      if (itemName != null) data.itemName = String(itemName).trim();
+      if (quantity != null) data.quantity = quantity;
+      if (measuredBy != null) data.measuredBy = measuredBy;
+      if (entranceDate != null) data.entranceDate = entranceDate;
+      if (notes != null) data.notes = notes;
+      if (estimatedUnitPrice != null) data.estimatedUnitPrice = estimatedUnitPrice;
+      if (supplierName != null) data.supplierName = supplierName;
+      if (supplierPhone != null) data.supplierPhone = supplierPhone;
+      if (category != null) data.category = category;
+      if (purchaseWithVat != null) {
+        data.purchaseWithVat = isVatEnabled(purchaseWithVat);
+      }
+      const row = await prisma.purchaseRequest.update({ where: { id }, data });
+      return withVoucherDisplay(row);
+    },
+
+    deletePurchaseRequest: async (_, { id }, context) => {
+      assertRole(context, ["Manager"]);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id } });
+      if (!pr || !tenantHotelReadMatches(context, pr.HotelName)) {
+        throw new Error("Purchase request not found");
+      }
+      assertPurchaseAuthorizedForManagerEdit(pr);
+      const receivedCount = await prisma.itemRegistration.count({
+        where: { purchaseRequestId: id },
+      });
+      if (receivedCount > 0) {
+        throw new Error(
+          "Cannot delete: stock has already been received against this purchase request",
+        );
+      }
       await prisma.purchaseRequest.delete({ where: { id } });
       return true;
     },
