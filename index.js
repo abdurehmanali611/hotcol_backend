@@ -126,7 +126,8 @@ function computeInventoryPaidAmountETB(amount, unitPrice, purchaseWithVat) {
   const price = Number(unitPrice) || 0;
   const subtotal = qty * price;
   if (!isVatEnabled(purchaseWithVat)) return subtotal;
-  return subtotal + price * INVENTORY_VAT_RATE;
+  // VAT is 15% of the whole line subtotal (qty * price), not of a single unit price.
+  return subtotal + subtotal * INVENTORY_VAT_RATE;
 }
 
 function computeInventoryTotalETB({ amount, unitPrice, purchaseWithVat }) {
@@ -2241,33 +2242,33 @@ const resolvers = {
         orderBy: [{ registrationDate: "asc" }, { id: "asc" }],
       });
       if (rows.length === 0) return rows;
-      const names = [...new Set(rows.map((r) => String(r.name || "").trim()))];
-      const statuses = await prisma.itemStatus.findMany({
+      // Reconstruct each line's ORIGINALLY-registered quantity by adding back only the
+      // stock movements that actually decremented THIS specific registration row.
+      // Stock-out/wastage/return is applied via an approved StockOutRequest, which both
+      // creates an ItemStatus row and decrements ItemRegistration.amount for the exact
+      // itemRegistrationId it targets. Attributing deductions by that id (instead of the
+      // previous name/price/supplier identity key) is precise: the old heuristic summed
+      // every same-identity movement and broadcast it onto each matching registration,
+      // inflating `registeredAmount` -> `registeredValue`/owed and mislabeling fully-paid
+      // lines as "on credit" whenever an item was registered more than once. Computing it
+      // per-row here also self-corrects every previously mislabeled record at read time.
+      const regIds = rows.map((r) => r.id);
+      const appliedMovements = await prisma.stockOutRequest.groupBy({
+        by: ["itemRegistrationId"],
         where: {
-          ...tenantHotelReadWhere(context),
-          name: { in: names },
-          status: { in: ["Stock Out", "Wastage", "Returned to Supplier"] },
+          itemRegistrationId: { in: regIds },
+          status: "APPROVED",
         },
+        _sum: { amount: true },
       });
-      const inventoryIdentityKey = (row) =>
-        [
-          String(row.name || "").trim().toLowerCase(),
-          Number(row.unitPrice || 0).toFixed(4),
-          String(row.supplierName || "").trim().toLowerCase(),
-          String(row.supplierPhone || "").trim(),
-          String(row.Address || "").trim().toLowerCase(),
-        ].join("|");
-
-      const deductedByIdentity = new Map();
-      for (const s of statuses) {
-        const k = inventoryIdentityKey(s);
-        deductedByIdentity.set(
-          k,
-          (deductedByIdentity.get(k) || 0) + (Number(s.amount) || 0),
-        );
-      }
+      const deductedByRegId = new Map(
+        appliedMovements.map((m) => [
+          m.itemRegistrationId,
+          Number(m._sum.amount || 0),
+        ]),
+      );
       return rows.map((r) => {
-        const deducted = deductedByIdentity.get(inventoryIdentityKey(r)) || 0;
+        const deducted = deductedByRegId.get(r.id) || 0;
         const registeredAmount = Number(r.amount) + deducted;
         const registeredValue = computeInventoryTotalETB({
           amount: registeredAmount,
