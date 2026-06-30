@@ -545,6 +545,7 @@ const typeDefs = gql`
     movementType: String!
     amount: Float!
     stakeHolderOrReason: String!
+    movementDate: DateTime
   }
 
   type waiter {
@@ -739,6 +740,7 @@ const typeDefs = gql`
     movementType: String!
     amount: Float!
     stakeHolderOrReason: String!
+    movementDate: DateTime
     status: String!
     voucherNumber: Int
     voucherDisplay: String
@@ -1247,6 +1249,7 @@ const typeDefs = gql`
       amount: Float!
       stakeHolderOrReason: String!
       requestedByDepartment: String!
+      movementDate: DateTime
     ): StockOutRequest!
 
     """Submit multiple stock movements at once — one voucher number for the whole batch."""
@@ -1260,6 +1263,7 @@ const typeDefs = gql`
       movementType: String
       amount: Float
       stakeHolderOrReason: String
+      movementDate: DateTime
     ): StockOutRequest!
 
     deleteStockOutRequestStoreDraft(id: Int!): Boolean!
@@ -1902,6 +1906,16 @@ async function pendingStockOutAmountByRegistration(prisma, itemIds) {
   );
 }
 
+/** Optional calendar day from store stock-movement forms (DateTime scalar). */
+function parseMovementDateInput(value) {
+  if (value == null || value === "") return null;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    throw new Error("Movement date is invalid");
+  }
+  return d;
+}
+
 function validateStockOutMovementLines(items, itemById, context, pendingByRegId) {
   const batchSumByRegId = new Map();
   for (const line of items) {
@@ -1949,6 +1963,7 @@ async function createStockOutRequestRowsInTransaction(
               movementType: String(line.movementType),
               amount: Number(line.amount),
               stakeHolderOrReason: String(line.stakeHolderOrReason ?? "").trim(),
+              movementDate: parseMovementDateInput(line.movementDate),
               status: PENDING_STORE,
               voucherNumber,
               requestedByUserName: storeUserName,
@@ -2068,6 +2083,8 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
         ? "Wastage"
         : "Returned to Supplier";
   const decidedNow = new Date();
+  const actionDate =
+    reqRow.movementDate != null ? new Date(reqRow.movementDate) : decidedNow;
   await tx.itemStatus.create({
     data: {
       name: item.name,
@@ -2076,7 +2093,7 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
       amount: reqRow.amount,
       measuredBy: item.measuredBy,
       unitPrice: item.unitPrice,
-      actionDate: decidedNow,
+      actionDate,
       supplierName: item.supplierName,
       supplierPhone: item.supplierPhone,
       Address: item.Address,
@@ -2104,7 +2121,7 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
       reqRow.HotelName,
       String(item.name).trim(),
       reqRow.stakeHolderOrReason,
-      decidedNow,
+      actionDate,
     );
   }
   return decidedNow;
@@ -4947,6 +4964,7 @@ const resolvers = {
         amount,
         stakeHolderOrReason,
         requestedByDepartment,
+        movementDate,
       },
       context,
     ) => {
@@ -4995,6 +5013,7 @@ const resolvers = {
           movementType: String(movementType),
           amount: amt,
           stakeHolderOrReason: stakeText,
+          movementDate: parseMovementDateInput(movementDate),
           status: PENDING_STORE,
           voucherNumber,
           requestedByUserName: context.user.UserName,
@@ -5054,7 +5073,7 @@ const resolvers = {
 
     updateStockOutRequestStoreDraft: async (
       _,
-      { id, movementType, amount, stakeHolderOrReason },
+      { id, movementType, amount, stakeHolderOrReason, movementDate },
       context,
     ) => {
       assertStoreUser(context);
@@ -5094,6 +5113,9 @@ const resolvers = {
         const reserved = Number(otherPending._sum.amount || 0);
         assertMovableStockAmount(item.amount, amt, reserved);
         data.amount = amt;
+      }
+      if (movementDate !== undefined) {
+        data.movementDate = parseMovementDateInput(movementDate);
       }
       const row = await prisma.stockOutRequest.update({ where: { id }, data });
       return withVoucherDisplay({

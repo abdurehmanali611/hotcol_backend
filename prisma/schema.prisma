@@ -546,6 +546,8 @@ model StockOutRequest {
   movementType         String
   amount               Float
   stakeHolderOrReason  String
+  /// Calendar day chosen at store entry; applied to inactive movement when approved.
+  movementDate         DateTime?
   /// PENDING_CC | CHECKED_CC | PENDING_FINANCE | PENDING_MANAGER | APPROVED | REJECTED | legacy PENDING
   status               String
   voucherNumber        Int?
