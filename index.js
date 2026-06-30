@@ -3919,8 +3919,12 @@ const resolvers = {
       assertRole(context, ["Store"]);
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one registration line is required");
+      const isLodging = isLodgingBusiness(context);
       const deptCode = String(receivedByDepartment ?? "").trim();
-      if (!REGISTRATION_RECEIVED_BY_DEPARTMENTS.includes(deptCode)) {
+      // Hotels/resorts/pensions track who received the goods via department
+      // leaders. Cafe/restaurant businesses don't, so the "received by" snapshot
+      // is skipped for them entirely.
+      if (isLodging && !REGISTRATION_RECEIVED_BY_DEPARTMENTS.includes(deptCode)) {
         throw new Error("Received by must be Store, Kitchen, or Bar");
       }
       const { tenant, voucherNumber } = await allocateSharedVoucherForTenant(
@@ -3928,11 +3932,18 @@ const resolvers = {
         context,
         VOUCHER_TYPES.ITEM_REGISTRATION,
       );
-      const leaderMap = await fetchLeaderMap(prisma, tenant);
-      const receiptSnap = registrationReceiptSnapshots(leaderMap, deptCode);
-      const approvalStatus = isLodgingBusiness(context)
-        ? PENDING_STORE
-        : "AUTHORIZED";
+      const receiptSnap = isLodging
+        ? registrationReceiptSnapshots(
+            await fetchLeaderMap(prisma, tenant),
+            deptCode,
+          )
+        : {
+            receivedByDepartment: "",
+            receivedByLeaderName: "",
+            financeDeptLeaderName: "",
+            gmDeptLeaderName: "",
+          };
+      const approvalStatus = isLodging ? PENDING_STORE : "AUTHORIZED";
       for (const line of items) {
         if (line.purchaseRequestId != null) {
           const pr = await prisma.purchaseRequest.findUnique({
