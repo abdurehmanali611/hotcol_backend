@@ -2434,7 +2434,6 @@ const resolvers = {
     },
     stockOutRequests: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      if (!isLodgingBusiness(context)) return [];
       const rows = await prisma.stockOutRequest.findMany({
         where: tenantHotelReadWhere(context),
         orderBy: { createdAt: "asc" },
@@ -5057,11 +5056,6 @@ const resolvers = {
       context,
     ) => {
       assertRole(context, ["Store"]);
-      if (!isLodgingBusiness(context)) {
-        throw new Error(
-          "Stock movement requests are only available for hotel inventory.",
-        );
-      }
       const item = await prisma.itemRegistration.findUnique({
         where: { id: itemRegistrationId },
       });
@@ -5122,11 +5116,6 @@ const resolvers = {
       context,
     ) => {
       assertRole(context, ["Store"]);
-      if (!isLodgingBusiness(context)) {
-        throw new Error(
-          "Stock movement requests are only available for hotel inventory.",
-        );
-      }
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one movement line is required");
       const deptCode = normalizeDepartmentCode(String(requestedByDepartment ?? "").trim());
