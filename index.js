@@ -737,6 +737,10 @@ const typeDefs = gql`
     itemRegistrationId: Int!
     """Resolved from master inventory at read time (may be empty if the row was removed)."""
     itemName: String!
+    """Unit price frozen when the movement was recorded (for receipts after stock is applied)."""
+    unitPriceSnapshot: Float
+    purchaseWithVatSnapshot: Boolean
+    measuredBySnapshot: String
     movementType: String!
     amount: Float!
     stakeHolderOrReason: String!
@@ -2127,6 +2131,77 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
   return decidedNow;
 }
 
+async function enrichStockOutRequestsWithPricing(rows) {
+  if (!rows.length) return [];
+  const ids = rows.map((r) => r.id);
+  const regIds = [...new Set(rows.map((r) => r.itemRegistrationId))];
+  const [statuses, regs] = await Promise.all([
+    prisma.itemStatus.findMany({
+      where: { stockOutRequestId: { in: ids } },
+      select: {
+        stockOutRequestId: true,
+        unitPrice: true,
+        purchaseWithVat: true,
+        measuredBy: true,
+      },
+    }),
+    prisma.itemRegistration.findMany({
+      where: { id: { in: regIds } },
+      select: {
+        id: true,
+        unitPrice: true,
+        purchaseWithVat: true,
+        measuredBy: true,
+      },
+    }),
+  ]);
+  const statusByReqId = new Map(
+    statuses.map((s) => [s.stockOutRequestId, s]),
+  );
+  const regById = new Map(regs.map((r) => [r.id, r]));
+  return rows.map((row) => {
+    const reg = regById.get(row.itemRegistrationId);
+    const status = statusByReqId.get(row.id);
+    let unitPriceSnapshot =
+      row.unitPriceSnapshot != null ? Number(row.unitPriceSnapshot) : null;
+    let purchaseWithVatSnapshot =
+      row.purchaseWithVatSnapshot != null
+        ? Boolean(row.purchaseWithVatSnapshot)
+        : null;
+    let measuredBySnapshot =
+      row.measuredBySnapshot != null
+        ? String(row.measuredBySnapshot).trim()
+        : null;
+    if (unitPriceSnapshot == null && reg) {
+      unitPriceSnapshot = Number(reg.unitPrice) || 0;
+      if (purchaseWithVatSnapshot == null) {
+        purchaseWithVatSnapshot = isVatEnabled(reg.purchaseWithVat);
+      }
+      if (!measuredBySnapshot) {
+        measuredBySnapshot = String(reg.measuredBy ?? "").trim() || "units";
+      }
+    }
+    if (unitPriceSnapshot == null && status) {
+      unitPriceSnapshot = Number(status.unitPrice) || 0;
+      if (purchaseWithVatSnapshot == null) {
+        purchaseWithVatSnapshot = isVatEnabled(status.purchaseWithVat);
+      }
+      if (!measuredBySnapshot) {
+        measuredBySnapshot = String(status.measuredBy ?? "").trim() || "units";
+      }
+    }
+    if (unitPriceSnapshot == null) unitPriceSnapshot = 0;
+    if (purchaseWithVatSnapshot == null) purchaseWithVatSnapshot = false;
+    if (!measuredBySnapshot) measuredBySnapshot = "units";
+    return {
+      ...row,
+      unitPriceSnapshot,
+      purchaseWithVatSnapshot,
+      measuredBySnapshot,
+    };
+  });
+}
+
 const resolvers = {
   JSON: GraphQLJSON,
   DateTime: DateTimeResolver,
@@ -2359,11 +2434,13 @@ const resolvers = {
     },
     stockOutRequests: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      if (!isLodgingBusiness(context)) return [];
       const rows = await prisma.stockOutRequest.findMany({
         where: tenantHotelReadWhere(context),
         orderBy: { createdAt: "asc" },
       });
-      return rows.map((r) =>
+      const enriched = await enrichStockOutRequestsWithPricing(rows);
+      return enriched.map((r) =>
         withVoucherDisplay({
           ...r,
           status: normalizeStockOutStatus(r.status),
@@ -4980,6 +5057,11 @@ const resolvers = {
       context,
     ) => {
       assertRole(context, ["Store"]);
+      if (!isLodgingBusiness(context)) {
+        throw new Error(
+          "Stock movement requests are only available for hotel inventory.",
+        );
+      }
       const item = await prisma.itemRegistration.findUnique({
         where: { id: itemRegistrationId },
       });
@@ -5040,6 +5122,11 @@ const resolvers = {
       context,
     ) => {
       assertRole(context, ["Store"]);
+      if (!isLodgingBusiness(context)) {
+        throw new Error(
+          "Stock movement requests are only available for hotel inventory.",
+        );
+      }
       const items = Array.isArray(lines) ? lines : [];
       if (!items.length) throw new Error("At least one movement line is required");
       const deptCode = normalizeDepartmentCode(String(requestedByDepartment ?? "").trim());
