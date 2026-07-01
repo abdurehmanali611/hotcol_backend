@@ -37,6 +37,7 @@ import {
   isStockOutPendingManager,
   ITEM_REG_VOID,
   isItemRegistrationActive,
+  isStoreInventoryQuantityAdjustment,
 } from "./lib/hotelWorkflow.js";
 import {
   daysBetweenCalendar,
@@ -4101,6 +4102,14 @@ const resolvers = {
         context.user.Role === "Store" &&
         itemRegistration.approvalStatus !== PENDING_STORE
       ) {
+        if (
+          isItemRegistrationActive(itemRegistration.approvalStatus) &&
+          Number(itemRegistration.amount) === 0
+        ) {
+          return await prisma.itemRegistration.delete({
+            where: { id: id },
+          });
+        }
         throw new Error(
           "Only registrations awaiting your review can be deleted",
         );
@@ -4220,6 +4229,29 @@ const resolvers = {
         context.user.Role === "Store" &&
         itemReg.approvalStatus !== PENDING_STORE
       ) {
+        const incoming = {
+          name,
+          imageUrl,
+          category,
+          measuredBy,
+          unitPrice,
+          registrationDate,
+          expireDate,
+          supplierName,
+          supplierPhone,
+          Address,
+          purchaseWithVat,
+          supplierTinNumber,
+          paidAmount,
+        };
+        if (isStoreInventoryQuantityAdjustment(itemReg, amount, incoming)) {
+          const deduct = Number(itemReg.amount) - Number(amount);
+          assertMovableStockAmount(itemReg.amount, deduct);
+          return await prisma.itemRegistration.update({
+            where: { id: id },
+            data: { amount: Number(amount) },
+          });
+        }
         throw new Error(
           "Only registrations awaiting your review can be edited",
         );
