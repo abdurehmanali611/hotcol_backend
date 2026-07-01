@@ -273,6 +273,8 @@ model Item {
   showStationPrepQty  Boolean  @default(true)
   /// When true, the item is temporarily suspended and cannot be ordered by the cashier.
   isSuspended         Boolean  @default(false)
+  /// Optional recipe: { ingredients: [{ name, amount, measuredBy, unitPrice }] }
+  recipeJson          Json?
   createdAt           DateTime @default(now())
 }
 

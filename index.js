@@ -450,6 +450,7 @@ const typeDefs = gql`
     imageUrl: String!
     showStationPrepQty: Boolean!
     isSuspended: Boolean!
+    recipeJson: JSON
     createdAt: DateTime!
   }
 
@@ -940,6 +941,7 @@ const typeDefs = gql`
       type: String!
       category: String!
       imageUrl: String!
+      recipeJson: JSON
     ): Item!
     OrderCreation(
       title: String!
@@ -975,6 +977,7 @@ const typeDefs = gql`
       price: Float!
       type: String!
       imageUrl: String!
+      recipeJson: JSON
     ): Item!
     UpdateItemStationPrepQty(id: Int!, showStationPrepQty: Boolean!): Item!
     UpdateItemSuspension(id: Int!, isSuspended: Boolean!): Item!
@@ -3259,7 +3262,7 @@ const resolvers = {
     },
     CreateItem: async (
       _,
-      { name, price, category, imageUrl, type },
+      { name, price, category, imageUrl, type, recipeJson },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -3270,6 +3273,7 @@ const resolvers = {
           category,
           type,
           imageUrl,
+          recipeJson: recipeJson ?? null,
           HotelName: tenantScopeFromContext(context),
         },
       });
@@ -3514,7 +3518,7 @@ const resolvers = {
     },
     UpdateItem: async (
       _,
-      { id, name, category, price, imageUrl, type },
+      { id, name, category, price, imageUrl, type, recipeJson },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -3527,7 +3531,14 @@ const resolvers = {
         }
         const updated = await prisma.item.update({
           where: { id: id },
-          data: { name, price, category, type, imageUrl },
+          data: {
+            name,
+            price,
+            category,
+            type,
+            imageUrl,
+            ...(recipeJson !== undefined ? { recipeJson } : {}),
+          },
         });
         return updated;
       } catch (e) {
