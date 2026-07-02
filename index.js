@@ -769,6 +769,25 @@ const typeDefs = gql`
     createdAt: DateTime!
   }
 
+  """Archived unit price for kitchen-received items fully stocked out."""
+  type FreshBazaar {
+    id: Int!
+    HotelName: String!
+    itemRegistrationId: Int!
+    stockOutRequestId: Int
+    name: String!
+    imageUrl: String!
+    category: String!
+    measuredBy: String!
+    unitPrice: Float!
+    purchaseWithVat: Boolean!
+    supplierName: String!
+    supplierPhone: String!
+    Address: String!
+    supplierTinNumber: String!
+    archivedAt: DateTime!
+  }
+
   type KitchenBarBeginning {
     id: Int!
     HotelName: String!
@@ -875,6 +894,7 @@ const typeDefs = gql`
     departmentLeaders: [DepartmentLeader!]!
     purchaseRequests: [PurchaseRequest!]!
     stockOutRequests: [StockOutRequest!]!
+    freshBazaarArchives: [FreshBazaar!]!
     kitchenBarBeginnings: [KitchenBarBeginning!]!
     kitchenBarRollupSnapshots(fromYmd: String!, toYmd: String!): [KitchenBarMonthlySnapshot!]!
     hotelCreditCompanies: [HotelCreditCompany!]!
@@ -2075,6 +2095,39 @@ async function createItemRegistrationRowsInTransaction(
   );
 }
 
+function isKitchenReceivedRegistration(item) {
+  return normalizeDepartmentCode(String(item.receivedByDepartment ?? "")) === "KITCHEN";
+}
+
+async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
+  if (!isKitchenReceivedRegistration(item)) return;
+  if (String(reqRow.movementType) !== "STOCK_OUT") return;
+  await tx.freshBazaar.upsert({
+    where: { itemRegistrationId: item.id },
+    create: {
+      HotelName: reqRow.HotelName,
+      itemRegistrationId: item.id,
+      stockOutRequestId: reqRow.id,
+      name: item.name,
+      imageUrl: String(item.imageUrl ?? "").trim(),
+      category: String(item.category ?? "").trim(),
+      measuredBy: item.measuredBy,
+      unitPrice: Number(item.unitPrice) || 0,
+      purchaseWithVat: isVatEnabled(item.purchaseWithVat),
+      supplierName: item.supplierName,
+      supplierPhone: item.supplierPhone,
+      Address: item.Address,
+      supplierTinNumber: String(item.supplierTinNumber ?? "").trim(),
+    },
+    update: {
+      stockOutRequestId: reqRow.id,
+      unitPrice: Number(item.unitPrice) || 0,
+      purchaseWithVat: isVatEnabled(item.purchaseWithVat),
+      measuredBy: item.measuredBy,
+    },
+  });
+}
+
 async function applyStockOutToInventory(tx, reqRow, actorName) {
   const item = await tx.itemRegistration.findUnique({
     where: { id: reqRow.itemRegistrationId },
@@ -2116,6 +2169,7 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
     },
   });
   if (newAmount === 0) {
+    await archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow);
     await tx.itemRegistration.delete({ where: { id: item.id } });
   } else {
     await tx.itemRegistration.update({
@@ -2139,7 +2193,7 @@ async function enrichStockOutRequestsWithPricing(rows) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
   const regIds = [...new Set(rows.map((r) => r.itemRegistrationId))];
-  const [statuses, regs] = await Promise.all([
+  const [statuses, regs, freshArchives] = await Promise.all([
     prisma.itemStatus.findMany({
       where: { stockOutRequestId: { in: ids } },
       select: {
@@ -2158,11 +2212,30 @@ async function enrichStockOutRequestsWithPricing(rows) {
         measuredBy: true,
       },
     }),
+    prisma.freshBazaar.findMany({
+      where: { itemRegistrationId: { in: regIds } },
+      select: {
+        itemRegistrationId: true,
+        unitPrice: true,
+        purchaseWithVat: true,
+        measuredBy: true,
+        name: true,
+        imageUrl: true,
+        category: true,
+        supplierName: true,
+        supplierPhone: true,
+        Address: true,
+        supplierTinNumber: true,
+      },
+    }),
   ]);
   const statusByReqId = new Map(
     statuses.map((s) => [s.stockOutRequestId, s]),
   );
   const regById = new Map(regs.map((r) => [r.id, r]));
+  const freshByRegId = new Map(
+    freshArchives.map((f) => [f.itemRegistrationId, f]),
+  );
   return rows.map((row) => {
     const reg = regById.get(row.itemRegistrationId);
     const status = statusByReqId.get(row.id);
@@ -2192,6 +2265,16 @@ async function enrichStockOutRequestsWithPricing(rows) {
       }
       if (!measuredBySnapshot) {
         measuredBySnapshot = String(status.measuredBy ?? "").trim() || "units";
+      }
+    }
+    const fresh = freshByRegId.get(row.itemRegistrationId);
+    if (unitPriceSnapshot == null && fresh) {
+      unitPriceSnapshot = Number(fresh.unitPrice) || 0;
+      if (purchaseWithVatSnapshot == null) {
+        purchaseWithVatSnapshot = isVatEnabled(fresh.purchaseWithVat);
+      }
+      if (!measuredBySnapshot) {
+        measuredBySnapshot = String(fresh.measuredBy ?? "").trim() || "units";
       }
     }
     if (unitPriceSnapshot == null) unitPriceSnapshot = 0;
@@ -2449,6 +2532,13 @@ const resolvers = {
           status: normalizeStockOutStatus(r.status),
         }),
       );
+    },
+    freshBazaarArchives: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      return await prisma.freshBazaar.findMany({
+        where: tenantHotelReadWhere(context),
+        orderBy: { archivedAt: "desc" },
+      });
     },
     kitchenBarBeginnings: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");

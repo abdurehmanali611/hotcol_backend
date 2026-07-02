@@ -574,6 +574,28 @@ model StockOutRequest {
   @@index([status])
 }
 
+/// Archived pricing for kitchen-received items fully stocked out (inventory row removed).
+model FreshBazaar {
+  id                 Int      @id @default(autoincrement())
+  HotelName          String
+  itemRegistrationId Int      @unique
+  stockOutRequestId  Int?
+  name               String
+  imageUrl           String   @default("")
+  category           String   @default("")
+  measuredBy         String
+  unitPrice          Float
+  purchaseWithVat    Boolean  @default(false)
+  supplierName       String
+  supplierPhone      String
+  Address            String
+  supplierTinNumber  String   @default("")
+  archivedAt         DateTime @default(now())
+
+  @@index([HotelName])
+  @@index([stockOutRequestId])
+}
+
 /// Daily chef / bar count rows (opening pulse, documented stock-out, closing on-hand).
 /// Implied movement for a day is derived when the next day’s opening is recorded: opening + stockOut − nextOpening.
 model KitchenBarBeginning {
