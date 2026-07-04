@@ -9,6 +9,45 @@ datasource db {
   provider = "mysql"
 }
 
+// =============================================================================
+// OWNER MODELS (hotcol-owner mobile app)
+// -----------------------------------------------------------------------------
+// An owner is a business owner who oversees one or more properties (cafes /
+// hotels) that already exist in the shared database. Each property is keyed by
+// its tenant TIN (`user.tinNumber` / `tenant_account.tinNumber`).
+// =============================================================================
+
+/// Owner login for the hotcol-owner mobile app. Separate from tenant `user`.
+model owner_account {
+  id          Int      @id @default(autoincrement())
+  UserName    String   @unique
+  Password    String
+  displayName String?
+  phone       String?
+  email       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  properties owner_property[]
+}
+
+/// Link between an owner and a property TIN they oversee (portfolio entry).
+model owner_property {
+  id         Int      @id @default(autoincrement())
+  ownerId    Int
+  /// Matches user.tinNumber / tenant_account.tinNumber.
+  tinNumber  String
+  /// Optional owner-facing label override; falls back to the property name.
+  label      String?
+  createdAt  DateTime @default(now())
+
+  owner owner_account @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, tinNumber])
+  @@index([tinNumber])
+}
+
 model user {
   id                          Int       @id @default(autoincrement())
   UserName                    String    @unique
