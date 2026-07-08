@@ -13,7 +13,7 @@ function moduleSetsForBusinessType(bt) {
   if (bt === "Cafe and Restaurant") {
     return [[], ["Inventory"], ["Credit Management"], ["Inventory", "Credit Management"]];
   }
-  return [
+  const lodgingBase = [
     [],
     ["Inventory"],
     ["Financial Management"],
@@ -22,6 +22,20 @@ function moduleSetsForBusinessType(bt) {
     ["Inventory", "Credit Management"],
     ["Inventory", "Financial Management", "Credit Management"],
   ];
+  const lodgingWithCafe = [
+    ["Cafe and Restaurant"],
+    ["Cafe and Restaurant", "Inventory"],
+    ["Cafe and Restaurant", "Credit Management"],
+    ["Cafe and Restaurant", "Inventory", "Credit Management"],
+    ["Cafe and Restaurant", "Inventory", "Financial Management"],
+    [
+      "Cafe and Restaurant",
+      "Inventory",
+      "Financial Management",
+      "Credit Management",
+    ],
+  ];
+  return [...lodgingBase, ...lodgingWithCafe];
 }
 
 async function main() {
@@ -29,7 +43,7 @@ async function main() {
   for (const bt of BUSINESS_TYPES) {
     for (const modules of moduleSetsForBusinessType(bt)) {
       const normalized = normalizePricingBusinessType(bt);
-      const modulesKey = buildModulesKey(modules);
+      const modulesKey = buildModulesKey(modules, normalized);
       const fees = calculateSignupPricingHardcoded(normalized, modules);
       const description = modules.length
         ? modules.join(", ")
