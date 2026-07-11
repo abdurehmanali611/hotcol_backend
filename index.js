@@ -2562,78 +2562,146 @@ const resolvers = {
         where: tenantHotelReadWhere(context),
         orderBy: { archivedAt: "desc" },
       });
-      // Legacy archives may lack amount/paidAmount — reconstruct from stock-outs / ItemStatus.
-      const needsEnrich = rows.filter(
-        (r) =>
-          !(Number(r.amount) > 0) ||
-          r.paidAmount == null ||
-          r.registrationDate == null,
-      );
-      if (!needsEnrich.length) return rows;
+      if (!rows.length) return rows;
+
       const regIds = [
-        ...new Set(needsEnrich.map((r) => r.itemRegistrationId).filter(Boolean)),
+        ...new Set(rows.map((r) => r.itemRegistrationId).filter(Boolean)),
       ];
-      const reqIds = [
-        ...new Set(
-          needsEnrich
-            .map((r) => r.stockOutRequestId)
-            .filter((id) => id != null && Number(id) > 0),
-        ),
+      const archiveReqIds = rows
+        .map((r) => r.stockOutRequestId)
+        .filter((id) => id != null && Number(id) > 0);
+
+      const approvedMoves = regIds.length
+        ? await prisma.stockOutRequest.findMany({
+            where: {
+              itemRegistrationId: { in: regIds },
+              status: "APPROVED",
+            },
+            select: {
+              id: true,
+              itemRegistrationId: true,
+              amount: true,
+            },
+          })
+        : [];
+
+      const allReqIds = [
+        ...new Set([
+          ...archiveReqIds,
+          ...approvedMoves.map((m) => m.id),
+        ].filter(Boolean)),
       ];
-      const [movementSums, statuses] = await Promise.all([
-        regIds.length
-          ? prisma.stockOutRequest.groupBy({
-              by: ["itemRegistrationId"],
-              where: {
-                itemRegistrationId: { in: regIds },
-                status: "APPROVED",
-              },
-              _sum: { amount: true },
-            })
-          : Promise.resolve([]),
-        reqIds.length
-          ? prisma.itemStatus.findMany({
-              where: { stockOutRequestId: { in: reqIds } },
-              select: {
-                stockOutRequestId: true,
-                paidAmount: true,
-                actionDate: true,
-              },
-              orderBy: { id: "desc" },
-            })
-          : Promise.resolve([]),
-      ]);
-      const qtyByRegId = new Map(
-        movementSums.map((m) => [
+      const allStatuses = allReqIds.length
+        ? await prisma.itemStatus.findMany({
+            where: { stockOutRequestId: { in: allReqIds } },
+            select: {
+              stockOutRequestId: true,
+              paidAmount: true,
+              actionDate: true,
+              amount: true,
+            },
+            orderBy: { id: "asc" },
+          })
+        : [];
+
+      const qtyByRegId = new Map();
+      const reqToReg = new Map();
+      for (const m of approvedMoves) {
+        qtyByRegId.set(
           m.itemRegistrationId,
-          Number(m._sum.amount || 0),
-        ]),
-      );
-      const statusByReqId = new Map();
-      for (const s of statuses) {
-        if (s.stockOutRequestId == null) continue;
-        if (!statusByReqId.has(s.stockOutRequestId)) {
-          statusByReqId.set(s.stockOutRequestId, s);
+          (qtyByRegId.get(m.itemRegistrationId) || 0) + (Number(m.amount) || 0),
+        );
+        reqToReg.set(m.id, m.itemRegistrationId);
+      }
+      for (const r of rows) {
+        if (r.stockOutRequestId) {
+          reqToReg.set(r.stockOutRequestId, r.itemRegistrationId);
         }
       }
-      return rows.map((r) => {
+
+      const statusQtyByReg = new Map();
+      const statusPaidByReg = new Map();
+      const statusDateByReg = new Map();
+      const statusByReqId = new Map();
+      for (const s of allStatuses) {
+        if (
+          s.stockOutRequestId != null &&
+          !statusByReqId.has(s.stockOutRequestId)
+        ) {
+          statusByReqId.set(s.stockOutRequestId, s);
+        }
+        const regId = reqToReg.get(s.stockOutRequestId);
+        if (!regId) continue;
+        statusQtyByReg.set(
+          regId,
+          (statusQtyByReg.get(regId) || 0) + (Number(s.amount) || 0),
+        );
+        // Latest status paid amount wins (registration paidAmount is duplicated on each movement).
+        statusPaidByReg.set(regId, Number(s.paidAmount) || 0);
+        if (
+          s.actionDate &&
+          (!statusDateByReg.has(regId) ||
+            new Date(s.actionDate) < new Date(statusDateByReg.get(regId)))
+        ) {
+          statusDateByReg.set(regId, s.actionDate);
+        }
+      }
+
+      const enriched = rows.map((r) => {
         let amount = Number(r.amount) || 0;
         let paidAmount = Number(r.paidAmount) || 0;
         let registrationDate = r.registrationDate;
         if (!(amount > 0)) {
-          amount = qtyByRegId.get(r.itemRegistrationId) || 0;
+          amount =
+            qtyByRegId.get(r.itemRegistrationId) ||
+            statusQtyByReg.get(r.itemRegistrationId) ||
+            0;
         }
-        const status = r.stockOutRequestId
-          ? statusByReqId.get(r.stockOutRequestId)
-          : null;
-        if (!(paidAmount > 0) && status) {
-          paidAmount = Number(status.paidAmount) || 0;
+        if (!(paidAmount > 0)) {
+          paidAmount = statusPaidByReg.get(r.itemRegistrationId) || 0;
+          if (!(paidAmount > 0) && r.stockOutRequestId) {
+            const st = statusByReqId.get(r.stockOutRequestId);
+            paidAmount = Number(st?.paidAmount) || 0;
+          }
         }
         if (registrationDate == null) {
-          registrationDate = status?.actionDate ?? r.archivedAt ?? null;
+          registrationDate =
+            statusDateByReg.get(r.itemRegistrationId) ||
+            (r.stockOutRequestId
+              ? statusByReqId.get(r.stockOutRequestId)?.actionDate
+              : null) ||
+            r.archivedAt ||
+            null;
         }
         return { ...r, amount, paidAmount, registrationDate };
       });
+
+      const toPersist = enriched.filter((r, i) => {
+        const orig = rows[i];
+        return (
+          (Number(orig.amount) || 0) !== (Number(r.amount) || 0) ||
+          (Number(orig.paidAmount) || 0) !== (Number(r.paidAmount) || 0) ||
+          (orig.registrationDate == null && r.registrationDate != null)
+        );
+      });
+      if (toPersist.length) {
+        await Promise.all(
+          toPersist.map((r) =>
+            prisma.freshBazaar
+              .update({
+                where: { id: r.id },
+                data: {
+                  amount: Number(r.amount) || 0,
+                  paidAmount: Number(r.paidAmount) || 0,
+                  registrationDate: r.registrationDate ?? null,
+                },
+              })
+              .catch(() => null),
+          ),
+        );
+      }
+
+      return enriched;
     },
     kitchenBarBeginnings: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
