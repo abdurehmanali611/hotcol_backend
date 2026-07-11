@@ -4526,7 +4526,11 @@ const resolvers = {
     upsertDepartmentLeader: async (_, { department, leaderName }, context) => {
       assertRole(context, ["Manager"]);
       const dept = String(department ?? "").trim();
-      const name = String(leaderName ?? "").trim();
+      const name = String(leaderName ?? "")
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(", ");
       if (!HOTEL_DEPARTMENTS.includes(dept)) {
         throw new Error("Invalid department");
       }
