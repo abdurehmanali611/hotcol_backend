@@ -1108,6 +1108,8 @@ const typeDefs = gql`
     createItemRegistrationsBatch(
       lines: [ItemRegistrationLineInput!]!
       receivedByDepartment: String!
+      """When a department has multiple leaders, the selected accountable name."""
+      receivedByLeaderName: String
     ): [ItemRegistration!]!
 
     submitItemRegistrationsToCostControl(ids: [Int!]!): [ItemRegistration!]!
@@ -1212,6 +1214,8 @@ const typeDefs = gql`
     createPurchaseRequestsBatch(
       lines: [PurchaseRequestLineInput!]!
       requestedByDepartment: String!
+      """When a department has multiple leaders, the selected accountable name."""
+      requestedByLeaderName: String
     ): [PurchaseRequest!]!
 
     updatePurchaseRequestStoreDraft(
@@ -1281,6 +1285,8 @@ const typeDefs = gql`
       amount: Float!
       stakeHolderOrReason: String!
       requestedByDepartment: String!
+      """When a department has multiple leaders, the selected accountable name."""
+      requestedByLeaderName: String
       movementDate: DateTime
     ): StockOutRequest!
 
@@ -1288,6 +1294,8 @@ const typeDefs = gql`
     createStockOutRequestsBatch(
       lines: [StockOutRequestLineInput!]!
       requestedByDepartment: String!
+      """When a department has multiple leaders, the selected accountable name."""
+      requestedByLeaderName: String
     ): [StockOutRequest!]!
 
     updateStockOutRequestStoreDraft(
@@ -4291,7 +4299,7 @@ const resolvers = {
 
     createItemRegistrationsBatch: async (
       _,
-      { lines, receivedByDepartment },
+      { lines, receivedByDepartment, receivedByLeaderName },
       context,
     ) => {
       assertRole(context, ["Store"]);
@@ -4314,6 +4322,7 @@ const resolvers = {
         ? registrationReceiptSnapshots(
             await fetchLeaderMap(prisma, tenant),
             deptCode,
+            receivedByLeaderName,
           )
         : {
             receivedByDepartment: "",
@@ -4721,7 +4730,7 @@ const resolvers = {
 
     createPurchaseRequestsBatch: async (
       _,
-      { lines, requestedByDepartment },
+      { lines, requestedByDepartment, requestedByLeaderName },
       context,
     ) => {
       assertRole(context, ["Store"]);
@@ -4739,6 +4748,7 @@ const resolvers = {
       const leaderMap = await fetchLeaderMap(prisma, tenant);
       const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode, {
         storeUserName: context.user.UserName,
+        requestedByLeaderName,
       });
       const rows = await createPurchaseRequestRowsInTransaction(
         prisma,
@@ -5388,6 +5398,7 @@ const resolvers = {
         amount,
         stakeHolderOrReason,
         requestedByDepartment,
+        requestedByLeaderName,
         movementDate,
       },
       context,
@@ -5428,6 +5439,7 @@ const resolvers = {
       const leaderMap = await fetchLeaderMap(prisma, tenant);
       const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode, {
         storeUserName: context.user.UserName,
+        requestedByLeaderName,
       });
       const row = await prisma.stockOutRequest.create({
         data: {
@@ -5449,7 +5461,7 @@ const resolvers = {
 
     createStockOutRequestsBatch: async (
       _,
-      { lines, requestedByDepartment },
+      { lines, requestedByDepartment, requestedByLeaderName },
       context,
     ) => {
       assertRole(context, ["Store"]);
@@ -5482,6 +5494,7 @@ const resolvers = {
       const leaderMap = await fetchLeaderMap(prisma, tenant);
       const receiptSnap = requestReceiptSnapshots(leaderMap, deptCode, {
         storeUserName: context.user.UserName,
+        requestedByLeaderName,
       });
       const rows = await createStockOutRequestRowsInTransaction(
         prisma,
