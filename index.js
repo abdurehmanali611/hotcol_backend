@@ -337,6 +337,91 @@ function tenantHotelReadWhere(ctx) {
   return { OR: list.map((HotelName) => ({ HotelName })) };
 }
 
+/**
+ * Registry tables (DepartmentLeader, CostControllerProfile) are written with
+ * `tenantScopeFromContext` (TIN). Never OR the JWT display `HotelName` here —
+ * shared brand names would leak another property's leaders (SaaS isolation).
+ * Legacy tenants without a TIN fall back to display name only.
+ */
+function collectTenantRegistryKeysFromUser(u) {
+  if (!u) return [];
+  const keys = new Set();
+  const add = (v) => {
+    const s = String(v ?? "").trim();
+    if (s) keys.add(s);
+  };
+  add(u.tinNumber);
+  add(u.tenantId);
+  if (keys.size === 0) {
+    add(u.HotelName);
+  }
+  return [...keys];
+}
+
+function tenantRegistryReadWhere(ctx) {
+  const u = ctx?.user;
+  if (!u) return { HotelName: "__no_user__" };
+  const list = collectTenantRegistryKeysFromUser(u);
+  if (list.length === 0) return { HotelName: "__no_scope__" };
+  if (list.length === 1) return { HotelName: list[0] };
+  return { OR: list.map((HotelName) => ({ HotelName })) };
+}
+
+function tenantRegistryReadMatches(ctx, rowHotelName) {
+  const row =
+    rowHotelName != null && String(rowHotelName).trim() !== ""
+      ? String(rowHotelName).trim()
+      : "";
+  if (!row) return false;
+  return collectTenantRegistryKeysFromUser(ctx?.user).includes(row);
+}
+
+/**
+ * Move this property's display-keyed DepartmentLeader rows onto the TIN key
+ * when the display name is not shared with another tin-scoped tenant.
+ */
+async function remapDepartmentLeadersDisplayToTin(prisma, context) {
+  const tin = tenantScopeFromContext(context);
+  const display = String(context?.user?.HotelName ?? "").trim();
+  if (!tin || !display || display === tin) return;
+
+  const otherWithSameDisplay = await prisma.user.findFirst({
+    where: {
+      HotelName: display,
+      Role: { in: ["Admin", "Manager"] },
+      AND: [
+        { tinNumber: { not: null } },
+        { tinNumber: { not: "" } },
+        { NOT: { tinNumber: tin } },
+      ],
+    },
+    select: { id: true },
+  });
+  if (otherWithSameDisplay) {
+    // Shared brand name — do not reassign; TIN-only reads keep tenants isolated.
+    return;
+  }
+
+  const legacyRows = await prisma.departmentLeader.findMany({
+    where: { HotelName: display },
+  });
+  for (const row of legacyRows) {
+    const existing = await prisma.departmentLeader.findUnique({
+      where: {
+        HotelName_department: { HotelName: tin, department: row.department },
+      },
+    });
+    if (existing) {
+      await prisma.departmentLeader.delete({ where: { id: row.id } });
+    } else {
+      await prisma.departmentLeader.update({
+        where: { id: row.id },
+        data: { HotelName: tin },
+      });
+    }
+  }
+}
+
 function tenantHotelKeysFromContext(ctx) {
   const where = tenantHotelReadWhere(ctx);
   if (where.HotelName) return [where.HotelName];
@@ -2559,13 +2644,14 @@ const resolvers = {
     costControllerProfiles: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.costControllerProfile.findMany({
-        where: tenantHotelReadWhere(context),
+        where: tenantRegistryReadWhere(context),
         orderBy: { createdAt: "asc" },
       });
     },
     departmentLeaders: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const where = tenantHotelReadWhere(context);
+      await remapDepartmentLeadersDisplayToTin(prisma, context);
+      const where = tenantRegistryReadWhere(context);
       const scopedHotels = await prisma.departmentLeader.findMany({
         where,
         select: { HotelName: true },
@@ -4630,7 +4716,7 @@ const resolvers = {
       const row = await prisma.costControllerProfile.findUnique({
         where: { id },
       });
-      if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+      if (!row || !tenantRegistryReadMatches(context, row.HotelName)) {
         throw new Error("Profile not found");
       }
       await prisma.costControllerProfile.delete({ where: { id } });
