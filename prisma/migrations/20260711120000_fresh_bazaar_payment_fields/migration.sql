@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE `FreshBazaar` ADD COLUMN `amount` DOUBLE NOT NULL DEFAULT 0;
+ALTER TABLE `FreshBazaar` ADD COLUMN `paidAmount` DOUBLE NOT NULL DEFAULT 0;
+ALTER TABLE `FreshBazaar` ADD COLUMN `registrationDate` DATETIME(3) NULL;

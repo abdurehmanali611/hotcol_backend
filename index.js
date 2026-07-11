@@ -769,7 +769,7 @@ const typeDefs = gql`
     createdAt: DateTime!
   }
 
-  """Archived unit price for kitchen-received items fully stocked out."""
+  """Archived kitchen-received items fully stocked out (fresh bazaar)."""
   type FreshBazaar {
     id: Int!
     HotelName: String!
@@ -778,13 +778,16 @@ const typeDefs = gql`
     name: String!
     imageUrl: String!
     category: String!
+    amount: Float!
     measuredBy: String!
     unitPrice: Float!
     purchaseWithVat: Boolean!
+    paidAmount: Float!
     supplierName: String!
     supplierPhone: String!
     Address: String!
     supplierTinNumber: String!
+    registrationDate: DateTime
     archivedAt: DateTime!
   }
 
@@ -2102,6 +2105,20 @@ function isKitchenReceivedRegistration(item) {
 async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
   if (!isKitchenReceivedRegistration(item)) return;
   if (String(reqRow.movementType) !== "STOCK_OUT") return;
+  // Current request is not APPROVED yet; remaining qty + prior approved = original registered.
+  const prior = await tx.stockOutRequest.aggregate({
+    where: {
+      itemRegistrationId: item.id,
+      status: "APPROVED",
+      id: { not: reqRow.id },
+    },
+    _sum: { amount: true },
+  });
+  const registeredAmount =
+    (Number(item.amount) || 0) + (Number(prior._sum.amount) || 0);
+  const paidAmount = Number(item.paidAmount) || 0;
+  const registrationDate =
+    item.registrationDate != null ? new Date(item.registrationDate) : null;
   await tx.freshBazaar.upsert({
     where: { itemRegistrationId: item.id },
     create: {
@@ -2111,19 +2128,25 @@ async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
       name: item.name,
       imageUrl: String(item.imageUrl ?? "").trim(),
       category: String(item.category ?? "").trim(),
+      amount: registeredAmount,
       measuredBy: item.measuredBy,
       unitPrice: Number(item.unitPrice) || 0,
       purchaseWithVat: isVatEnabled(item.purchaseWithVat),
+      paidAmount,
       supplierName: item.supplierName,
       supplierPhone: item.supplierPhone,
       Address: item.Address,
       supplierTinNumber: String(item.supplierTinNumber ?? "").trim(),
+      registrationDate,
     },
     update: {
       stockOutRequestId: reqRow.id,
+      amount: registeredAmount,
       unitPrice: Number(item.unitPrice) || 0,
       purchaseWithVat: isVatEnabled(item.purchaseWithVat),
+      paidAmount,
       measuredBy: item.measuredBy,
+      registrationDate,
     },
   });
 }
@@ -2535,9 +2558,81 @@ const resolvers = {
     },
     freshBazaarArchives: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      return await prisma.freshBazaar.findMany({
+      const rows = await prisma.freshBazaar.findMany({
         where: tenantHotelReadWhere(context),
         orderBy: { archivedAt: "desc" },
+      });
+      // Legacy archives may lack amount/paidAmount — reconstruct from stock-outs / ItemStatus.
+      const needsEnrich = rows.filter(
+        (r) =>
+          !(Number(r.amount) > 0) ||
+          r.paidAmount == null ||
+          r.registrationDate == null,
+      );
+      if (!needsEnrich.length) return rows;
+      const regIds = [
+        ...new Set(needsEnrich.map((r) => r.itemRegistrationId).filter(Boolean)),
+      ];
+      const reqIds = [
+        ...new Set(
+          needsEnrich
+            .map((r) => r.stockOutRequestId)
+            .filter((id) => id != null && Number(id) > 0),
+        ),
+      ];
+      const [movementSums, statuses] = await Promise.all([
+        regIds.length
+          ? prisma.stockOutRequest.groupBy({
+              by: ["itemRegistrationId"],
+              where: {
+                itemRegistrationId: { in: regIds },
+                status: "APPROVED",
+              },
+              _sum: { amount: true },
+            })
+          : Promise.resolve([]),
+        reqIds.length
+          ? prisma.itemStatus.findMany({
+              where: { stockOutRequestId: { in: reqIds } },
+              select: {
+                stockOutRequestId: true,
+                paidAmount: true,
+                actionDate: true,
+              },
+              orderBy: { id: "desc" },
+            })
+          : Promise.resolve([]),
+      ]);
+      const qtyByRegId = new Map(
+        movementSums.map((m) => [
+          m.itemRegistrationId,
+          Number(m._sum.amount || 0),
+        ]),
+      );
+      const statusByReqId = new Map();
+      for (const s of statuses) {
+        if (s.stockOutRequestId == null) continue;
+        if (!statusByReqId.has(s.stockOutRequestId)) {
+          statusByReqId.set(s.stockOutRequestId, s);
+        }
+      }
+      return rows.map((r) => {
+        let amount = Number(r.amount) || 0;
+        let paidAmount = Number(r.paidAmount) || 0;
+        let registrationDate = r.registrationDate;
+        if (!(amount > 0)) {
+          amount = qtyByRegId.get(r.itemRegistrationId) || 0;
+        }
+        const status = r.stockOutRequestId
+          ? statusByReqId.get(r.stockOutRequestId)
+          : null;
+        if (!(paidAmount > 0) && status) {
+          paidAmount = Number(status.paidAmount) || 0;
+        }
+        if (registrationDate == null) {
+          registrationDate = status?.actionDate ?? r.archivedAt ?? null;
+        }
+        return { ...r, amount, paidAmount, registrationDate };
       });
     },
     kitchenBarBeginnings: async (_, __, context) => {

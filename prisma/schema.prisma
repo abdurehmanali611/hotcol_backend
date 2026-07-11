@@ -622,13 +622,18 @@ model FreshBazaar {
   name               String
   imageUrl           String   @default("")
   category           String   @default("")
+  /// Originally registered quantity (before stock-outs depleted the line).
+  amount             Float    @default(0)
   measuredBy         String
   unitPrice          Float
   purchaseWithVat    Boolean  @default(false)
+  /// Supplier payment recorded on the registration when it was archived.
+  paidAmount         Float    @default(0)
   supplierName       String
   supplierPhone      String
   Address            String
   supplierTinNumber  String   @default("")
+  registrationDate   DateTime?
   archivedAt         DateTime @default(now())
 
   @@index([HotelName])
