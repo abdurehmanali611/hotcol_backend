@@ -2099,15 +2099,38 @@ async function createItemRegistrationRowsInTransaction(
   );
 }
 
-/** Fresh bazaar: goods received by Kitchen or Bar (not Store), then fully stocked out. */
-function isFreshBazaarReceivedRegistration(item) {
-  const dept = normalizeDepartmentCode(String(item.receivedByDepartment ?? ""));
-  return dept === "KITCHEN" || dept === "BAR";
+/** Fresh bazaar: fully stocked out to Kitchen/Bar (or received by Kitchen/Bar). Staff is never fresh bazaar. */
+function stockOutMovementDepartmentCode(reqRow) {
+  const requested = normalizeDepartmentCode(
+    String(reqRow.requestedByDepartment ?? "").trim(),
+  );
+  if (requested) return requested;
+  const stake = String(reqRow.stakeHolderOrReason ?? "").trim().toLowerCase();
+  if (!stake) return "";
+  if (stake === "kitchen") return "KITCHEN";
+  if (stake === "barista" || stake === "bar") return "BAR";
+  if (stake === "staff") return "STAFF";
+  return "";
+}
+
+function isStaffFreshBazaarExcluded(item, reqRow) {
+  const name = String(item?.name ?? "").toLowerCase();
+  if (/\(staff\)/.test(name)) return true;
+  const dest = stockOutMovementDepartmentCode(reqRow);
+  return dest === "STAFF";
+}
+
+function isFreshBazaarEligibleStockOut(item, reqRow) {
+  if (String(reqRow.movementType) !== "STOCK_OUT") return false;
+  if (isStaffFreshBazaarExcluded(item, reqRow)) return false;
+  const dest = stockOutMovementDepartmentCode(reqRow);
+  if (dest === "KITCHEN" || dest === "BAR") return true;
+  const recv = normalizeDepartmentCode(String(item.receivedByDepartment ?? ""));
+  return recv === "KITCHEN" || recv === "BAR";
 }
 
 async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
-  if (!isFreshBazaarReceivedRegistration(item)) return;
-  if (String(reqRow.movementType) !== "STOCK_OUT") return;
+  if (!isFreshBazaarEligibleStockOut(item, reqRow)) return;
   // Current request is not APPROVED yet; remaining qty + prior approved = original registered.
   const prior = await tx.stockOutRequest.aggregate({
     where: {
@@ -2122,9 +2145,15 @@ async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
   const paidAmount = Number(item.paidAmount) || 0;
   const registrationDate =
     item.registrationDate != null ? new Date(item.registrationDate) : null;
+  const recv = normalizeDepartmentCode(String(item.receivedByDepartment ?? ""));
+  const dest = stockOutMovementDepartmentCode(reqRow);
+  // Prefer receive dept when kitchen/bar; otherwise kitchen/bar destination (fresh bazaar path).
   const receivedByDepartment =
-    normalizeDepartmentCode(String(item.receivedByDepartment ?? "")) ||
-    "KITCHEN";
+    recv === "KITCHEN" || recv === "BAR"
+      ? recv
+      : dest === "KITCHEN" || dest === "BAR"
+        ? dest
+        : recv || dest || "KITCHEN";
   await tx.freshBazaar.upsert({
     where: { itemRegistrationId: item.id },
     create: {
