@@ -422,6 +422,36 @@ async function remapDepartmentLeadersDisplayToTin(prisma, context) {
   }
 }
 
+/**
+ * Remap this property's inventory (and similar) rows from display HotelName → TIN
+ * when the brand name is not shared with another tenant.
+ */
+async function remapModelHotelNameDisplayToTin(prisma, model, context) {
+  const tin = tenantScopeFromContext(context);
+  const display = String(context?.user?.HotelName ?? "").trim();
+  if (!tin || !display || display === tin) return;
+  if (!prisma[model]?.updateMany) return;
+
+  const otherWithSameDisplay = await prisma.user.findFirst({
+    where: {
+      HotelName: display,
+      Role: { in: ["Admin", "Manager"] },
+      AND: [
+        { tinNumber: { not: null } },
+        { tinNumber: { not: "" } },
+        { NOT: { tinNumber: tin } },
+      ],
+    },
+    select: { id: true },
+  });
+  if (otherWithSameDisplay) return;
+
+  await prisma[model].updateMany({
+    where: { HotelName: display },
+    data: { HotelName: tin },
+  });
+}
+
 function tenantHotelKeysFromContext(ctx) {
   const where = tenantHotelReadWhere(ctx);
   if (where.HotelName) return [where.HotelName];
@@ -2582,7 +2612,9 @@ const resolvers = {
     },
     ItemRegistration: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const tenantWhere = tenantHotelReadWhere(context);
+      // Prefer TIN-only scope so shared brand names never leak another hotel's stock.
+      await remapModelHotelNameDisplayToTin(prisma, "itemRegistration", context);
+      const tenantWhere = tenantRegistryReadWhere(context);
       const role = String(context.user.Role || "");
       const where =
         role === "Store"
@@ -2667,16 +2699,18 @@ const resolvers = {
     },
     purchaseRequests: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      await remapModelHotelNameDisplayToTin(prisma, "purchaseRequest", context);
       const rows = await prisma.purchaseRequest.findMany({
-        where: tenantHotelReadWhere(context),
+        where: tenantRegistryReadWhere(context),
         orderBy: { createdAt: "asc" },
       });
       return rows.map(withVoucherDisplay);
     },
     stockOutRequests: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
+      await remapModelHotelNameDisplayToTin(prisma, "stockOutRequest", context);
       const rows = await prisma.stockOutRequest.findMany({
-        where: tenantHotelReadWhere(context),
+        where: tenantRegistryReadWhere(context),
         orderBy: { createdAt: "asc" },
       });
       const enriched = await enrichStockOutRequestsWithPricing(rows);
