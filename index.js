@@ -769,7 +769,7 @@ const typeDefs = gql`
     createdAt: DateTime!
   }
 
-  """Archived kitchen-received items fully stocked out (fresh bazaar)."""
+  """Archived kitchen/bar-received items fully stocked out (fresh bazaar)."""
   type FreshBazaar {
     id: Int!
     HotelName: String!
@@ -787,6 +787,7 @@ const typeDefs = gql`
     supplierPhone: String!
     Address: String!
     supplierTinNumber: String!
+    receivedByDepartment: String!
     registrationDate: DateTime
     archivedAt: DateTime!
   }
@@ -2098,12 +2099,14 @@ async function createItemRegistrationRowsInTransaction(
   );
 }
 
-function isKitchenReceivedRegistration(item) {
-  return normalizeDepartmentCode(String(item.receivedByDepartment ?? "")) === "KITCHEN";
+/** Fresh bazaar: goods received by Kitchen or Bar (not Store), then fully stocked out. */
+function isFreshBazaarReceivedRegistration(item) {
+  const dept = normalizeDepartmentCode(String(item.receivedByDepartment ?? ""));
+  return dept === "KITCHEN" || dept === "BAR";
 }
 
 async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
-  if (!isKitchenReceivedRegistration(item)) return;
+  if (!isFreshBazaarReceivedRegistration(item)) return;
   if (String(reqRow.movementType) !== "STOCK_OUT") return;
   // Current request is not APPROVED yet; remaining qty + prior approved = original registered.
   const prior = await tx.stockOutRequest.aggregate({
@@ -2119,6 +2122,9 @@ async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
   const paidAmount = Number(item.paidAmount) || 0;
   const registrationDate =
     item.registrationDate != null ? new Date(item.registrationDate) : null;
+  const receivedByDepartment =
+    normalizeDepartmentCode(String(item.receivedByDepartment ?? "")) ||
+    "KITCHEN";
   await tx.freshBazaar.upsert({
     where: { itemRegistrationId: item.id },
     create: {
@@ -2137,6 +2143,7 @@ async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
       supplierPhone: item.supplierPhone,
       Address: item.Address,
       supplierTinNumber: String(item.supplierTinNumber ?? "").trim(),
+      receivedByDepartment,
       registrationDate,
     },
     update: {
@@ -2146,6 +2153,7 @@ async function archiveFreshBazaarOnFullKitchenStockOut(tx, item, reqRow) {
       purchaseWithVat: isVatEnabled(item.purchaseWithVat),
       paidAmount,
       measuredBy: item.measuredBy,
+      receivedByDepartment,
       registrationDate,
     },
   });

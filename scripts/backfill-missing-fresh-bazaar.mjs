@@ -96,6 +96,8 @@ for (const regId of candidates) {
       supplierPhone: String(lastStatus.supplierPhone || "").trim(),
       Address: String(lastStatus.Address || "").trim(),
       supplierTinNumber: String(lastStatus.supplierTinNumber ?? "").trim(),
+      // Destination-kitchen heuristic ≠ kitchen-received; not true fresh bazaar.
+      receivedByDepartment: "STORE",
       registrationDate: firstStatus.actionDate ?? null,
       archivedAt: lastStatus.actionDate ?? new Date(),
     },

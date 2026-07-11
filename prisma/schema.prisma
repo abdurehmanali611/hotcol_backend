@@ -633,6 +633,8 @@ model FreshBazaar {
   supplierPhone      String
   Address            String
   supplierTinNumber  String   @default("")
+  /// STORE | KITCHEN | BAR — receiving department when archived (KITCHEN|BAR = fresh bazaar).
+  receivedByDepartment String @default("KITCHEN")
   registrationDate   DateTime?
   archivedAt         DateTime @default(now())
 
