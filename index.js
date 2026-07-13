@@ -74,6 +74,12 @@ import {
   requestReceiptSnapshots,
   PURCHASE_REQUESTED_BY_DEPARTMENTS,
 } from "./lib/departmentLeaders.js";
+import {
+  lodgingTypeDefsBlock,
+  lodgingQueryFields,
+  lodgingMutationFields,
+  createLodgingResolvers,
+} from "./lodgingGraphql.js";
 
 const prisma = createPrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
@@ -179,6 +185,8 @@ const ROLE_REQUIRED_MODULE = {
   CostControl: "Financial Management",
   Finance: "Financial Management",
   HotelCashier: "Credit Management",
+  Reception: "Room Management",
+  CMLeader: "Cleaning and Maintenance",
 };
 
 function tenantHasModule(modules, required) {
@@ -1003,6 +1011,8 @@ const typeDefs = gql`
     recordedBy: String!
   }
 
+  ${lodgingTypeDefsBlock}
+
   type Query {
     users: [User!]!
     items: [Item!]!
@@ -1029,6 +1039,7 @@ const typeDefs = gql`
     hotelCreditConsumptions(from: DateTime!, to: DateTime!): [HotelCreditConsumption!]!
     tenantFeedbackInbox(limit: Int): TenantFeedbackInbox!
     signupPricingPreview(businessType: String!, modules: JSON!): SignupPricingPreview!
+    ${lodgingQueryFields}
   }
 
   type SignupPricingPreview {
@@ -1540,6 +1551,8 @@ const typeDefs = gql`
     ): HotelCorporateCreditTier!
 
     deleteHotelCorporateCreditTier(id: Int!): Boolean!
+
+    ${lodgingMutationFields}
   }
 `;
 
@@ -2481,6 +2494,16 @@ async function enrichStockOutRequestsWithPricing(rows) {
   });
 }
 
+const lodgingResolvers = createLodgingResolvers({
+  prisma,
+  tenantScopeFromContext,
+  tenantHotelReadWhere,
+  tenantHotelReadMatches,
+  assertRole,
+  assertAdminOrManager,
+  assertAuthenticated,
+});
+
 const resolvers = {
   JSON: GraphQLJSON,
   DateTime: DateTimeResolver,
@@ -2528,6 +2551,7 @@ const resolvers = {
     },
   },
   Query: {
+    ...lodgingResolvers.Query,
     users: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.user.findMany({
@@ -7056,7 +7080,9 @@ const resolvers = {
       return await prisma.itemStatus.delete({
         where: { id: id },
       });
-    }
+    },
+
+    ...lodgingResolvers.Mutation,
   },
 };
 

@@ -783,3 +783,214 @@ model HotelCreditConsumption {
   @@index([companyId])
   @@index([occurredAt])
 }
+
+// =============================================================================
+// LODGING — Room Management + Cleaning & Maintenance
+// =============================================================================
+
+/// Physical room at a lodging property (Manager CRUD).
+model lodging_room {
+  id                 Int       @id @default(autoincrement())
+  HotelName          String
+  roomNumber         String
+  roomType           String
+  floor              String    @default("")
+  /// Nightly rate in ETB (Manager-set).
+  pricePerNightETB   Float     @default(0)
+  /// vacant_dirty | occupied | vacant_clean | on_maintenance
+  status             String    @default("vacant_clean")
+  /// When status is on_maintenance — expected ready datetime.
+  maintenanceUntil   DateTime?
+  notes              String    @db.Text
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  createdBy          String    @default("")
+  updatedBy          String    @default("")
+
+  stayRooms     lodging_stay_room[]
+  cmAssignments lodging_cm_assignment[]
+
+  @@unique([HotelName, roomNumber])
+  @@index([HotelName])
+  @@index([HotelName, status])
+  @@index([HotelName, roomType])
+}
+
+/// Returning guest profile (reusable across stays).
+model lodging_guest {
+  id              Int      @id @default(autoincrement())
+  HotelName       String
+  firstName       String
+  lastName        String
+  sex             String   @default("")
+  phone           String
+  phoneSecondary  String   @default("")
+  email           String   @default("")
+  /// true = Ethiopian (Fayda FCN/FIN); false = passport
+  isEthiopian     Boolean  @default(true)
+  nationalId      String   @default("")
+  passportNumber  String   @default("")
+  country         String   @default("Ethiopia")
+  stateRegion     String   @default("")
+  addressLine     String   @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  stays lodging_stay[]
+
+  @@index([HotelName])
+  @@index([HotelName, phone])
+  @@index([HotelName, nationalId])
+  @@index([HotelName, passportNumber])
+}
+
+/// One check-in / reservation event (may span multiple rooms).
+model lodging_stay {
+  id               Int       @id @default(autoincrement())
+  HotelName        String
+  voucherCode      String
+  guestId          Int
+  /// reserved | checked_in | checked_out | cancelled
+  status           String    @default("checked_in")
+  arrivalAt        DateTime
+  /// Calendar departure date derived from arrival + nights (updated with time at checkout).
+  departureAt      DateTime
+  nights           Int       @default(1)
+  adults           Int       @default(1)
+  children         Int       @default(0)
+  preferredRoomType String   @default("")
+  notes            String    @db.Text
+  checkedInBy      String    @default("")
+  checkedOutBy     String    @default("")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  guest  lodging_guest       @relation(fields: [guestId], references: [id], onDelete: Restrict)
+  rooms  lodging_stay_room[]
+  bill   lodging_bill?
+  actions lodging_action_log[]
+
+  @@unique([HotelName, voucherCode])
+  @@index([HotelName])
+  @@index([HotelName, status])
+  @@index([guestId])
+  @@index([arrivalAt])
+  @@index([departureAt])
+}
+
+model lodging_stay_room {
+  id        Int      @id @default(autoincrement())
+  stayId    Int
+  roomId    Int
+  roomType  String   @default("")
+  createdAt DateTime @default(now())
+
+  stay lodging_stay @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  room lodging_room @relation(fields: [roomId], references: [id], onDelete: Restrict)
+
+  @@unique([stayId, roomId])
+  @@index([roomId])
+}
+
+model lodging_bill {
+  id            Int       @id @default(autoincrement())
+  HotelName     String
+  stayId        Int       @unique
+  /// open | settled | void
+  status        String    @default("open")
+  totalETB      Float     @default(0)
+  settledAt     DateTime?
+  settledBy     String    @default("")
+  receiptNumber String    @default("")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  stay  lodging_stay        @relation(fields: [stayId], references: [id], onDelete: Cascade)
+  lines lodging_bill_line[]
+
+  @@index([HotelName])
+  @@index([HotelName, status])
+}
+
+model lodging_bill_line {
+  id          Int      @id @default(autoincrement())
+  billId      Int
+  /// room | food_drink | laundry | other
+  kind        String
+  description String
+  quantity    Float    @default(1)
+  unitPriceETB Float   @default(0)
+  amountETB   Float    @default(0)
+  /// Room number context for split/transfer (display / matching).
+  roomNumber  String   @default("")
+  createdAt   DateTime @default(now())
+  createdBy   String   @default("")
+
+  bill lodging_bill @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@index([billId])
+  @@index([kind])
+}
+
+/// Manager-priced laundry / F&B catalog for lodging services.
+model lodging_service_item {
+  id          Int      @id @default(autoincrement())
+  HotelName   String
+  /// food_drink | laundry
+  kind        String
+  name        String
+  unitPriceETB Float   @default(0)
+  unitLabel   String   @default("pcs")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([HotelName])
+  @@index([HotelName, kind])
+  @@unique([HotelName, kind, name])
+}
+
+/// CM leader (or reception CM portal) assignment for cleaning / maintenance.
+model lodging_cm_assignment {
+  id             Int       @id @default(autoincrement())
+  HotelName      String
+  roomId         Int
+  /// cleaning | maintenance
+  workKind       String
+  assigneeName   String
+  notes          String    @db.Text
+  /// open | done | cancelled
+  status         String    @default("open")
+  assignedBy     String    @default("")
+  completedBy    String    @default("")
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  room lodging_room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([HotelName])
+  @@index([HotelName, status])
+  @@index([roomId])
+}
+
+/// Audit trail visible to Manager / Reception / CM dashboards.
+model lodging_action_log {
+  id         Int      @id @default(autoincrement())
+  HotelName  String
+  actorRole  String   @default("")
+  actorName  String   @default("")
+  action     String
+  entityType String   @default("")
+  entityId   Int?
+  stayId     Int?
+  detailJson String   @db.Text
+  createdAt  DateTime @default(now())
+
+  stay lodging_stay? @relation(fields: [stayId], references: [id], onDelete: SetNull)
+
+  @@index([HotelName])
+  @@index([HotelName, createdAt])
+  @@index([stayId])
+  @@index([actorName])
+}
