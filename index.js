@@ -187,6 +187,13 @@ function tenantHasModule(modules, required) {
 }
 
 function roleAllowedForModules(role, modules) {
+  // Cashier and legacy HotelCashier are one role: café POS and/or corporate credit.
+  if (role === "Cashier" || role === "HotelCashier") {
+    return (
+      tenantHasModule(modules, "Cafe and Restaurant") ||
+      tenantHasModule(modules, "Credit Management")
+    );
+  }
   const required = ROLE_REQUIRED_MODULE[role];
   if (!required) return true;
   return tenantHasModule(modules, required);
@@ -1570,7 +1577,8 @@ function roleIsOneOf(user, allowedRoles) {
 
 /** Kitchen/Bar may cancel only their station's queue; cashier+ can cancel any live line. */
 function canCancelLiveOrder(user, order) {
-  if (roleIsOneOf(user, ["Cashier", "Admin", "Manager"])) return true;
+  if (roleIsOneOf(user, ["Cashier", "HotelCashier", "Admin", "Manager"]))
+    return true;
   if (roleIsOneOf(user, ["Kitchen", "Chef"])) return isKitchenStationOrder(order);
   if (roleIsOneOf(user, ["Barista", "Bar"])) return isBarStationOrder(order);
   return false;
@@ -1578,7 +1586,7 @@ function canCancelLiveOrder(user, order) {
 
 /** Human-readable label stored on Order.cancelledBy when a line is removed. */
 function cancelledByLabelFromUser(user) {
-  if (roleIsOneOf(user, ["Cashier"])) return "Cashier";
+  if (roleIsOneOf(user, ["Cashier", "HotelCashier"])) return "Cashier";
   if (roleIsOneOf(user, ["Admin"])) return "Admin";
   if (roleIsOneOf(user, ["Manager"])) return "Manager";
   if (roleIsOneOf(user, ["Kitchen", "Chef"])) return "Chef/Kitchen";
@@ -1587,7 +1595,8 @@ function cancelledByLabelFromUser(user) {
 }
 
 function canCompleteLiveOrder(user, order) {
-  if (roleIsOneOf(user, ["Cashier", "Admin", "Manager"])) return true;
+  if (roleIsOneOf(user, ["Cashier", "HotelCashier", "Admin", "Manager"]))
+    return true;
   if (roleIsOneOf(user, ["Kitchen", "Chef"])) return isKitchenStationOrder(order);
   if (roleIsOneOf(user, ["Barista", "Bar"])) return isBarStationOrder(order);
   return false;
@@ -3749,7 +3758,7 @@ const resolvers = {
           context.user?.__authExpired ? "JWT expired" : "Not Authenticated",
         );
       }
-      if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager"])) {
+      if (!roleIsOneOf(authCtx.user, ["Cashier", "HotelCashier", "Admin", "Manager"])) {
         throw new Error("Not authorized to update live orders");
       }
       const order = await findTenantOrderById(authCtx, prisma, id);
@@ -3856,7 +3865,7 @@ const resolvers = {
       try {
         const dbUser = await loadAuthUserFromDb(context, prisma);
         const authCtx = enrichContextUser(context, dbUser);
-        if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager"])) {
+        if (!roleIsOneOf(authCtx.user, ["Cashier", "HotelCashier", "Admin", "Manager"])) {
           throw new Error("Not authorized");
         }
         const order = await findTenantOrderById(authCtx, prisma, id);
