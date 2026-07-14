@@ -303,12 +303,12 @@ export const lodgingMutationFields = `
       maintenanceUntil: DateTime
       notes: String
     ): LodgingRoom!
-    createLodgingCmAssignment(
+    createLodgingCmAssignments(
       roomId: Int!
       workKind: String!
-      assigneeName: String!
+      assigneeNames: [String!]!
       notes: String
-    ): LodgingCmAssignment!
+    ): [LodgingCmAssignment!]!
     completeLodgingCmAssignment(id: Int!): LodgingCmAssignment!
 `;
 
@@ -1718,6 +1718,29 @@ export function createLodgingResolvers({
         const s = String(status).trim();
         if (!ROOM_STATUSES.has(s)) throw new Error("Invalid room status");
 
+        // While on maintenance, dirt status must not change — only leave via vacant_clean.
+        if (room.status === "on_maintenance" && s === "vacant_dirty") {
+          throw new Error(
+            "Cannot set vacant dirty while room is on maintenance — release to vacant clean instead",
+          );
+        }
+
+        // Dirty → clean requires open cleaning assignment(s).
+        if (s === "vacant_clean" && room.status === "vacant_dirty") {
+          const openCleaning = await prisma.lodging_cm_assignment.count({
+            where: {
+              roomId: room.id,
+              workKind: "cleaning",
+              status: "open",
+            },
+          });
+          if (openCleaning === 0) {
+            throw new Error(
+              "Assign cleaners to this room before marking vacant clean",
+            );
+          }
+        }
+
         const role = String(
           context.user?.Role ?? context.user?.role ?? "",
         )
@@ -1726,7 +1749,6 @@ export function createLodgingResolvers({
         const isElevated =
           role === "manager" || role === "admin" || role === "reception";
         if (!isElevated) {
-          // CMLeader: only vacant_clean from dirty/maintenance, or set/update maintenance
           if (s === "vacant_clean") {
             if (
               room.status !== "vacant_dirty" &&
@@ -1772,9 +1794,9 @@ export function createLodgingResolvers({
         return updated;
       },
 
-      createLodgingCmAssignment: async (
+      createLodgingCmAssignments: async (
         _,
-        { roomId, workKind, assigneeName, notes },
+        { roomId, workKind, assigneeNames, notes },
         context,
       ) => {
         assertCmPortal(context);
@@ -1786,27 +1808,51 @@ export function createLodgingResolvers({
         );
         const wk = String(workKind).trim();
         if (!CM_WORK_KINDS.has(wk)) throw new Error("Invalid workKind");
-        const assignee = String(assigneeName ?? "").trim();
-        if (!assignee) throw new Error("assigneeName is required");
+        const names = Array.isArray(assigneeNames)
+          ? [
+              ...new Set(
+                assigneeNames
+                  .map((n) => String(n ?? "").trim())
+                  .filter(Boolean),
+              ),
+            ]
+          : [];
+        if (names.length === 0) {
+          throw new Error("At least one assignee is required");
+        }
+        if (wk === "maintenance" && room.status === "occupied") {
+          throw new Error("Occupied rooms cannot enter maintenance");
+        }
+        if (wk === "cleaning" && room.status !== "vacant_dirty") {
+          throw new Error("Cleaning can only be assigned on vacant dirty rooms");
+        }
+
         const { actorName, actorRole } = actorFromContext(context);
+        const note = String(notes ?? "").trim();
 
-        const row = await prisma.lodging_cm_assignment.create({
-          data: {
-            HotelName: room.HotelName,
-            roomId: room.id,
-            workKind: wk,
-            assigneeName: assignee,
-            notes: String(notes ?? "").trim(),
-            status: "open",
-            assignedBy: actorName,
-          },
-          include: { room: true },
-        });
+        const createdIds = [];
+        for (const assignee of names) {
+          const row = await prisma.lodging_cm_assignment.create({
+            data: {
+              HotelName: room.HotelName,
+              roomId: room.id,
+              workKind: wk,
+              assigneeName: assignee,
+              notes: note,
+              status: "open",
+              assignedBy: actorName,
+            },
+          });
+          createdIds.push(row.id);
+        }
 
-        if (wk === "maintenance" && room.status !== "occupied") {
+        if (wk === "maintenance") {
           await prisma.lodging_room.update({
             where: { id: room.id },
-            data: { status: "on_maintenance", updatedBy: actorName },
+            data: {
+              status: "on_maintenance",
+              updatedBy: actorName,
+            },
           });
         }
 
@@ -1814,14 +1860,19 @@ export function createLodgingResolvers({
           HotelName: room.HotelName,
           actorRole,
           actorName,
-          action: "create_cm_assignment",
+          action: "create_cm_assignments",
           entityType: "lodging_cm_assignment",
-          entityId: row.id,
-          detail: { roomId: room.id, workKind: wk, assigneeName: assignee },
+          entityId: createdIds[0] ?? null,
+          detail: {
+            roomId: room.id,
+            workKind: wk,
+            assigneeNames: names,
+            count: names.length,
+          },
         });
 
-        return prisma.lodging_cm_assignment.findUnique({
-          where: { id: row.id },
+        return prisma.lodging_cm_assignment.findMany({
+          where: { id: { in: createdIds } },
           include: { room: true },
         });
       },
@@ -1851,17 +1902,25 @@ export function createLodgingResolvers({
           });
           if (
             row.workKind === "cleaning" &&
-            (row.room.status === "vacant_dirty" ||
-              row.room.status === "on_maintenance")
+            row.room.status === "vacant_dirty"
           ) {
-            await tx.lodging_room.update({
-              where: { id: row.roomId },
-              data: {
-                status: "vacant_clean",
-                maintenanceUntil: null,
-                updatedBy: actorName,
+            const remaining = await tx.lodging_cm_assignment.count({
+              where: {
+                roomId: row.roomId,
+                workKind: "cleaning",
+                status: "open",
               },
             });
+            if (remaining === 0) {
+              await tx.lodging_room.update({
+                where: { id: row.roomId },
+                data: {
+                  status: "vacant_clean",
+                  maintenanceUntil: null,
+                  updatedBy: actorName,
+                },
+              });
+            }
           }
         });
 
