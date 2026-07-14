@@ -279,6 +279,8 @@ export const lodgingMutationFields = `
       unitPriceETB: Float!
       roomNumber: String
     ): LodgingBillLine!
+    updateLodgingBillLine(lineId: Int!, quantity: Float!): LodgingBillLine!
+    deleteLodgingBillLine(lineId: Int!): Boolean!
     transferLodgingBillLines(lineIds: [Int!]!, toStayId: Int!): LodgingBill!
     splitLodgingBillLine(
       lineId: Int!
@@ -1306,6 +1308,84 @@ export function createLodgingResolvers({
           detail: { kind: k, amountETB: line.amountETB },
         });
         return line;
+      },
+
+      updateLodgingBillLine: async (_, { lineId, quantity }, context) => {
+        assertReceptionOrManager(context);
+        const line = await prisma.lodging_bill_line.findUnique({
+          where: { id: Number(lineId) },
+          include: { bill: { include: { stay: true } } },
+        });
+        if (!line?.bill?.stay) throw new Error("Bill line not found");
+        if (!tenantHotelReadMatches(context, line.bill.stay.HotelName)) {
+          throw new Error("Bill line not found");
+        }
+        if (line.bill.status !== "open") throw new Error("Bill is not open");
+        if (
+          line.bill.stay.status === "checked_out" ||
+          line.bill.stay.status === "cancelled"
+        ) {
+          throw new Error("Stay is closed");
+        }
+        const qty = Number(quantity);
+        if (!(qty > 0)) throw new Error("Quantity must be positive");
+        const { actorName, actorRole } = actorFromContext(context);
+        const unit = Number(line.unitPriceETB) || 0;
+        const updated = await prisma.lodging_bill_line.update({
+          where: { id: line.id },
+          data: {
+            quantity: qty,
+            amountETB: qty * unit,
+          },
+        });
+        await recalcBillTotal(prisma, line.billId);
+        await logLodgingAction(prisma, {
+          HotelName: line.bill.stay.HotelName,
+          actorRole,
+          actorName,
+          action: "update_bill_line",
+          entityType: "lodging_bill_line",
+          entityId: line.id,
+          stayId: line.bill.stay.id,
+          detail: { quantity: qty },
+        });
+        return updated;
+      },
+
+      deleteLodgingBillLine: async (_, { lineId }, context) => {
+        assertReceptionOrManager(context);
+        const line = await prisma.lodging_bill_line.findUnique({
+          where: { id: Number(lineId) },
+          include: { bill: { include: { stay: true } } },
+        });
+        if (!line?.bill?.stay) throw new Error("Bill line not found");
+        if (!tenantHotelReadMatches(context, line.bill.stay.HotelName)) {
+          throw new Error("Bill line not found");
+        }
+        if (line.bill.status !== "open") throw new Error("Bill is not open");
+        if (
+          line.bill.stay.status === "checked_out" ||
+          line.bill.stay.status === "cancelled"
+        ) {
+          throw new Error("Stay is closed");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const billId = line.billId;
+        const stayId = line.bill.stay.id;
+        const HotelName = line.bill.stay.HotelName;
+        await prisma.lodging_bill_line.delete({ where: { id: line.id } });
+        await recalcBillTotal(prisma, billId);
+        await logLodgingAction(prisma, {
+          HotelName,
+          actorRole,
+          actorName,
+          action: "delete_bill_line",
+          entityType: "lodging_bill_line",
+          entityId: line.id,
+          stayId,
+          detail: { description: line.description },
+        });
+        return true;
       },
 
       transferLodgingBillLines: async (_, { lineIds, toStayId }, context) => {
