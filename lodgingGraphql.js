@@ -543,7 +543,7 @@ export function createLodgingResolvers({
           return prisma.lodging_guest.findMany({
             where: base,
             orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-            take: 200,
+            take: 500,
           });
         }
         return prisma.lodging_guest.findMany({
