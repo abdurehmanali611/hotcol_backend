@@ -128,6 +128,7 @@ export const lodgingTypeDefsBlock = `
     name: String!
     unitPriceETB: Float!
     unitLabel: String!
+    imageUrl: String!
     isActive: Boolean!
     createdAt: DateTime!
     updatedAt: DateTime!
@@ -228,6 +229,7 @@ export const lodgingMutationFields = `
       name: String!
       unitPriceETB: Float!
       unitLabel: String
+      imageUrl: String
       isActive: Boolean
     ): LodgingServiceItem!
     deleteLodgingServiceItem(id: Int!): Boolean!
@@ -839,7 +841,7 @@ export function createLodgingResolvers({
 
       upsertLodgingServiceItem: async (
         _,
-        { id, kind, name, unitPriceETB, unitLabel, isActive },
+        { id, kind, name, unitPriceETB, unitLabel, imageUrl, isActive },
         context,
       ) => {
         assertAdminOrManager(context);
@@ -854,6 +856,7 @@ export function createLodgingResolvers({
           name: itemName,
           unitPriceETB: Number(unitPriceETB) || 0,
           unitLabel: String(unitLabel ?? "pcs").trim() || "pcs",
+          imageUrl: String(imageUrl ?? "").trim(),
           isActive: isActive == null ? true : Boolean(isActive),
         };
 

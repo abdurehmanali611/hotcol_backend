@@ -934,16 +934,17 @@ model lodging_bill_line {
 
 /// Manager-priced laundry / F&B catalog for lodging services.
 model lodging_service_item {
-  id          Int      @id @default(autoincrement())
-  HotelName   String
+  id           Int      @id @default(autoincrement())
+  HotelName    String
   /// food_drink | laundry
-  kind        String
-  name        String
-  unitPriceETB Float   @default(0)
-  unitLabel   String   @default("pcs")
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  kind         String
+  name         String
+  unitPriceETB Float    @default(0)
+  unitLabel    String   @default("pcs")
+  imageUrl     String   @default("") @db.VarChar(2048)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([HotelName])
   @@index([HotelName, kind])
