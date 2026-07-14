@@ -650,6 +650,11 @@ export function createLodgingResolvers({
         const take = Math.min(Math.max(Number(limit) || 50, 1), 500);
         const where = { ...tenantHotelReadWhere(context) };
         if (stayId != null) where.stayId = Number(stayId);
+        // Reception only sees their own actions; managers/CM see the full trail.
+        const { actorName, actorRole } = actorFromContext(context);
+        if (actorRole === "Reception" && actorName) {
+          where.actorName = actorName;
+        }
         return prisma.lodging_action_log.findMany({
           where,
           orderBy: { createdAt: "desc" },
