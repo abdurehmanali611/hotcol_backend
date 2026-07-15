@@ -494,6 +494,68 @@ async function splitCafeOrderForBillLine(
   });
 }
 
+/** Food & drink bill lines require café Order status Completed for transfer/split/checkout.
+ * Cancelled café orders are ignored and never block these actions.
+ */
+async function assertFoodDrinkLinesCompleted(prisma, lines, HotelName) {
+  const foodLines = (lines || []).filter(
+    (l) => String(l.kind || "").toLowerCase() === "food_drink",
+  );
+  if (foodLines.length === 0) return;
+
+  const orderIds = [
+    ...new Set(
+      foodLines
+        .map((l) => cafeOrderIdFromBillDescription(l.description))
+        .filter((id) => id != null && id > 0),
+    ),
+  ];
+
+  const byId = new Map();
+  if (orderIds.length > 0) {
+    const orders = await prisma.order.findMany({
+      where: { id: { in: orderIds }, HotelName },
+    });
+    for (const o of orders) byId.set(o.id, o);
+  }
+
+  for (const line of foodLines) {
+    const oid = cafeOrderIdFromBillDescription(line.description);
+    let order = oid != null ? byId.get(oid) : null;
+    if (!order && oid == null) {
+      const title = String(line.description || "")
+        .replace(/\s*·\s*#co:\d+\s*$/i, "")
+        .split(" · ")[0]
+        .trim()
+        .toLowerCase();
+      if (title) {
+        const candidates = await prisma.order.findMany({
+          where: {
+            HotelName,
+            tableNo: { gte: ROOM_SERVICE_TABLE_BASE },
+          },
+          take: 80,
+        });
+        order =
+          candidates.find((o) => {
+            const status = String(o.status || "").toLowerCase();
+            if (status === "cancelled") return false;
+            return String(o.title || "").toLowerCase() === title;
+          }) || null;
+      }
+    }
+    // No linked ticket, or cancelled — do not block transfer/split/checkout.
+    if (!order) continue;
+    const status = String(order.status || "").toLowerCase();
+    if (status === "cancelled") continue;
+    if (status !== "completed") {
+      throw new Error(
+        `Food & drink "${order.title}" is ${order.status || "Pending"} — wait until Completed`,
+      );
+    }
+  }
+}
+
 async function syncRoomNightCharges(db, stay, nightsN, actorName) {
   if (!stay.bill || stay.bill.status !== "open") return;
   const billId = stay.bill.id;
@@ -1652,6 +1714,11 @@ export function createLodgingResolvers({
         }
 
         const { actorName, actorRole } = actorFromContext(context);
+        await assertFoodDrinkLinesCompleted(
+          prisma,
+          lines,
+          toStay.HotelName,
+        );
         await prisma.$transaction(async (tx) => {
           await tx.lodging_bill_line.updateMany({
             where: { id: { in: ids } },
@@ -1746,6 +1813,11 @@ export function createLodgingResolvers({
               "Food & drink split quantity must be a whole number",
             );
           }
+          await assertFoodDrinkLinesCompleted(
+            prisma,
+            [line],
+            line.bill.HotelName,
+          );
         }
 
         await prisma.$transaction(async (tx) => {
@@ -1845,6 +1917,12 @@ export function createLodgingResolvers({
           context,
           stayId,
           tenantHotelReadMatches,
+        );
+
+        await assertFoodDrinkLinesCompleted(
+          prisma,
+          stayFresh.bill?.lines ?? [],
+          stayFresh.HotelName,
         );
 
         await prisma.$transaction(async (tx) => {
