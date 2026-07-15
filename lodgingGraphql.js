@@ -642,6 +642,140 @@ export async function removeRoomServiceOrderFromLodgingBill(prisma, order) {
   return true;
 }
 
+/**
+ * When a room-service café ticket is edited (room/stay via tableNo, and/or qty),
+ * keep the matching lodging food_drink bill line on Active stays in sync.
+ */
+export async function syncLodgingBillForRoomServiceOrderUpdate(
+  prisma,
+  {
+    orderId,
+    prevTableNo,
+    nextTableNo,
+    nextOrderAmount,
+    HotelName,
+  },
+) {
+  const oid = Number(orderId);
+  if (!(oid > 0)) return false;
+
+  const prevStayId = isRoomServiceTableNo(prevTableNo)
+    ? stayIdFromRoomServiceTableNo(prevTableNo)
+    : null;
+  const nextStayId = isRoomServiceTableNo(nextTableNo)
+    ? stayIdFromRoomServiceTableNo(nextTableNo)
+    : null;
+
+  const hotel = String(HotelName || "").trim();
+  const marker = `#co:${oid}`;
+
+  let line = null;
+  if (hotel) {
+    const marked = await prisma.lodging_bill_line.findMany({
+      where: {
+        kind: "food_drink",
+        description: { contains: marker },
+        bill: { status: "open", HotelName: hotel },
+      },
+      include: { bill: true },
+    });
+    line =
+      marked.find(
+        (l) => cafeOrderIdFromBillDescription(l.description) === oid,
+      ) || null;
+  }
+
+  if (!line && prevStayId != null) {
+    const stay = await prisma.lodging_stay.findUnique({
+      where: { id: prevStayId },
+      include: {
+        bill: { include: { lines: { orderBy: { id: "asc" } } } },
+      },
+    });
+    if (stay?.bill?.status === "open") {
+      line =
+        stay.bill.lines.find(
+          (l) =>
+            l.kind === "food_drink" &&
+            cafeOrderIdFromBillDescription(l.description) === oid,
+        ) || null;
+      if (line) {
+        line = await prisma.lodging_bill_line.findUnique({
+          where: { id: line.id },
+          include: { bill: true },
+        });
+      }
+    }
+  }
+
+  if (!line?.bill || line.bill.status !== "open") return false;
+
+  // Moved off room-service onto a floor table — drop stay charge.
+  if (nextStayId == null) {
+    const billId = line.billId;
+    await prisma.lodging_bill_line.delete({ where: { id: line.id } });
+    await recalcBillTotal(prisma, billId);
+    return true;
+  }
+
+  const toStay = await prisma.lodging_stay.findUnique({
+    where: { id: nextStayId },
+    include: {
+      bill: true,
+      rooms: { include: { room: true } },
+    },
+  });
+  if (!toStay) throw new Error("Target stay not found for this room");
+  if (toStay.status === "checked_out" || toStay.status === "cancelled") {
+    throw new Error("Target stay is closed");
+  }
+  if (hotel && String(toStay.HotelName) !== hotel) {
+    throw new Error("Target stay is not in this property");
+  }
+
+  let toBill = toStay.bill;
+  if (!toBill) {
+    toBill = await prisma.lodging_bill.create({
+      data: {
+        HotelName: toStay.HotelName,
+        stayId: toStay.id,
+        status: "open",
+        totalETB: 0,
+      },
+    });
+  }
+  if (toBill.status !== "open") throw new Error("Target bill is not open");
+
+  const roomNumber = (toStay.rooms || [])
+    .map((sr) => sr.room?.roomNumber)
+    .filter(Boolean)
+    .join(", ");
+
+  const data = {
+    roomNumber: roomNumber || String(line.roomNumber || ""),
+  };
+  if (nextOrderAmount != null) {
+    const qty = Math.max(1, Math.floor(Number(nextOrderAmount)));
+    const unit = Number(line.unitPriceETB) || 0;
+    data.quantity = qty;
+    data.amountETB = qty * unit;
+  }
+  if (line.billId !== toBill.id) {
+    data.billId = toBill.id;
+  }
+
+  const fromBillId = line.billId;
+  await prisma.lodging_bill_line.update({
+    where: { id: line.id },
+    data,
+  });
+  if (fromBillId !== toBill.id) {
+    await recalcBillTotal(prisma, fromBillId);
+  }
+  await recalcBillTotal(prisma, toBill.id);
+  return true;
+}
+
 function parseGuestPayload(raw) {
   if (raw == null) return null;
   if (typeof raw === "string") {

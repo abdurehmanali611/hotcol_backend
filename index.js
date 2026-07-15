@@ -80,7 +80,9 @@ import {
   lodgingMutationFields,
   createLodgingResolvers,
   isRoomServiceTableNo,
+  stayIdFromRoomServiceTableNo,
   removeRoomServiceOrderFromLodgingBill,
+  syncLodgingBillForRoomServiceOrderUpdate,
 } from "./lodgingGraphql.js";
 
 const prisma = createPrismaClient();
@@ -3846,10 +3848,34 @@ const resolvers = {
         }
         if (nextTable !== normTable(order.tableNo)) {
           data.tableNo = nextTable;
-          data.serviceCaption = await serviceCaptionForTableNo(
-            nextTable,
-            authCtx,
-          );
+          if (isRoomServiceTableNo(nextTable)) {
+            const stayId = stayIdFromRoomServiceTableNo(nextTable);
+            if (stayId != null) {
+              const stay = await prisma.lodging_stay.findUnique({
+                where: { id: stayId },
+                include: { rooms: { include: { room: true } } },
+              });
+              if (stay) {
+                const rooms = (stay.rooms || [])
+                  .map((sr) => sr.room?.roomNumber)
+                  .filter(Boolean)
+                  .join(", ");
+                data.serviceCaption = rooms
+                  ? `Room ${rooms}`
+                  : "Room service";
+              } else {
+                data.serviceCaption = await serviceCaptionForTableNo(
+                  nextTable,
+                  authCtx,
+                );
+              }
+            }
+          } else {
+            data.serviceCaption = await serviceCaptionForTableNo(
+              nextTable,
+              authCtx,
+            );
+          }
           kitchenRelevantChange = true;
         }
       }
@@ -3877,10 +3903,34 @@ const resolvers = {
         data.orderRevisedAt = new Date();
       }
       if (title != null) data.title = title;
-      return await prisma.order.update({
+
+      const tableChanged = data.tableNo != null;
+      const qtyChanged = data.orderAmount != null;
+      const wasRoomService = isRoomServiceTableNo(order.tableNo);
+      const becomesRoomService = isRoomServiceTableNo(
+        data.tableNo != null ? data.tableNo : order.tableNo,
+      );
+
+      const updated = await prisma.order.update({
         where: { id },
         data,
       });
+
+      // Keep Active stays F&B lines aligned with café room-service edits.
+      if (
+        (wasRoomService || becomesRoomService) &&
+        (tableChanged || qtyChanged)
+      ) {
+        await syncLodgingBillForRoomServiceOrderUpdate(prisma, {
+          orderId: updated.id,
+          prevTableNo: order.tableNo,
+          nextTableNo: updated.tableNo,
+          nextOrderAmount: qtyChanged ? updated.orderAmount : null,
+          HotelName: updated.HotelName,
+        });
+      }
+
+      return updated;
     },
       UpdatePayment: async (
       _,
