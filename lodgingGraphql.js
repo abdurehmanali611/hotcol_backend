@@ -61,6 +61,8 @@ export const lodgingTypeDefsBlock = `
     addressLine: String!
     createdAt: DateTime!
     updatedAt: DateTime!
+    lastCheckedInAt: DateTime
+    lastCheckedOutAt: DateTime
   }
 
   type LodgingStayRoom {
@@ -789,6 +791,51 @@ function parseGuestPayload(raw) {
   throw new Error("Invalid guestJson");
 }
 
+/** Attach latest check-in / check-out timestamps from stays onto guest rows. */
+async function withGuestStayDates(prisma, guests) {
+  const list = Array.isArray(guests) ? guests : guests ? [guests] : [];
+  if (list.length === 0) return guests;
+  const ids = [...new Set(list.map((g) => Number(g.id)).filter((id) => id > 0))];
+  if (ids.length === 0) {
+    return Array.isArray(guests)
+      ? guests.map((g) => ({ ...g, lastCheckedInAt: null, lastCheckedOutAt: null }))
+      : { ...guests, lastCheckedInAt: null, lastCheckedOutAt: null };
+  }
+
+  const stays = await prisma.lodging_stay.findMany({
+    where: { guestId: { in: ids } },
+    select: {
+      guestId: true,
+      arrivalAt: true,
+      departureAt: true,
+      status: true,
+    },
+    orderBy: { arrivalAt: "desc" },
+  });
+
+  const lastInByGuest = new Map();
+  const lastOutByGuest = new Map();
+  for (const s of stays) {
+    if (!lastInByGuest.has(s.guestId)) {
+      lastInByGuest.set(s.guestId, s.arrivalAt);
+    }
+    if (
+      String(s.status || "").toLowerCase() === "checked_out" &&
+      !lastOutByGuest.has(s.guestId)
+    ) {
+      lastOutByGuest.set(s.guestId, s.departureAt);
+    }
+  }
+
+  const enrich = (g) => ({
+    ...g,
+    lastCheckedInAt: lastInByGuest.get(g.id) ?? null,
+    lastCheckedOutAt: lastOutByGuest.get(g.id) ?? null,
+  });
+
+  return Array.isArray(guests) ? guests.map(enrich) : enrich(guests);
+}
+
 function guestDataFromInput(input, HotelName) {
   const phone = String(input.phone ?? "").trim();
   if (!phone) throw new Error("Guest phone is required");
@@ -926,33 +973,36 @@ export function createLodgingResolvers({
         assertReceptionOrManager(context);
         const q = String(search ?? "").trim();
         const base = tenantHotelReadWhere(context);
+        let rows;
         if (!q) {
-          return prisma.lodging_guest.findMany({
+          rows = await prisma.lodging_guest.findMany({
             where: base,
             orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
             take: 500,
           });
+        } else {
+          rows = await prisma.lodging_guest.findMany({
+            where: {
+              AND: [
+                base,
+                {
+                  OR: [
+                    { phone: { contains: q } },
+                    { phoneSecondary: { contains: q } },
+                    { firstName: { contains: q } },
+                    { lastName: { contains: q } },
+                    { nationalId: { contains: q } },
+                    { passportNumber: { contains: q } },
+                    { email: { contains: q } },
+                  ],
+                },
+              ],
+            },
+            orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+            take: 100,
+          });
         }
-        return prisma.lodging_guest.findMany({
-          where: {
-            AND: [
-              base,
-              {
-                OR: [
-                  { phone: { contains: q } },
-                  { phoneSecondary: { contains: q } },
-                  { firstName: { contains: q } },
-                  { lastName: { contains: q } },
-                  { nationalId: { contains: q } },
-                  { passportNumber: { contains: q } },
-                  { email: { contains: q } },
-                ],
-              },
-            ],
-          },
-          orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-          take: 100,
-        });
+        return withGuestStayDates(prisma, rows);
       },
 
       lodgingGuest: async (_, { id }, context) => {
@@ -963,7 +1013,7 @@ export function createLodgingResolvers({
         if (!guest || !tenantHotelReadMatches(context, guest.HotelName)) {
           return null;
         }
-        return guest;
+        return withGuestStayDates(prisma, guest);
       },
 
       lodgingActiveStays: async (_, __, context) => {
@@ -1356,7 +1406,7 @@ export function createLodgingResolvers({
           entityId: guest.id,
           detail: { phone: guest.phone, name: `${guest.firstName} ${guest.lastName}` },
         });
-        return guest;
+        return withGuestStayDates(prisma, guest);
       },
 
       createLodgingStay: async (
