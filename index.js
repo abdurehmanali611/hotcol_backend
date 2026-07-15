@@ -79,6 +79,8 @@ import {
   lodgingQueryFields,
   lodgingMutationFields,
   createLodgingResolvers,
+  isRoomServiceTableNo,
+  removeRoomServiceOrderFromLodgingBill,
 } from "./lodgingGraphql.js";
 
 const prisma = createPrismaClient();
@@ -4081,10 +4083,24 @@ const resolvers = {
         updateData.orderRevisedAt = null;
         updateData.orderRevisionCount = 0;
       }
-      return await prisma.order.update({
+      const updatedOrder = await prisma.order.update({
         where: { id: id },
         data: updateData,
       });
+      if (
+        nextLower === "cancelled" &&
+        isRoomServiceTableNo(updatedOrder.tableNo)
+      ) {
+        try {
+          await removeRoomServiceOrderFromLodgingBill(prisma, updatedOrder);
+        } catch (err) {
+          console.warn(
+            "[hotcol] Failed to remove cancelled room-service order from lodging bill:",
+            err?.message || err,
+          );
+        }
+      }
+      return updatedOrder;
     },
     CreateWaiter: async (
       _,

@@ -389,6 +389,122 @@ function addDays(date, nights) {
   return d;
 }
 
+/** Cafe tableNo offset — must match frontend `lib/lodgingRoomService.ts`. */
+export const ROOM_SERVICE_TABLE_BASE = 900_000;
+
+export function stayIdFromRoomServiceTableNo(tableNo) {
+  const n = Math.floor(Number(tableNo) || 0);
+  if (n < ROOM_SERVICE_TABLE_BASE) return null;
+  return n - ROOM_SERVICE_TABLE_BASE;
+}
+
+export function isRoomServiceTableNo(tableNo) {
+  const n = Math.floor(Number(tableNo) || 0);
+  return Number.isFinite(n) && n >= ROOM_SERVICE_TABLE_BASE;
+}
+
+/** Calendar-date night count (departure date − arrival date), minimum 1. */
+export function nightsFromArrivalDeparture(arrival, departure) {
+  const a = new Date(arrival);
+  const d = new Date(departure);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(d.getTime())) return 1;
+  const a0 = Date.UTC(a.getFullYear(), a.getMonth(), a.getDate());
+  const d0 = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.round((d0 - a0) / (24 * 60 * 60 * 1000));
+  return Math.max(1, days);
+}
+
+export function cafeOrderIdFromBillDescription(description) {
+  const m = String(description || "").match(/#co:(\d+)\s*$/i);
+  return m ? Number(m[1]) : null;
+}
+
+async function syncRoomNightCharges(db, stay, nightsN, actorName) {
+  if (!stay.bill || stay.bill.status !== "open") return;
+  const billId = stay.bill.id;
+  const n = Math.max(1, Number(nightsN) || 1);
+  await db.lodging_bill_line.deleteMany({
+    where: { billId, kind: "room" },
+  });
+  for (const sr of stay.rooms || []) {
+    const r = sr.room;
+    if (!r) continue;
+    const unit = Number(r.pricePerNightETB) || 0;
+    const amount = unit * n;
+    await db.lodging_bill_line.create({
+      data: {
+        billId,
+        kind: "room",
+        description: `Room ${r.roomNumber} × ${n} night(s)`,
+        quantity: n,
+        unitPriceETB: unit,
+        amountETB: amount,
+        roomNumber: r.roomNumber,
+        createdBy: actorName,
+      },
+    });
+  }
+  await recalcBillTotal(db, billId);
+}
+
+/**
+ * Drop food_drink stay bill line(s) for a cancelled room-service café order.
+ */
+export async function removeRoomServiceOrderFromLodgingBill(prisma, order) {
+  if (!order || !isRoomServiceTableNo(order.tableNo)) return false;
+  const stayId = stayIdFromRoomServiceTableNo(order.tableNo);
+  if (!stayId) return false;
+  const stay = await prisma.lodging_stay.findUnique({
+    where: { id: stayId },
+    include: {
+      bill: { include: { lines: { orderBy: { id: "asc" } } } },
+    },
+  });
+  if (!stay?.bill || stay.bill.status !== "open") return false;
+
+  const oid = Number(order.id);
+  const title = String(order.title || "")
+    .trim()
+    .toLowerCase();
+  const qty = Number(order.orderAmount) || 0;
+  const price = Number(order.price) || 0;
+
+  let match =
+    stay.bill.lines.find(
+      (l) =>
+        l.kind === "food_drink" &&
+        cafeOrderIdFromBillDescription(l.description) === oid,
+    ) || null;
+
+  if (!match && title) {
+    const candidates = stay.bill.lines.filter((l) => {
+      if (l.kind !== "food_drink") return false;
+      if (cafeOrderIdFromBillDescription(l.description) != null) return false;
+      const desc = String(l.description || "")
+        .toLowerCase()
+        .trim();
+      return (
+        desc === title ||
+        desc.startsWith(`${title} ·`) ||
+        desc.includes(title)
+      );
+    });
+    match =
+      candidates.find(
+        (l) =>
+          Number(l.quantity) === qty &&
+          Math.abs(Number(l.unitPriceETB) - price) < 0.011,
+      ) ||
+      candidates[candidates.length - 1] ||
+      null;
+  }
+
+  if (!match) return false;
+  await prisma.lodging_bill_line.delete({ where: { id: match.id } });
+  await recalcBillTotal(prisma, stay.bill.id);
+  return true;
+}
+
 function parseGuestPayload(raw) {
   if (raw == null) return null;
   if (typeof raw === "string") {
@@ -990,7 +1106,11 @@ export function createLodgingResolvers({
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const { actorName, actorRole } = actorFromContext(context);
 
-        const nightsN = Math.max(1, Number(nights) || 1);
+        // Provisional: nights are finalized at checkout from arrival/departure dates.
+        const nightsN = 1;
+        if (nights != null && Number(nights) > 1) {
+          /* ignored — client cannot set final nights at check-in */
+        }
         const arrival = new Date(arrivalAt);
         if (Number.isNaN(arrival.getTime())) throw new Error("Invalid arrivalAt");
         const departureAt = addDays(arrival, nightsN);
@@ -1237,6 +1357,15 @@ export function createLodgingResolvers({
           include: STAY_INCLUDE,
         });
 
+        if (data.nights != null && data.nights !== stay.nights) {
+          await syncRoomNightCharges(
+            prisma,
+            updated,
+            data.nights,
+            actorName,
+          );
+        }
+
         await logLodgingAction(prisma, {
           HotelName: stay.HotelName,
           actorRole,
@@ -1247,7 +1376,10 @@ export function createLodgingResolvers({
           stayId: stay.id,
           detail: data,
         });
-        return updated;
+        return prisma.lodging_stay.findUnique({
+          where: { id: stay.id },
+          include: STAY_INCLUDE,
+        });
       },
 
       addLodgingBillLine: async (
@@ -1581,11 +1713,38 @@ export function createLodgingResolvers({
 
         const { actorName, actorRole } = actorFromContext(context);
         const receiptNumber = `RCP-${ymd(dep)}-${pad4(stay.id % 10000)}`;
+        const nightsN = nightsFromArrivalDeparture(stay.arrivalAt, dep);
+
+        // Drop bill lines for cancelled room-service café orders before settle.
+        if (stay.bill && stay.bill.status === "open") {
+          const tableNo = ROOM_SERVICE_TABLE_BASE + stay.id;
+          const cancelledOrders = await prisma.order.findMany({
+            where: {
+              HotelName: stay.HotelName,
+              tableNo,
+            },
+          });
+          for (const order of cancelledOrders) {
+            if (String(order.status || "").toLowerCase() !== "cancelled") {
+              continue;
+            }
+            await removeRoomServiceOrderFromLodgingBill(prisma, order);
+          }
+        }
+
+        const stayFresh = await loadStayOrThrow(
+          prisma,
+          context,
+          stayId,
+          tenantHotelReadMatches,
+        );
 
         await prisma.$transaction(async (tx) => {
-          if (stay.bill && stay.bill.status === "open") {
+          await syncRoomNightCharges(tx, stayFresh, nightsN, actorName);
+
+          if (stayFresh.bill && stayFresh.bill.status === "open") {
             await tx.lodging_bill.update({
-              where: { id: stay.bill.id },
+              where: { id: stayFresh.bill.id },
               data: {
                 status: "settled",
                 settledAt: new Date(),
@@ -1600,11 +1759,12 @@ export function createLodgingResolvers({
             data: {
               status: "checked_out",
               departureAt: dep,
+              nights: nightsN,
               checkedOutBy: actorName,
             },
           });
 
-          for (const sr of stay.rooms || []) {
+          for (const sr of stayFresh.rooms || []) {
             await tx.lodging_room.update({
               where: { id: sr.roomId },
               data: {
@@ -1623,7 +1783,11 @@ export function createLodgingResolvers({
           entityType: "lodging_stay",
           entityId: stay.id,
           stayId: stay.id,
-          detail: { departureAt: dep.toISOString(), receiptNumber },
+          detail: {
+            departureAt: dep.toISOString(),
+            nights: nightsN,
+            receiptNumber,
+          },
         });
 
         return prisma.lodging_stay.findUnique({
