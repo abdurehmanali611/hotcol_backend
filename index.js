@@ -3854,7 +3854,7 @@ const resolvers = {
         data,
       });
     },
-    UpdatePayment: async (
+      UpdatePayment: async (
       _,
       { id, payment, withBank, bankTransferAmount, bankTipCashDeduction },
       context,
@@ -3862,12 +3862,23 @@ const resolvers = {
       if (!context.user) throw new Error("Not Authenticated");
       const dbUser = await loadAuthUserFromDb(context, prisma);
       const authCtx = enrichContextUser(context, dbUser);
-      if (!roleIsOneOf(authCtx.user, ["Cashier", "Admin", "Manager", "HotelCashier"])) {
-        throw new Error("Not authorized");
-      }
       const order = await findTenantOrderById(authCtx, prisma, id);
       if (!order) {
         throw new Error("Order not found or not authorized");
+      }
+      const isRoomService = isRoomServiceTableNo(order.tableNo);
+      const canPay = roleIsOneOf(authCtx.user, [
+        "Cashier",
+        "Admin",
+        "Manager",
+        "HotelCashier",
+      ]);
+      // Reception may settle room-service tickets at lodging checkout only.
+      const canReceptionRoomService =
+        isRoomService &&
+        roleIsOneOf(authCtx.user, ["Reception", "Admin", "Manager"]);
+      if (!canPay && !canReceptionRoomService) {
+        throw new Error("Not authorized");
       }
       const data = {
         payment: payment,
@@ -3883,6 +3894,14 @@ const resolvers = {
         if (bankTipCashDeduction != null) {
           data.bankTipCashDeduction = bankTipCashDeduction;
         }
+      }
+      // Room-service settle at checkout should count as completed for café reports.
+      if (
+        isRoomService &&
+        String(payment || "").toLowerCase() === "paid" &&
+        String(order.status || "").toLowerCase() !== "cancelled"
+      ) {
+        data.status = "Completed";
       }
       return await prisma.order.update({
         where: { id: id },

@@ -1773,6 +1773,31 @@ export function createLodgingResolvers({
               },
             });
           }
+
+          // Mark room-service café F&B as Paid + Completed so Manager Café
+          // payment reports include them. Laundry never creates café orders.
+          const roomServiceTable = ROOM_SERVICE_TABLE_BASE + stay.id;
+          const roomCafeOrders = await tx.order.findMany({
+            where: {
+              HotelName: stay.HotelName,
+              tableNo: roomServiceTable,
+            },
+          });
+          for (const order of roomCafeOrders) {
+            const payment = String(order.payment || "").toLowerCase();
+            const status = String(order.status || "").toLowerCase();
+            if (payment === "paid" || status === "cancelled") continue;
+            await tx.order.update({
+              where: { id: order.id },
+              data: {
+                payment: "Paid",
+                status: "Completed",
+                withBank: false,
+                bankTransferAmount: null,
+                bankTipCashDeduction: null,
+              },
+            });
+          }
         });
 
         await logLodgingAction(prisma, {
