@@ -1603,8 +1603,43 @@ export function createLodgingResolvers({
         }
         const qty = Number(quantity);
         if (!(qty > 0)) throw new Error("Quantity must be positive");
+        if (!Number.isInteger(qty) && String(line.kind).toLowerCase() === "food_drink") {
+          throw new Error("Food & drink quantity must be a whole number");
+        }
         const { actorName, actorRole } = actorFromContext(context);
         const unit = Number(line.unitPriceETB) || 0;
+
+        const oid =
+          String(line.kind || "").toLowerCase() === "food_drink"
+            ? cafeOrderIdFromBillDescription(line.description)
+            : null;
+        if (oid != null) {
+          const cafeOrder = await prisma.order.findUnique({ where: { id: oid } });
+          if (cafeOrder) {
+            const st = String(cafeOrder.status || "").toLowerCase();
+            if (st === "completed") {
+              throw new Error(
+                "Completed food & drink cannot be edited — wait for a new order or cancel before kitchen completes",
+              );
+            }
+            if (st !== "cancelled") {
+              const nextAmount = Math.max(1, Math.floor(qty));
+              if (nextAmount !== Math.floor(Number(cafeOrder.orderAmount))) {
+                const prevCount = Number(cafeOrder.orderRevisionCount) || 0;
+                await prisma.order.update({
+                  where: { id: cafeOrder.id },
+                  data: {
+                    orderAmount: nextAmount,
+                    status: "Pending",
+                    orderRevisionCount: prevCount + 1,
+                    orderRevisedAt: new Date(),
+                  },
+                });
+              }
+            }
+          }
+        }
+
         const updated = await prisma.lodging_bill_line.update({
           where: { id: line.id },
           data: {
@@ -1647,6 +1682,32 @@ export function createLodgingResolvers({
         const billId = line.billId;
         const stayId = line.bill.stay.id;
         const HotelName = line.bill.stay.HotelName;
+
+        // Cancel linked café room-service ticket when removing F&B from stay.
+        if (String(line.kind || "").toLowerCase() === "food_drink") {
+          const oid = cafeOrderIdFromBillDescription(line.description);
+          if (oid != null) {
+            const cafeOrder = await prisma.order.findUnique({
+              where: { id: oid },
+            });
+            if (
+              cafeOrder &&
+              String(cafeOrder.payment || "").toLowerCase() !== "paid" &&
+              String(cafeOrder.status || "").toLowerCase() !== "cancelled"
+            ) {
+              await prisma.order.update({
+                where: { id: cafeOrder.id },
+                data: {
+                  status: "Cancelled",
+                  cancelledBy: actorName || "Reception",
+                  orderRevisedAt: null,
+                  orderRevisionCount: 0,
+                },
+              });
+            }
+          }
+        }
+
         await prisma.lodging_bill_line.delete({ where: { id: line.id } });
         await recalcBillTotal(prisma, billId);
         await logLodgingAction(prisma, {

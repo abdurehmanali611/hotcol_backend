@@ -1591,10 +1591,18 @@ function roleIsOneOf(user, allowedRoles) {
   );
 }
 
-/** Kitchen/Bar may cancel only their station's queue; cashier+ can cancel any live line. */
+/** Kitchen/Bar may cancel only their station's queue; cashier+ can cancel any live line.
+ * Reception may cancel room-service (lodging F&B) tickets only.
+ */
 function canCancelLiveOrder(user, order) {
   if (roleIsOneOf(user, ["Cashier", "HotelCashier", "Admin", "Manager"]))
     return true;
+  if (
+    isRoomServiceTableNo(order?.tableNo) &&
+    roleIsOneOf(user, ["Reception", "Admin", "Manager"])
+  ) {
+    return true;
+  }
   if (roleIsOneOf(user, ["Kitchen", "Chef"])) return isKitchenStationOrder(order);
   if (roleIsOneOf(user, ["Barista", "Bar"])) return isBarStationOrder(order);
   return false;
@@ -1605,6 +1613,7 @@ function cancelledByLabelFromUser(user) {
   if (roleIsOneOf(user, ["Cashier", "HotelCashier"])) return "Cashier";
   if (roleIsOneOf(user, ["Admin"])) return "Admin";
   if (roleIsOneOf(user, ["Manager"])) return "Manager";
+  if (roleIsOneOf(user, ["Reception"])) return "Reception";
   if (roleIsOneOf(user, ["Kitchen", "Chef"])) return "Chef/Kitchen";
   if (roleIsOneOf(user, ["Barista", "Bar"])) return "Barista";
   return "Staff";
@@ -3790,12 +3799,23 @@ const resolvers = {
           context.user?.__authExpired ? "JWT expired" : "Not Authenticated",
         );
       }
-      if (!roleIsOneOf(authCtx.user, ["Cashier", "HotelCashier", "Admin", "Manager"])) {
-        throw new Error("Not authorized to update live orders");
-      }
       const order = await findTenantOrderById(authCtx, prisma, id);
       if (!order) {
         throw new Error("Order not found or not authorized");
+      }
+      const isRoomService = isRoomServiceTableNo(order.tableNo);
+      const canCashierUpdate = roleIsOneOf(authCtx.user, [
+        "Cashier",
+        "HotelCashier",
+        "Admin",
+        "Manager",
+      ]);
+      // Reception may revise room-service tickets created from lodging F&B.
+      const canReceptionRoomService =
+        isRoomService &&
+        roleIsOneOf(authCtx.user, ["Reception", "Admin", "Manager"]);
+      if (!canCashierUpdate && !canReceptionRoomService) {
+        throw new Error("Not authorized to update live orders");
       }
       if (String(order.payment || "").toLowerCase() === "paid") {
         throw new Error("Paid orders cannot be edited");
@@ -3816,6 +3836,14 @@ const resolvers = {
 
       if (tableNo != null) {
         const nextTable = normTable(tableNo);
+        // Reception cannot move room-service tickets onto floor tables.
+        if (
+          canReceptionRoomService &&
+          !canCashierUpdate &&
+          !isRoomServiceTableNo(nextTable)
+        ) {
+          throw new Error("Reception can only keep room-service orders on a stay");
+        }
         if (nextTable !== normTable(order.tableNo)) {
           data.tableNo = nextTable;
           data.serviceCaption = await serviceCaptionForTableNo(
