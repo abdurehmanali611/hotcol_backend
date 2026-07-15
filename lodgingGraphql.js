@@ -419,6 +419,81 @@ export function cafeOrderIdFromBillDescription(description) {
   return m ? Number(m[1]) : null;
 }
 
+function withCafeOrderMarker(description, orderId) {
+  const base = String(description || "")
+    .replace(/\s*·\s*#co:\d+\s*$/i, "")
+    .trim();
+  return `${base} · #co:${orderId}`;
+}
+
+function roomServiceCaptionFromStay(stay) {
+  const rooms = (stay.rooms || [])
+    .map((sr) => sr.room?.roomNumber)
+    .filter(Boolean)
+    .join(", ");
+  return rooms ? `Room ${rooms}` : "Room service";
+}
+
+/** Move a café ticket onto the destination stay's room-service table. */
+async function reassignCafeOrderToStay(db, orderId, toStay) {
+  const id = Number(orderId);
+  if (!(id > 0) || !toStay) return null;
+  const order = await db.order.findUnique({ where: { id } });
+  if (!order) return null;
+  if (String(order.HotelName) !== String(toStay.HotelName)) return null;
+  if (String(order.status || "").toLowerCase() === "cancelled") return null;
+  const tableNo = ROOM_SERVICE_TABLE_BASE + toStay.id;
+  return db.order.update({
+    where: { id },
+    data: {
+      tableNo,
+      serviceCaption: roomServiceCaptionFromStay(toStay),
+    },
+  });
+}
+
+/**
+ * After a qty split of a food_drink line: shrink source café order and create
+ * a new ticket on the destination stay for the moved qty.
+ */
+async function splitCafeOrderForBillLine(
+  db,
+  { sourceOrderId, remainQty, moveQty, toStay, actorName },
+) {
+  const order = await db.order.findUnique({
+    where: { id: Number(sourceOrderId) },
+  });
+  if (!order) return null;
+  if (String(order.status || "").toLowerCase() === "cancelled") return null;
+
+  const remain = Math.max(1, Math.round(Number(remainQty)));
+  const move = Math.max(1, Math.round(Number(moveQty)));
+
+  await db.order.update({
+    where: { id: order.id },
+    data: { orderAmount: remain },
+  });
+
+  return db.order.create({
+    data: {
+      title: order.title,
+      imageUrl: order.imageUrl || "",
+      tableNo: ROOM_SERVICE_TABLE_BASE + toStay.id,
+      category: order.category,
+      type: order.type,
+      orderAmount: move,
+      HotelName: order.HotelName,
+      price: order.price,
+      waiterName: order.waiterName || actorName || "Reception",
+      status: order.status || "Pending",
+      payment: order.payment || "Unpaid",
+      withBank: order.withBank ?? false,
+      credit: false,
+      serviceCaption: roomServiceCaptionFromStay(toStay),
+    },
+  });
+}
+
 async function syncRoomNightCharges(db, stay, nightsN, actorName) {
   if (!stay.bill || stay.bill.status !== "open") return;
   const billId = stay.bill.id;
@@ -1582,6 +1657,15 @@ export function createLodgingResolvers({
             where: { id: { in: ids } },
             data: { billId: toBill.id },
           });
+
+          // Move linked café room-service tickets so payment settles on the
+          // destination stay, not the former room.
+          for (const line of lines) {
+            if (String(line.kind || "").toLowerCase() !== "food_drink") continue;
+            const oid = cafeOrderIdFromBillDescription(line.description);
+            if (oid == null) continue;
+            await reassignCafeOrderToStay(tx, oid, toStay);
+          }
         });
 
         for (const bid of fromBillIds) {
@@ -1655,6 +1739,14 @@ export function createLodgingResolvers({
         const { actorName, actorRole } = actorFromContext(context);
         const unit = Number(line.unitPriceETB) || 0;
         const remainQty = Number(line.quantity) - qtyMove;
+        const isFoodDrink = String(line.kind || "").toLowerCase() === "food_drink";
+        if (isFoodDrink) {
+          if (!Number.isInteger(qtyMove) || !Number.isInteger(Number(line.quantity))) {
+            throw new Error(
+              "Food & drink split quantity must be a whole number",
+            );
+          }
+        }
 
         await prisma.$transaction(async (tx) => {
           await tx.lodging_bill_line.update({
@@ -1664,11 +1756,27 @@ export function createLodgingResolvers({
               amountETB: remainQty * unit,
             },
           });
+
+          let destDescription = line.description;
+          const oid = cafeOrderIdFromBillDescription(line.description);
+          if (isFoodDrink && oid != null) {
+            const created = await splitCafeOrderForBillLine(tx, {
+              sourceOrderId: oid,
+              remainQty,
+              moveQty: qtyMove,
+              toStay,
+              actorName,
+            });
+            if (created?.id) {
+              destDescription = withCafeOrderMarker(line.description, created.id);
+            }
+          }
+
           await tx.lodging_bill_line.create({
             data: {
               billId: toBill.id,
               kind: line.kind,
-              description: line.description,
+              description: destDescription,
               quantity: qtyMove,
               unitPriceETB: unit,
               amountETB: qtyMove * unit,
@@ -1774,16 +1882,27 @@ export function createLodgingResolvers({
             });
           }
 
-          // Mark room-service café F&B as Paid + Completed so Manager Café
-          // payment reports include them. Laundry never creates café orders.
+          // Mark café F&B for this stay as Paid:
+          // 1) by #co: markers on current bill lines (covers transferred/split)
+          // 2) leftover unpaid tickets still on this stay's room-service table
+          const orderIds = new Set();
+          for (const line of stayFresh.bill?.lines ?? []) {
+            if (String(line.kind || "").toLowerCase() !== "food_drink") continue;
+            const oid = cafeOrderIdFromBillDescription(line.description);
+            if (oid != null) orderIds.add(oid);
+          }
           const roomServiceTable = ROOM_SERVICE_TABLE_BASE + stay.id;
-          const roomCafeOrders = await tx.order.findMany({
+          const byTable = await tx.order.findMany({
             where: {
               HotelName: stay.HotelName,
               tableNo: roomServiceTable,
             },
           });
-          for (const order of roomCafeOrders) {
+          for (const order of byTable) orderIds.add(order.id);
+
+          for (const orderId of orderIds) {
+            const order = await tx.order.findUnique({ where: { id: orderId } });
+            if (!order) continue;
             const payment = String(order.payment || "").toLowerCase();
             const status = String(order.status || "").toLowerCase();
             if (payment === "paid" || status === "cancelled") continue;
