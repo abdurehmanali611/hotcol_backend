@@ -863,13 +863,15 @@ export function createLodgingResolvers({
         if (Number.isNaN(fromDt.getTime()) || Number.isNaN(toDt.getTime())) {
           throw new Error("Invalid date range");
         }
+        // Payment report: only checked-out stays, keyed by departure (checkout) day.
         return prisma.lodging_stay.findMany({
           where: {
             ...tenantHotelReadWhere(context),
-            arrivalAt: { gte: fromDt, lte: toDt },
+            status: "checked_out",
+            departureAt: { gte: fromDt, lte: toDt },
           },
           include: STAY_INCLUDE,
-          orderBy: { arrivalAt: "asc" },
+          orderBy: { departureAt: "asc" },
         });
       },
 
