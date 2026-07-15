@@ -636,6 +636,7 @@ const typeDefs = gql`
     credittorName: String
     creditAmount: Float
     payment: String
+    serviceCaption: String
   }
 
   """One line in a multi-item purchase request (shared voucher per batch)."""
@@ -3593,13 +3594,18 @@ const resolvers = {
 
       const hotelName = tenantScopeFromContext(authCtx);
       const ordersWithCaptions = await Promise.all(
-        orders.map(async (orderData) => ({
-          orderData,
-              serviceCaption: await serviceCaptionForTableNo(
-            orderData.tableNo,
-            authCtx,
-          ),
-        })),
+        orders.map(async (orderData) => {
+          const explicit =
+            orderData.serviceCaption != null
+              ? String(orderData.serviceCaption).trim()
+              : "";
+          return {
+            orderData,
+            serviceCaption:
+              explicit ||
+              (await serviceCaptionForTableNo(orderData.tableNo, authCtx)),
+          };
+        }),
       );
 
       const createdOrders = await prisma.$transaction(
