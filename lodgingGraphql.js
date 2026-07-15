@@ -2358,7 +2358,16 @@ export function createLodgingResolvers({
           );
         }
 
-        // Dirty → clean requires open cleaning assignment(s).
+        const role = String(
+          context.user?.Role ?? context.user?.role ?? "",
+        )
+          .trim()
+          .toLowerCase();
+        const isElevated =
+          role === "manager" || role === "admin" || role === "reception";
+
+        // Dirty → clean: all open cleaner jobs must be finished first.
+        // (Completing the last Clean assignment auto-sets vacant_clean.)
         if (s === "vacant_clean" && room.status === "vacant_dirty") {
           const openCleaning = await prisma.lodging_cm_assignment.count({
             where: {
@@ -2367,20 +2376,13 @@ export function createLodgingResolvers({
               status: "open",
             },
           });
-          if (openCleaning === 0) {
+          if (openCleaning > 0 && !isElevated) {
             throw new Error(
-              "Assign cleaners to this room before marking vacant clean",
+              "Finish all open cleaner assignments before marking vacant clean",
             );
           }
         }
 
-        const role = String(
-          context.user?.Role ?? context.user?.role ?? "",
-        )
-          .trim()
-          .toLowerCase();
-        const isElevated =
-          role === "manager" || role === "admin" || role === "reception";
         if (!isElevated) {
           if (s === "vacant_clean") {
             if (
@@ -2523,6 +2525,7 @@ export function createLodgingResolvers({
           throw new Error("Assignment is not open");
         }
         const { actorName, actorRole } = actorFromContext(context);
+        let roomCleared = false;
 
         await prisma.$transaction(async (tx) => {
           await tx.lodging_cm_assignment.update({
@@ -2533,15 +2536,18 @@ export function createLodgingResolvers({
               completedAt: new Date(),
             },
           });
-          if (
-            row.workKind === "cleaning" &&
-            row.room.status === "vacant_dirty"
-          ) {
+
+          const workKind = String(row.workKind || "").toLowerCase();
+          const roomStatus = String(row.room?.status || "").toLowerCase();
+
+          // Last finished cleaning job on a dirty room → vacant clean.
+          if (workKind === "cleaning" && roomStatus === "vacant_dirty") {
             const remaining = await tx.lodging_cm_assignment.count({
               where: {
                 roomId: row.roomId,
                 workKind: "cleaning",
                 status: "open",
+                NOT: { id: row.id },
               },
             });
             if (remaining === 0) {
@@ -2553,6 +2559,30 @@ export function createLodgingResolvers({
                   updatedBy: actorName,
                 },
               });
+              roomCleared = true;
+            }
+          }
+
+          // Last finished maintenance job on a blocked room → vacant clean.
+          if (workKind === "maintenance" && roomStatus === "on_maintenance") {
+            const remaining = await tx.lodging_cm_assignment.count({
+              where: {
+                roomId: row.roomId,
+                workKind: "maintenance",
+                status: "open",
+                NOT: { id: row.id },
+              },
+            });
+            if (remaining === 0) {
+              await tx.lodging_room.update({
+                where: { id: row.roomId },
+                data: {
+                  status: "vacant_clean",
+                  maintenanceUntil: null,
+                  updatedBy: actorName,
+                },
+              });
+              roomCleared = true;
             }
           }
         });
@@ -2564,7 +2594,11 @@ export function createLodgingResolvers({
           action: "complete_cm_assignment",
           entityType: "lodging_cm_assignment",
           entityId: row.id,
-          detail: { workKind: row.workKind, roomId: row.roomId },
+          detail: {
+            workKind: row.workKind,
+            roomId: row.roomId,
+            roomClearedToVacantClean: roomCleared,
+          },
         });
 
         return prisma.lodging_cm_assignment.findUnique({
