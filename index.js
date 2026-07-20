@@ -1090,8 +1090,7 @@ const typeDefs = gql`
       requiredAmount: JSON
       totalCalc: Float!
     ): cashouts!
-    """Admin/Manager: change staff role only. Staff change their own passwords via ChangeOwnPassword."""
-    UpdateCredential(UserName: String!, Role: String!): User!
+    """Admin/Manager: permanently remove a staff login (not owner accounts)."""
     DeleteCredential(UserName: String!): Boolean!
     CreateCredential(
       UserName: String!
@@ -3702,30 +3701,6 @@ const resolvers = {
         data: { Password: hashedPassword },
       });
       return true;
-    },
-    UpdateCredential: async (_, { UserName, Role }, context) => {
-      if (!context.user) throw new Error("Not Authenticated");
-      if (!["Admin", "Manager"].includes(context.user.Role)) {
-        throw new Error("Not authorized");
-      }
-
-      const userNameNorm = String(UserName).trim();
-      const user = await prisma.user.findFirst({
-        where: {
-          ...sameOrganizationWhere(context),
-          UserName: userNameNorm,
-        },
-      });
-
-      if (!user) throw new Error("User not found");
-      if (user.Role === "Admin" || user.Role === "Manager") {
-        throw new Error("Admin accounts cannot be updated from this form");
-      }
-
-      return await prisma.user.update({
-        where: { id: user.id },
-        data: { Role },
-      });
     },
     DeleteCredential: async (_, { UserName }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
