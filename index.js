@@ -1057,6 +1057,8 @@ const typeDefs = gql`
     Login(UserName: String!, Password: String!): AuthPayload!
     verifyAdminPassword(HotelName: String!, passwordInput: String!): Boolean
     UpdateAdminCredential(Password: String!): User!
+    """Any signed-in user: change own password (requires current password)."""
+    ChangeOwnPassword(currentPassword: String!, newPassword: String!): Boolean!
     CreateAdmin(
       UserName: String!
       Password: String!
@@ -1088,7 +1090,8 @@ const typeDefs = gql`
       requiredAmount: JSON
       totalCalc: Float!
     ): cashouts!
-    UpdateCredential(UserName: String!, Password: String!, Role: String!): User!
+    """Admin/Manager: change staff role only. Staff change their own passwords via ChangeOwnPassword."""
+    UpdateCredential(UserName: String!, Role: String!): User!
     DeleteCredential(UserName: String!): Boolean!
     CreateCredential(
       UserName: String!
@@ -3673,7 +3676,34 @@ const resolvers = {
         data: { Password: hashedPassword },
       });
     },
-    UpdateCredential: async (_, { UserName, Password, Role }, context) => {
+    ChangeOwnPassword: async (_, { currentPassword, newPassword }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const userId = Number(context.user.userId ?? context.user.id);
+      if (!Number.isFinite(userId) || userId <= 0) {
+        throw new Error("Not Authenticated");
+      }
+      const next = String(newPassword ?? "").trim();
+      if (next.length < 6) {
+        throw new Error("New password must be at least 6 characters");
+      }
+
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) throw new Error("User not found");
+
+      const ok = await bcrypt.compare(
+        String(currentPassword ?? ""),
+        user.Password,
+      );
+      if (!ok) throw new Error("Current password is incorrect");
+
+      const hashedPassword = await bcrypt.hash(next, 12);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { Password: hashedPassword },
+      });
+      return true;
+    },
+    UpdateCredential: async (_, { UserName, Role }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       if (!["Admin", "Manager"].includes(context.user.Role)) {
         throw new Error("Not authorized");
@@ -3692,14 +3722,9 @@ const resolvers = {
         throw new Error("Admin accounts cannot be updated from this form");
       }
 
-      const hashedPassword = await bcrypt.hash(Password, 12);
-
       return await prisma.user.update({
         where: { id: user.id },
-        data: {
-          Password: hashedPassword,
-          Role,
-        },
+        data: { Role },
       });
     },
     DeleteCredential: async (_, { UserName }, context) => {
