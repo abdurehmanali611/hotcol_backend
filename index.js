@@ -1875,7 +1875,7 @@ function ymdUtcFromDate(d) {
   return `${y}-${m}-${day}`;
 }
 
-/** Previous day’s physical lights-out: prefer stored closing when > 0, else opening pulse (legacy rows). */
+/** Previous day’s On Hand: prefer stored closing when > 0, else Beginning (BB) (legacy rows). */
 function prevPhysicalLights(prevRow) {
   if (!prevRow) return null;
   const c = Number(prevRow.closingOnHand);
@@ -6452,6 +6452,9 @@ const resolvers = {
           ? String(monthPeriod).trim().slice(0, 7)
           : monthPeriodFromCalendarDate(cal);
       const item = String(itemName).trim();
+      if (!item) {
+        throw new Error("Item name is required");
+      }
       const stationKey = normalizeKitchenBarStation(station);
       const inv = await prisma.itemRegistration.findFirst({
         where: {
@@ -6459,10 +6462,9 @@ const resolvers = {
           name: item,
         },
       });
-      if (!inv || Number(inv.amount) <= 0) {
-        throw new Error(
-          "Select an item from active inventory. Daily count items must exist in stock.",
-        );
+      const unit = String(measuredBy || inv?.measuredBy || "").trim();
+      if (!unit) {
+        throw new Error("Unit is required");
       }
       const dup = await prisma.kitchenBarBeginning.findFirst({
         where: {
@@ -6500,7 +6502,7 @@ const resolvers = {
           station: stationKey,
           itemName: item,
           amount: opening,
-          measuredBy: String(inv.measuredBy || measuredBy || "").trim(),
+          measuredBy: unit,
           monthPeriod: mp,
           calendarDate: cal,
           stockOutDay: round2(sum),
@@ -6542,6 +6544,9 @@ const resolvers = {
           ? String(monthPeriod).trim().slice(0, 7)
           : monthPeriodFromCalendarDate(cal);
       const item = String(itemName).trim();
+      if (!item) {
+        throw new Error("Item name is required");
+      }
       const stationKey = normalizeKitchenBarStation(station);
       const inv = await prisma.itemRegistration.findFirst({
         where: {
@@ -6549,10 +6554,9 @@ const resolvers = {
           name: item,
         },
       });
-      if (!inv || Number(inv.amount) <= 0) {
-        throw new Error(
-          "Select an item from active inventory. Daily count items must exist in stock.",
-        );
+      const unit = String(measuredBy || inv?.measuredBy || row.measuredBy || "").trim();
+      if (!unit) {
+        throw new Error("Unit is required");
       }
       const dup = await prisma.kitchenBarBeginning.findFirst({
         where: {
@@ -6591,7 +6595,7 @@ const resolvers = {
           station: stationKey,
           itemName: item,
           amount: opening,
-          measuredBy: String(inv.measuredBy || measuredBy || "").trim(),
+          measuredBy: unit,
           monthPeriod: mp,
           calendarDate: cal,
           stockOutDay: round2(sum),
@@ -6638,13 +6642,15 @@ const resolvers = {
         list.sort((a, b) =>
           String(a.calendarDate).localeCompare(String(b.calendarDate)),
         );
-        let totalImplied = 0;
-        for (let i = 0; i < list.length - 1; i++) {
-          const implied =
-            Number(list[i].amount) +
-            Number(list[i].stockOutDay) -
-            Number(list[i + 1].amount);
-          totalImplied += implied;
+        let totalSales = 0;
+        for (let i = 1; i < list.length; i++) {
+          const prev = list[i - 1];
+          const prevOnHand =
+            Number(prev.closingOnHand) > 0
+              ? Number(prev.closingOnHand)
+              : Number(prev.amount);
+          // Sales = beginning today − prior On Hand (does not include Management).
+          totalSales += Number(list[i].amount) - prevOnHand;
         }
         const last = list[list.length - 1];
         const closing =
@@ -6662,7 +6668,7 @@ const resolvers = {
           },
         });
         const payload = {
-          totalImpliedSales: totalImplied,
+          totalImpliedSales: round2(totalSales),
           lastDayClosingOnHand: closing,
           syncedAt: new Date(),
         };
