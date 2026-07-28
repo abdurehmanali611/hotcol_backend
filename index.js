@@ -585,6 +585,23 @@ const typeDefs = gql`
     createdAt: DateTime!
   }
 
+  type TenantSubscriptionSnapshot {
+    modules: JSON!
+    setupFeeETB: Int!
+    quarterlyFeeETB: Int!
+    setupFeeApproved: Boolean!
+    createdAt: DateTime
+    billingStartedAt: DateTime
+    billingHold: Boolean!
+    isIllustrationTenant: Boolean!
+    freeTrialEndsAt: DateTime
+    subscriptionPaidUntil: DateTime
+    subscriptionPaymentApproved: Boolean!
+    paidQuartersCount: Int!
+    paymentTransactionRef: String
+    awaitingSelfSignupSetup: Boolean!
+  }
+
   type Item {
     id: Int!
     name: String!
@@ -1057,6 +1074,11 @@ const typeDefs = gql`
     hotelCreditParties(companyId: Int!): [HotelCreditParty!]!
     hotelCreditConsumptions(from: DateTime!, to: DateTime!): [HotelCreditConsumption!]!
     tenantFeedbackInbox(limit: Int): TenantFeedbackInbox!
+    """
+    Live subscription snapshot for the signed-in tenant (modules + billing).
+    Used to refresh client storage after Apex approves module changes.
+    """
+    tenantSubscription: TenantSubscriptionSnapshot!
     signupPricingPreview(businessType: String!, modules: JSON!): SignupPricingPreview!
     ${lodgingQueryFields}
   }
@@ -3032,6 +3054,51 @@ const resolvers = {
         threadId: thread.id,
         unreadFromApex,
         messages,
+      };
+    },
+
+    tenantSubscription: async (_, __, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      const dbUser = await prisma.user.findUnique({
+        where: { id: context.user.userId },
+      });
+      if (!dbUser) throw new Error("User not found");
+
+      const subscription = await resolveTenantSubscription(prisma, dbUser);
+      const tinForBilling = await tenantTinFromUser(dbUser);
+      const pendingSetupSubmission = tinForBilling
+        ? Boolean(
+            await prisma.tenant_payment_submission.findFirst({
+              where: {
+                tinNumber: tinForBilling,
+                paymentKind: "setup",
+                status: "pending",
+              },
+              select: { id: true },
+            }),
+          )
+        : false;
+
+      return {
+        modules: subscription.modules,
+        setupFeeETB: Number(subscription.setupFeeETB) || 0,
+        quarterlyFeeETB: Number(subscription.quarterlyFeeETB) || 0,
+        setupFeeApproved: Boolean(subscription.setupFeeApproved),
+        createdAt: subscription.createdAt ?? null,
+        billingStartedAt: subscription.billingStartedAt ?? null,
+        billingHold: Boolean(subscription.billingHold),
+        isIllustrationTenant: Boolean(subscription.isIllustrationTenant),
+        freeTrialEndsAt: subscription.freeTrialEndsAt ?? null,
+        subscriptionPaidUntil: subscription.subscriptionPaidUntil ?? null,
+        subscriptionPaymentApproved: Boolean(
+          subscription.subscriptionPaymentApproved,
+        ),
+        paidQuartersCount: Number(subscription.paidQuartersCount) || 0,
+        paymentTransactionRef: subscription.paymentTransactionRef ?? null,
+        awaitingSelfSignupSetup: selfSignupAwaitingSetup(
+          subscription,
+          pendingSetupSubmission,
+        ),
       };
     },
 
