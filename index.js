@@ -575,6 +575,16 @@ const typeDefs = gql`
     messages: [TenantFeedbackMessage!]!
   }
 
+  type TenantModuleChangeRequest {
+    id: Int!
+    tinNumber: String!
+    status: String!
+    requestedBySide: String!
+    requestNote: String
+    requestedModules: JSON
+    createdAt: DateTime!
+  }
+
   type Item {
     id: Int!
     name: String!
@@ -1087,6 +1097,15 @@ const typeDefs = gql`
     ): TenantPaymentSubmission!
     sendTenantFeedbackMessage(body: String, imageUrl: String): TenantFeedbackMessage!
     markTenantFeedbackRead: Boolean!
+    """
+    Admin/Manager: request adding or removing subscribed modules.
+    Creates a pending tenant_module_change_request for Apex review.
+    """
+    requestTenantModuleChange(
+      changeType: String!
+      modules: JSON!
+      requestNote: String
+    ): TenantModuleChangeRequest!
     CreateCashout(
       items: JSON
       prices: JSON
@@ -3545,6 +3564,128 @@ const resolvers = {
         data: { readByTenant: true },
       });
       return true;
+    },
+    requestTenantModuleChange: async (_, { changeType, modules, requestNote }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertAdminOrManager(context);
+
+      const type = String(changeType || "").trim().toLowerCase();
+      if (type !== "add" && type !== "remove") {
+        throw new Error("changeType must be add or remove");
+      }
+
+      const tin = tenantScopeFromContext(context);
+      if (!tin) throw new Error("Tenant scope missing");
+
+      const delta = [
+        ...new Set(
+          parseModulesJson(modules)
+            .map((m) => String(m).trim())
+            .filter(Boolean),
+        ),
+      ];
+      if (delta.length === 0) {
+        throw new Error("Select at least one module");
+      }
+      if (delta.includes("Credentials(Common)")) {
+        throw new Error("Credentials(Common) cannot be requested or removed");
+      }
+
+      const owner =
+        (await prisma.user.findFirst({
+          where: { tinNumber: tin, Role: { in: ["Admin", "Manager"] } },
+          orderBy: { id: "asc" },
+        })) ||
+        (await prisma.user.findUnique({
+          where: { id: context.user.userId },
+        }));
+      if (!owner) throw new Error("Tenant owner not found");
+
+      const subscription = await resolveTenantSubscription(prisma, owner);
+      const current = parseModulesJson(subscription.modules);
+      const currentSet = new Set(current);
+
+      if (type === "add") {
+        const alreadyOwned = delta.filter((m) => currentSet.has(m));
+        if (alreadyOwned.length === delta.length) {
+          throw new Error("Selected modules are already subscribed");
+        }
+      } else {
+        const missing = delta.filter((m) => !currentSet.has(m));
+        if (missing.length) {
+          throw new Error(
+            `Cannot remove modules that are not subscribed: ${missing.join(", ")}`,
+          );
+        }
+      }
+
+      const projectedSet = new Set(current);
+      if (type === "add") {
+        for (const m of delta) projectedSet.add(m);
+      } else {
+        for (const m of delta) projectedSet.delete(m);
+      }
+      projectedSet.add("Credentials(Common)");
+      const projected = [...projectedSet];
+
+      const pending = await prisma.tenant_module_change_request.findFirst({
+        where: { tinNumber: tin, status: "pending" },
+        orderBy: { createdAt: "desc" },
+      });
+      if (pending) {
+        throw new Error(
+          "A module change request is already pending Apex review. Wait for approval or rejection before sending another.",
+        );
+      }
+
+      let account = await prisma.tenant_account.findUnique({
+        where: { tinNumber: tin },
+      });
+      if (!account) {
+        account = await prisma.tenant_account.create({
+          data: {
+            tinNumber: tin,
+            hotelDisplayName: String(owner.HotelName || "").trim() || tin,
+            businessType: owner.businessType ?? null,
+            logoUrl: owner.LogoUrl ?? null,
+            modules: current,
+            accountStatus: "active",
+          },
+        });
+      }
+
+      const noteParts = [
+        `[Module change: ${type}]`,
+        `Changed modules: ${delta.join(", ")}`,
+        `Current modules: ${current.join(", ") || "None"}`,
+        `Projected modules: ${projected.join(", ") || "None"}`,
+        `Requested by: ${context.user.UserName} (${context.user.Role})`,
+      ];
+      const freeNote = String(requestNote || "").trim();
+      if (freeNote) {
+        noteParts.push("---", freeNote);
+      }
+
+      const row = await prisma.tenant_module_change_request.create({
+        data: {
+          tinNumber: tin,
+          requestedModules: projected,
+          requestNote: noteParts.join("\n"),
+          status: "pending",
+          requestedBySide: "tenant",
+          requestedByUserId: context.user.userId,
+        },
+      });
+
+      return {
+        id: row.id,
+        tinNumber: row.tinNumber,
+        status: row.status,
+        requestedBySide: row.requestedBySide,
+        requestNote: row.requestNote,
+        requestedModules: row.requestedModules,
+        createdAt: row.createdAt,
+      };
     },
     CreateCredential: async (
       _,
