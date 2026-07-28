@@ -8,6 +8,7 @@ import {
   isBarStationOrder,
   isKitchenStationOrder,
 } from "./lib/cafeOrderStation.js";
+import { unitCostAtSaleFromItems } from "./lib/cafeRecipe.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
@@ -608,7 +609,10 @@ const typeDefs = gql`
     orderAmount: Int!
     category: String!
     type: String!
+    """Selling unit price frozen at order time."""
     price: Float!
+    """Ingredient cost per serving frozen at order time (null if no recipe)."""
+    unitCostAtSale: Float
     waiterName: String!
     status: String
     payment: String
@@ -3608,6 +3612,10 @@ const resolvers = {
       if (!authCtx) throw new Error("Not Authenticated");
 
       const hotelName = tenantScopeFromContext(authCtx);
+      const menuItems = await prisma.item.findMany({
+        where: { HotelName: hotelName },
+        select: { name: true, recipeJson: true },
+      });
       const ordersWithCaptions = await Promise.all(
         orders.map(async (orderData) => {
           const explicit =
@@ -3619,6 +3627,7 @@ const resolvers = {
             serviceCaption:
               explicit ||
               (await serviceCaptionForTableNo(orderData.tableNo, authCtx)),
+            unitCostAtSale: unitCostAtSaleFromItems(menuItems, orderData.title),
           };
         }),
       );
@@ -3626,7 +3635,11 @@ const resolvers = {
       const createdOrders = await prisma.$transaction(
         async (tx) => {
           const rows = [];
-          for (const { orderData, serviceCaption } of ordersWithCaptions) {
+          for (const {
+            orderData,
+            serviceCaption,
+            unitCostAtSale,
+          } of ordersWithCaptions) {
             rows.push(
               await tx.order.create({
                 data: {
@@ -3641,6 +3654,7 @@ const resolvers = {
                   category: orderData.category,
                   type: orderData.type,
                   price: orderData.price,
+                  unitCostAtSale,
                   serviceCaption,
                 },
               }),
@@ -3767,7 +3781,14 @@ const resolvers = {
       const authCtx = await resolveAuthContext(context, prisma);
       if (!authCtx) throw new Error("Not Authenticated");
       try {
-        const serviceCaption = await serviceCaptionForTableNo(tableNo, authCtx);
+        const hotelName = tenantScopeFromContext(authCtx);
+        const [serviceCaption, menuItems] = await Promise.all([
+          serviceCaptionForTableNo(tableNo, authCtx),
+          prisma.item.findMany({
+            where: { HotelName: hotelName },
+            select: { name: true, recipeJson: true },
+          }),
+        ]);
         const order = await prisma.order.create({
           data: {
             title,
@@ -3776,11 +3797,12 @@ const resolvers = {
             waiterName,
             orderAmount,
             status,
-            HotelName: tenantScopeFromContext(authCtx),
+            HotelName: hotelName,
             payment,
             category,
             type,
             price,
+            unitCostAtSale: unitCostAtSaleFromItems(menuItems, title),
             serviceCaption,
           },
         });
@@ -3903,6 +3925,16 @@ const resolvers = {
         data.orderRevisedAt = new Date();
       }
       if (title != null) data.title = title;
+
+      const nextTitle =
+        data.title != null ? data.title : order.title;
+      if (data.title != null && String(data.title) !== String(order.title)) {
+        const menuItems = await prisma.item.findMany({
+          where: { HotelName: tenantScopeFromContext(authCtx) },
+          select: { name: true, recipeJson: true },
+        });
+        data.unitCostAtSale = unitCostAtSaleFromItems(menuItems, nextTitle);
+      }
 
       const tableChanged = data.tableNo != null;
       const qtyChanged = data.orderAmount != null;

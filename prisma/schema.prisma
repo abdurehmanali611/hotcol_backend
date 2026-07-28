@@ -337,7 +337,11 @@ model Order {
   type        String
   orderAmount Int
   HotelName   String
+  /// Selling unit price frozen at order time (not updated when Item.price changes).
   price       Float
+  /// Ingredient cost per serving frozen at order time (from Item.recipeJson).
+  /// Null when the menu item had no recipe; legacy rows fall back to live recipe.
+  unitCostAtSale Float?
   waiterName  String
   status      String?
   payment     String?
