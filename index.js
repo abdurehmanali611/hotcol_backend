@@ -261,6 +261,66 @@ async function createPaymentSubmission(
   });
 }
 
+async function buildSignupRegistrationStatus(prismaClient, user) {
+  const username = String(user.UserName || "").trim();
+  const businessName = String(user.HotelName || "").trim() || username;
+  const setupFeeETB = Number(user.setupFeeETB) || 0;
+  const tin =
+    user.tinNumber != null && String(user.tinNumber).trim() !== ""
+      ? String(user.tinNumber).trim()
+      : "";
+
+  const base = {
+    username,
+    businessName,
+    setupFeeETB,
+    rejectionReason: null,
+    paymentChannel: user.paymentChannel ? String(user.paymentChannel) : null,
+    paymentTransactionRef: user.paymentTransactionRef
+      ? String(user.paymentTransactionRef)
+      : null,
+    submittedAt: user.createdAt ?? null,
+  };
+
+  if (Boolean(user.setupFeeApproved) || setupFeeETB <= 0) {
+    return { ...base, status: "approved" };
+  }
+
+  const latestSetup = tin
+    ? await prismaClient.tenant_payment_submission.findFirst({
+        where: { tinNumber: tin, paymentKind: "setup" },
+        orderBy: { submittedAt: "desc" },
+      })
+    : null;
+
+  if (latestSetup) {
+    base.paymentChannel = latestSetup.paymentChannel
+      ? String(latestSetup.paymentChannel)
+      : base.paymentChannel;
+    base.paymentTransactionRef = latestSetup.transactionRef
+      ? String(latestSetup.transactionRef)
+      : base.paymentTransactionRef;
+    base.submittedAt = latestSetup.submittedAt ?? base.submittedAt;
+
+    const paymentStatus = String(latestSetup.status || "").toLowerCase();
+    if (paymentStatus === "approved") {
+      return { ...base, status: "approved" };
+    }
+    if (paymentStatus === "rejected") {
+      return {
+        ...base,
+        status: "rejected",
+        rejectionReason: latestSetup.rejectionReason
+          ? String(latestSetup.rejectionReason)
+          : "Your setup payment was rejected. Please resubmit a corrected reference.",
+      };
+    }
+    return { ...base, status: "pending" };
+  }
+
+  return { ...base, status: "pending" };
+}
+
 async function resolveTenantSubscription(prismaClient, user) {
   const tin =
     user.tinNumber != null && String(user.tinNumber).trim() !== ""
@@ -1080,6 +1140,11 @@ const typeDefs = gql`
     """
     tenantSubscription: TenantSubscriptionSnapshot!
     signupPricingPreview(businessType: String!, modules: JSON!): SignupPricingPreview!
+    """
+    Public: look up self-signup setup review status by username (no auth).
+    Used so registrees keep seeing pending/approved/rejected after refresh.
+    """
+    signupRegistrationStatus(username: String!): SignupRegistrationStatus!
     ${lodgingQueryFields}
   }
 
@@ -1087,6 +1152,18 @@ const typeDefs = gql`
     setupFeeETB: Int!
     quarterlyFeeETB: Int!
     source: String!
+  }
+
+  type SignupRegistrationStatus {
+    username: String!
+    businessName: String!
+    """pending | approved | rejected"""
+    status: String!
+    setupFeeETB: Int!
+    rejectionReason: String
+    paymentChannel: String
+    paymentTransactionRef: String
+    submittedAt: DateTime
   }
 
   type Mutation {
@@ -1117,6 +1194,16 @@ const typeDefs = gql`
       paymentChannel: String!
       transactionRef: String!
     ): TenantPaymentSubmission!
+    """
+    Public: after Apex rejects a setup payment, registree can resubmit a new
+    reference with username + password (no login token yet).
+    """
+    resubmitSignupSetupPayment(
+      username: String!
+      password: String!
+      paymentChannel: String!
+      transactionRef: String!
+    ): SignupRegistrationStatus!
     sendTenantFeedbackMessage(body: String, imageUrl: String): TenantFeedbackMessage!
     markTenantFeedbackRead: Boolean!
     """
@@ -3111,6 +3198,20 @@ const resolvers = {
         source: fees.source,
       };
     },
+
+    signupRegistrationStatus: async (_, { username }) => {
+      const userNameNorm = String(username || "").trim();
+      if (!userNameNorm) throw new Error("Username is required");
+
+      const user = await prisma.user.findUnique({
+        where: { UserName: userNameNorm },
+      });
+      if (!user || !["Admin", "Manager"].includes(String(user.Role || ""))) {
+        throw new Error("Registration not found for that username");
+      }
+
+      return buildSignupRegistrationStatus(prisma, user);
+    },
   },
   Mutation: {
     CreateAdmin: async (
@@ -3581,6 +3682,79 @@ const resolvers = {
 
       return submission;
     },
+
+    resubmitSignupSetupPayment: async (
+      _,
+      { username, password, paymentChannel, transactionRef },
+    ) => {
+      const userNameNorm = String(username || "").trim();
+      const passwordRaw = String(password || "");
+      const channel = String(paymentChannel || "").trim();
+      const ref = String(transactionRef || "").trim();
+
+      if (!userNameNorm) throw new Error("Username is required");
+      if (!passwordRaw) throw new Error("Password is required");
+      if (!channel) throw new Error("Payment channel is required");
+      if (ref.length < 4) {
+        throw new Error("Transaction reference is required");
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { UserName: userNameNorm },
+      });
+      if (!user || !["Admin", "Manager"].includes(String(user.Role || ""))) {
+        throw new Error("Invalid username or password");
+      }
+
+      const passwordOk = await bcrypt.compare(passwordRaw, user.Password);
+      if (!passwordOk) throw new Error("Invalid username or password");
+
+      if (Boolean(user.setupFeeApproved)) {
+        throw new Error("Setup fee is already approved — you can sign in.");
+      }
+
+      const setupNum = Number(user.setupFeeETB) || 0;
+      if (setupNum <= 0) {
+        throw new Error("No setup fee is configured for this registration");
+      }
+
+      const tin =
+        user.tinNumber != null && String(user.tinNumber).trim() !== ""
+          ? String(user.tinNumber).trim()
+          : "";
+      if (!tin) throw new Error("Registration is missing a TIN");
+
+      const latestSetup = await prisma.tenant_payment_submission.findFirst({
+        where: { tinNumber: tin, paymentKind: "setup" },
+        orderBy: { submittedAt: "desc" },
+      });
+      if (latestSetup && String(latestSetup.status).toLowerCase() === "pending") {
+        throw new Error(
+          "A setup payment is already pending review. Please wait for Apex to approve or reject it.",
+        );
+      }
+
+      await createPaymentSubmission(prisma, {
+        tinNumber: tin,
+        paymentKind: "setup",
+        amountETB: setupNum,
+        paymentChannel: channel,
+        transactionRef: ref,
+        submittedByUserId: user.id,
+        quarterNumber: null,
+      });
+
+      const updated = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          paymentChannel: channel,
+          paymentTransactionRef: ref,
+        },
+      });
+
+      return buildSignupRegistrationStatus(prisma, updated);
+    },
+
     sendTenantFeedbackMessage: async (_, { body, imageUrl }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       assertAdminOrManager(context);
