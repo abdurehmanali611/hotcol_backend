@@ -3373,6 +3373,12 @@ const resolvers = {
       const tenantAccount = await prisma.tenant_account.findUnique({
         where: { tinNumber: tenantId },
       });
+      if (tenantAccount?.accountStatus === "deleted") {
+        throw new Error(
+          tenantAccount.bannedReason?.trim() ||
+            "This property has been deleted and no longer has access. Contact Apex support for assistance.",
+        );
+      }
       if (tenantAccount?.accountStatus === "banned") {
         throw new Error(
           tenantAccount.bannedReason?.trim() ||

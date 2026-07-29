@@ -204,7 +204,7 @@ model tenant_account {
   logoUrl          String?
   /// Subscribed modules (canonical list for the property)
   modules          Json?
-  /// active | suspended | banned — subscription/setup states remain on owner `user` row
+  /// active | suspended | banned | deleted — subscription/setup states remain on owner `user` row
   accountStatus    String   @default("active")
   suspendedAt      DateTime?
   suspendedReason  String?  @db.Text
