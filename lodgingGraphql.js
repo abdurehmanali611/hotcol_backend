@@ -3,7 +3,7 @@
  * Wired into BackEnd/index.js (types + Query/Mutation fields + resolvers).
  */
 
-import { issueUniqueGuestOtp } from "./lib/guestOtp.js";
+import { issueUniqueGuestOtp, clearGuestOtp } from "./lib/guestOtp.js";
 
 const ROOM_STATUSES = new Set([
   "vacant_dirty",
@@ -1703,7 +1703,7 @@ export function createLodgingResolvers({
             entityType: "lodging_stay",
             entityId: stay.id,
             stayId: stay.id,
-            detail: { guestOtp: otp, reason: "check_in" },
+            detail: { reason: "check_in" },
           });
         }
 
@@ -1803,11 +1803,26 @@ export function createLodgingResolvers({
 
         const becameCheckedIn =
           data.status === "checked_in" && stay.status !== "checked_in";
-        if (
+        const becameCancelled =
+          data.status === "cancelled" && stay.status !== "cancelled";
+
+        if (becameCancelled) {
+          await clearGuestOtp(prisma, stay.id);
+          await logLodgingAction(prisma, {
+            HotelName: stay.HotelName,
+            actorRole,
+            actorName,
+            action: "clear_guest_otp",
+            entityType: "lodging_stay",
+            entityId: stay.id,
+            stayId: stay.id,
+            detail: { reason: "cancelled" },
+          });
+        } else if (
           (becameCheckedIn || updated.status === "checked_in") &&
           !String(updated.guestOtp || "").trim()
         ) {
-          const otp = await issueUniqueGuestOtp(prisma, stay.id);
+          await issueUniqueGuestOtp(prisma, stay.id);
           await logLodgingAction(prisma, {
             HotelName: stay.HotelName,
             actorRole,
@@ -1817,7 +1832,6 @@ export function createLodgingResolvers({
             entityId: stay.id,
             stayId: stay.id,
             detail: {
-              guestOtp: otp,
               reason: becameCheckedIn ? "check_in" : "missing_otp",
             },
           });
@@ -2380,7 +2394,7 @@ export function createLodgingResolvers({
           entityType: "lodging_stay",
           entityId: stay.id,
           stayId: stay.id,
-          detail: { guestOtp: otp, reason: "reissue" },
+          detail: { reason: "reissue" },
         });
         return prisma.lodging_stay.findUnique({
           where: { id: stay.id },
@@ -2526,6 +2540,7 @@ export function createLodgingResolvers({
             departureAt: dep.toISOString(),
             nights: nightsN,
             receiptNumber,
+            guestOtpCleared: true,
           },
         });
 
