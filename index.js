@@ -913,15 +913,21 @@ const typeDefs = gql`
     createdAt: DateTime!
   }
 
-  type DepartmentLeader {
-    id: Int!
-    department: String!
-    leaderName: String!
-    departmentLabel: String!
-    HotelName: String!
-    createdAt: DateTime!
-    updatedAt: DateTime!
-  }
+    type DepartmentLeader {
+      id: Int!
+      department: String!
+      leaderName: String!
+      departmentLabel: String!
+      HotelName: String!
+      createdAt: DateTime!
+      updatedAt: DateTime!
+    }
+
+    type TenantHotelContact {
+      tinNumber: String!
+      hotelPhone: String!
+      hotelDisplayName: String!
+    }
 
   type PurchaseRequest {
     id: Int!
@@ -1124,6 +1130,7 @@ const typeDefs = gql`
     ItemStatus: [ItemStatus!]!
     costControllerProfiles: [CostControllerProfile!]!
     departmentLeaders: [DepartmentLeader!]!
+    tenantHotelContact: TenantHotelContact!
     purchaseRequests: [PurchaseRequest!]!
     stockOutRequests: [StockOutRequest!]!
     freshBazaarArchives: [FreshBazaar!]!
@@ -1468,6 +1475,7 @@ const typeDefs = gql`
 
     upsertDepartmentLeader(department: String!, leaderName: String!): DepartmentLeader!
     deleteDepartmentLeader(department: String!): Boolean!
+    updateTenantHotelPhone(hotelPhone: String!): TenantHotelContact!
 
     createPurchaseRequest(
       itemName: String!
@@ -2877,6 +2885,35 @@ const resolvers = {
         where,
         orderBy: { department: "asc" },
       });
+    },
+    tenantHotelContact: async (_, __, context) => {
+      assertRole(context, ["Manager", "Admin", "Reception"]);
+      const tin = tenantScopeFromContext(context);
+      if (!tin) throw new Error("Tenant scope required");
+      let account = await prisma.tenant_account.findUnique({
+        where: { tinNumber: tin },
+      });
+      if (!account) {
+        const user = await prisma.user.findFirst({
+          where: { tinNumber: tin },
+          select: { HotelName: true, LogoUrl: true, modules: true, businessType: true },
+        });
+        account = await prisma.tenant_account.create({
+          data: {
+            tinNumber: tin,
+            hotelDisplayName: String(user?.HotelName || tin).trim() || tin,
+            logoUrl: user?.LogoUrl || null,
+            modules: user?.modules ?? undefined,
+            businessType: user?.businessType || null,
+            hotelPhone: "",
+          },
+        });
+      }
+      return {
+        tinNumber: account.tinNumber,
+        hotelPhone: String(account.hotelPhone ?? ""),
+        hotelDisplayName: account.hotelDisplayName,
+      };
     },
     purchaseRequests: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -5373,6 +5410,39 @@ const resolvers = {
         },
       });
       return true;
+    },
+
+    updateTenantHotelPhone: async (_, { hotelPhone }, context) => {
+      assertRole(context, ["Manager"]);
+      const tin = tenantScopeFromContext(context);
+      if (!tin) throw new Error("Tenant scope required");
+      const phone = String(hotelPhone ?? "").trim().slice(0, 40);
+      const user = await prisma.user.findFirst({
+        where: { tinNumber: tin },
+        select: {
+          HotelName: true,
+          LogoUrl: true,
+          modules: true,
+          businessType: true,
+        },
+      });
+      const account = await prisma.tenant_account.upsert({
+        where: { tinNumber: tin },
+        create: {
+          tinNumber: tin,
+          hotelDisplayName: String(user?.HotelName || tin).trim() || tin,
+          logoUrl: user?.LogoUrl || null,
+          modules: user?.modules ?? undefined,
+          businessType: user?.businessType || null,
+          hotelPhone: phone,
+        },
+        update: { hotelPhone: phone },
+      });
+      return {
+        tinNumber: account.tinNumber,
+        hotelPhone: String(account.hotelPhone ?? ""),
+        hotelDisplayName: account.hotelDisplayName,
+      };
     },
 
     createPurchaseRequest: async (

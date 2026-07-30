@@ -202,6 +202,8 @@ model tenant_account {
   hotelDisplayName String
   businessType     String?
   logoUrl          String?
+  /// Front-desk / guest call-center number (Room Management). Dialed from hotcol-room.
+  hotelPhone       String   @default("")
   /// Subscribed modules (canonical list for the property)
   modules          Json?
   /// active | suspended | banned | deleted — subscription/setup states remain on owner `user` row
@@ -866,6 +868,12 @@ model lodging_stay {
   notes            String    @db.Text
   checkedInBy      String    @default("")
   checkedOutBy     String    @default("")
+  /// Guest room portal OTP (6 digits). Unique among active stays (enforced at issue time).
+  /// Guests enter only this code — no TIN / stay id required. Cleared on checkout.
+  guestOtp         String?
+  /// Legacy hash field (unused by OTP-only portal).
+  guestOtpHash     String?
+  guestOtpIssuedAt DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -880,6 +888,7 @@ model lodging_stay {
   @@index([guestId])
   @@index([arrivalAt])
   @@index([departureAt])
+  @@index([guestOtp])
 }
 
 model lodging_stay_room {
