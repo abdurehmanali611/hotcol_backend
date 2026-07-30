@@ -83,7 +83,7 @@ export const lodgingTypeDefsBlock = `
     unitPriceETB: Float!
     amountETB: Float!
     roomNumber: String!
-    /// pending | completed | cancelled
+    # pending | completed | cancelled
     fulfillmentStatus: String!
     fulfilledAt: DateTime
     fulfilledBy: String!
@@ -289,7 +289,7 @@ export const lodgingMutationFields = `
     ): LodgingBillLine!
     updateLodgingBillLine(lineId: Int!, quantity: Float!): LodgingBillLine!
     deleteLodgingBillLine(lineId: Int!): Boolean!
-    /// Reception/Manager: mark laundry (or sync) line fulfillment. Use completed | cancelled | pending.
+    # Reception/Manager: mark laundry fulfillment. Use completed | cancelled | pending.
     setLodgingBillLineFulfillment(lineId: Int!, status: String!): LodgingBillLine!
     transferLodgingBillLines(lineIds: [Int!]!, toStayId: Int!): LodgingBill!
     splitLodgingBillLine(
