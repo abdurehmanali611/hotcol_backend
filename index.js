@@ -926,6 +926,7 @@ const typeDefs = gql`
     type TenantHotelContact {
       tinNumber: String!
       hotelPhone: String!
+      hotelPhoneSecondary: String!
       hotelDisplayName: String!
     }
 
@@ -1475,7 +1476,7 @@ const typeDefs = gql`
 
     upsertDepartmentLeader(department: String!, leaderName: String!): DepartmentLeader!
     deleteDepartmentLeader(department: String!): Boolean!
-    updateTenantHotelPhone(hotelPhone: String!): TenantHotelContact!
+    updateTenantHotelPhone(hotelPhone: String!, hotelPhoneSecondary: String): TenantHotelContact!
 
     createPurchaseRequest(
       itemName: String!
@@ -2906,12 +2907,14 @@ const resolvers = {
             modules: user?.modules ?? undefined,
             businessType: user?.businessType || null,
             hotelPhone: "",
+            hotelPhoneSecondary: "",
           },
         });
       }
       return {
         tinNumber: account.tinNumber,
         hotelPhone: String(account.hotelPhone ?? ""),
+        hotelPhoneSecondary: String(account.hotelPhoneSecondary ?? ""),
         hotelDisplayName: account.hotelDisplayName,
       };
     },
@@ -5412,11 +5415,17 @@ const resolvers = {
       return true;
     },
 
-    updateTenantHotelPhone: async (_, { hotelPhone }, context) => {
+    updateTenantHotelPhone: async (
+      _,
+      { hotelPhone, hotelPhoneSecondary },
+      context,
+    ) => {
       assertRole(context, ["Manager"]);
       const tin = tenantScopeFromContext(context);
       if (!tin) throw new Error("Tenant scope required");
       const phone = String(hotelPhone ?? "").trim().slice(0, 40);
+      const phone2 = String(hotelPhoneSecondary ?? "").trim().slice(0, 40);
+      if (!phone) throw new Error("Primary hotel phone is required");
       const user = await prisma.user.findFirst({
         where: { tinNumber: tin },
         select: {
@@ -5435,12 +5444,17 @@ const resolvers = {
           modules: user?.modules ?? undefined,
           businessType: user?.businessType || null,
           hotelPhone: phone,
+          hotelPhoneSecondary: phone2,
         },
-        update: { hotelPhone: phone },
+        update: {
+          hotelPhone: phone,
+          hotelPhoneSecondary: phone2,
+        },
       });
       return {
         tinNumber: account.tinNumber,
         hotelPhone: String(account.hotelPhone ?? ""),
+        hotelPhoneSecondary: String(account.hotelPhoneSecondary ?? ""),
         hotelDisplayName: account.hotelDisplayName,
       };
     },

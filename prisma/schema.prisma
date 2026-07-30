@@ -202,8 +202,10 @@ model tenant_account {
   hotelDisplayName String
   businessType     String?
   logoUrl          String?
-  /// Front-desk / guest call-center number (Room Management). Dialed from hotcol-room.
+  /// Front-desk / guest call-center primary number (required for guest dialer).
   hotelPhone       String   @default("")
+  /// Optional second line guests can choose when calling from HotCol Room.
+  hotelPhoneSecondary String @default("")
   /// Subscribed modules (canonical list for the property)
   modules          Json?
   /// active | suspended | banned | deleted — subscription/setup states remain on owner `user` row
