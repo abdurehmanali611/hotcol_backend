@@ -3,6 +3,8 @@
  * Wired into BackEnd/index.js (types + Query/Mutation fields + resolvers).
  */
 
+import { issueUniqueGuestOtp } from "./lib/guestOtp.js";
+
 const ROOM_STATUSES = new Set([
   "vacant_dirty",
   "occupied",
@@ -120,6 +122,9 @@ export const lodgingTypeDefsBlock = `
     notes: String!
     checkedInBy: String!
     checkedOutBy: String!
+    # Guest room portal code (6 digits). Issued at check-in for reception to share with guest.
+    guestOtp: String
+    guestOtpIssuedAt: DateTime
     createdAt: DateTime!
     updatedAt: DateTime!
     guest: LodgingGuest!
@@ -298,6 +303,8 @@ export const lodgingMutationFields = `
       toStayId: Int!
     ): LodgingBill!
     checkoutLodgingStay(stayId: Int!, departureAt: DateTime!): LodgingStay!
+    # Issue or re-issue guest portal OTP for a checked-in stay (e.g. guest forgot).
+    issueLodgingGuestOtp(stayId: Int!): LodgingStay!
     registerLodgingServiceCharge(
       stayId: Int!
       serviceItemId: Int!
@@ -1686,6 +1693,20 @@ export function createLodgingResolvers({
           },
         });
 
+        if (stayStatus === "checked_in") {
+          const otp = await issueUniqueGuestOtp(prisma, stay.id);
+          await logLodgingAction(prisma, {
+            HotelName,
+            actorRole,
+            actorName,
+            action: "issue_guest_otp",
+            entityType: "lodging_stay",
+            entityId: stay.id,
+            stayId: stay.id,
+            detail: { guestOtp: otp, reason: "check_in" },
+          });
+        }
+
         return prisma.lodging_stay.findUnique({
           where: { id: stay.id },
           include: STAY_INCLUDE,
@@ -1778,6 +1799,28 @@ export function createLodgingResolvers({
             data.nights,
             actorName,
           );
+        }
+
+        const becameCheckedIn =
+          data.status === "checked_in" && stay.status !== "checked_in";
+        if (
+          (becameCheckedIn || updated.status === "checked_in") &&
+          !String(updated.guestOtp || "").trim()
+        ) {
+          const otp = await issueUniqueGuestOtp(prisma, stay.id);
+          await logLodgingAction(prisma, {
+            HotelName: stay.HotelName,
+            actorRole,
+            actorName,
+            action: "issue_guest_otp",
+            entityType: "lodging_stay",
+            entityId: stay.id,
+            stayId: stay.id,
+            detail: {
+              guestOtp: otp,
+              reason: becameCheckedIn ? "check_in" : "missing_otp",
+            },
+          });
         }
 
         await logLodgingAction(prisma, {
@@ -2316,6 +2359,35 @@ export function createLodgingResolvers({
         return updated;
       },
 
+      issueLodgingGuestOtp: async (_, { stayId }, context) => {
+        assertReceptionOrManager(context);
+        const stay = await loadStayOrThrow(
+          prisma,
+          context,
+          stayId,
+          tenantHotelReadMatches,
+        );
+        if (stay.status !== "checked_in") {
+          throw new Error("Room code can only be issued for checked-in stays");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const otp = await issueUniqueGuestOtp(prisma, stay.id);
+        await logLodgingAction(prisma, {
+          HotelName: stay.HotelName,
+          actorRole,
+          actorName,
+          action: "issue_guest_otp",
+          entityType: "lodging_stay",
+          entityId: stay.id,
+          stayId: stay.id,
+          detail: { guestOtp: otp, reason: "reissue" },
+        });
+        return prisma.lodging_stay.findUnique({
+          where: { id: stay.id },
+          include: STAY_INCLUDE,
+        });
+      },
+
       checkoutLodgingStay: async (_, { stayId, departureAt }, context) => {
         assertReceptionOrManager(context);
         const stay = await loadStayOrThrow(
@@ -2390,6 +2462,8 @@ export function createLodgingResolvers({
               departureAt: dep,
               nights: nightsN,
               checkedOutBy: actorName,
+              guestOtp: null,
+              guestOtpIssuedAt: null,
             },
           });
 
