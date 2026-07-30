@@ -84,6 +84,7 @@ import {
   stayIdFromRoomServiceTableNo,
   removeRoomServiceOrderFromLodgingBill,
   syncLodgingBillForRoomServiceOrderUpdate,
+  syncCafeOrderFulfillmentToBillLine,
 } from "./lodgingGraphql.js";
 
 const prisma = createPrismaClient();
@@ -4653,6 +4654,22 @@ const resolvers = {
         } catch (err) {
           console.warn(
             "[hotcol] Failed to remove cancelled room-service order from lodging bill:",
+            err?.message || err,
+          );
+        }
+      } else if (
+        (nextLower === "completed" || nextLower === "pending") &&
+        isRoomServiceTableNo(updatedOrder.tableNo)
+      ) {
+        try {
+          await syncCafeOrderFulfillmentToBillLine(
+            prisma,
+            updatedOrder,
+            cancelledByLabelFromUser(authCtx.user) || authCtx.user?.name || "",
+          );
+        } catch (err) {
+          console.warn(
+            "[hotcol] Failed to sync room-service fulfillment to lodging bill:",
             err?.message || err,
           );
         }

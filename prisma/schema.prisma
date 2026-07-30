@@ -938,6 +938,10 @@ model lodging_bill_line {
   amountETB   Float    @default(0)
   /// Room number context for split/transfer (display / matching).
   roomNumber  String   @default("")
+  /// pending | completed | cancelled — line fulfillment (laundry by reception; F&B mirrors café Order).
+  fulfillmentStatus String @default("pending")
+  fulfilledAt DateTime?
+  fulfilledBy String   @default("")
   createdAt   DateTime @default(now())
   createdBy   String   @default("")
 
@@ -945,6 +949,7 @@ model lodging_bill_line {
 
   @@index([billId])
   @@index([kind])
+  @@index([fulfillmentStatus])
 }
 
 /// Manager-priced laundry / F&B catalog for lodging services.

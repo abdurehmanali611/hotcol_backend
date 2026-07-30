@@ -83,6 +83,10 @@ export const lodgingTypeDefsBlock = `
     unitPriceETB: Float!
     amountETB: Float!
     roomNumber: String!
+    /// pending | completed | cancelled
+    fulfillmentStatus: String!
+    fulfilledAt: DateTime
+    fulfilledBy: String!
     createdAt: DateTime!
     createdBy: String!
   }
@@ -285,6 +289,8 @@ export const lodgingMutationFields = `
     ): LodgingBillLine!
     updateLodgingBillLine(lineId: Int!, quantity: Float!): LodgingBillLine!
     deleteLodgingBillLine(lineId: Int!): Boolean!
+    /// Reception/Manager: mark laundry (or sync) line fulfillment. Use completed | cancelled | pending.
+    setLodgingBillLineFulfillment(lineId: Int!, status: String!): LodgingBillLine!
     transferLodgingBillLines(lineIds: [Int!]!, toStayId: Int!): LodgingBill!
     splitLodgingBillLine(
       lineId: Int!
@@ -522,6 +528,12 @@ async function assertFoodDrinkLinesCompleted(prisma, lines, HotelName) {
   }
 
   for (const line of foodLines) {
+    if (String(line.fulfillmentStatus || "").toLowerCase() === "cancelled") {
+      continue;
+    }
+    if (String(line.fulfillmentStatus || "").toLowerCase() === "completed") {
+      continue;
+    }
     const oid = cafeOrderIdFromBillDescription(line.description);
     let order = oid != null ? byId.get(oid) : null;
     if (!order && oid == null) {
@@ -555,6 +567,19 @@ async function assertFoodDrinkLinesCompleted(prisma, lines, HotelName) {
         `Food & drink "${order.title}" is ${order.status || "Pending"} — wait until Completed`,
       );
     }
+  }
+}
+
+/** Laundry lines must be completed (or cancelled) before checkout. */
+async function assertLaundryLinesCompleted(lines) {
+  for (const line of lines || []) {
+    if (String(line.kind || "").toLowerCase() !== "laundry") continue;
+    const st = String(line.fulfillmentStatus || "pending").toLowerCase();
+    if (st === "cancelled" || st === "completed") continue;
+    const label = String(line.description || "Laundry").split(" · ")[0].trim();
+    throw new Error(
+      `Laundry "${label}" is still pending — reception must mark it completed before checkout`,
+    );
   }
 }
 
@@ -639,7 +664,15 @@ export async function removeRoomServiceOrderFromLodgingBill(prisma, order) {
   }
 
   if (!match) return false;
-  await prisma.lodging_bill_line.delete({ where: { id: match.id } });
+  await prisma.lodging_bill_line.update({
+    where: { id: match.id },
+    data: {
+      fulfillmentStatus: "cancelled",
+      fulfilledAt: new Date(),
+      fulfilledBy: String(order.cancelledBy || "Kitchen/Bar").trim(),
+      amountETB: 0,
+    },
+  });
   await recalcBillTotal(prisma, stay.bill.id);
   return true;
 }
@@ -863,14 +896,72 @@ function guestDataFromInput(input, HotelName) {
 async function recalcBillTotal(prisma, billId) {
   const lines = await prisma.lodging_bill_line.findMany({
     where: { billId },
-    select: { amountETB: true },
+    select: { amountETB: true, fulfillmentStatus: true },
   });
-  const totalETB = lines.reduce((s, l) => s + Number(l.amountETB || 0), 0);
+  const totalETB = lines.reduce((s, l) => {
+    if (String(l.fulfillmentStatus || "").toLowerCase() === "cancelled") {
+      return s;
+    }
+    return s + Number(l.amountETB || 0);
+  }, 0);
   return prisma.lodging_bill.update({
     where: { id: billId },
     data: { totalETB },
     include: { lines: { orderBy: { id: "asc" } } },
   });
+}
+
+function normalizeFulfillmentStatus(raw) {
+  const s = String(raw || "pending").trim().toLowerCase();
+  if (s === "completed" || s === "cancelled" || s === "pending") return s;
+  return null;
+}
+
+/**
+ * Mirror café Order status onto the linked food_drink bill line (room service).
+ */
+export async function syncCafeOrderFulfillmentToBillLine(prisma, order, actorLabel = "") {
+  if (!order || !isRoomServiceTableNo(order.tableNo)) return false;
+  const stayId = stayIdFromRoomServiceTableNo(order.tableNo);
+  if (!stayId) return false;
+  const stay = await prisma.lodging_stay.findUnique({
+    where: { id: stayId },
+    include: {
+      bill: { include: { lines: { orderBy: { id: "asc" } } } },
+    },
+  });
+  if (!stay?.bill) return false;
+
+  const oid = Number(order.id);
+  const match = stay.bill.lines.find(
+    (l) =>
+      String(l.kind || "").toLowerCase() === "food_drink" &&
+      cafeOrderIdFromBillDescription(l.description) === oid,
+  );
+  if (!match) return false;
+
+  const st = String(order.status || "").toLowerCase();
+  let fulfillmentStatus = "pending";
+  if (st === "completed") fulfillmentStatus = "completed";
+  if (st === "cancelled") fulfillmentStatus = "cancelled";
+
+  const data = {
+    fulfillmentStatus,
+    fulfilledAt:
+      fulfillmentStatus === "pending" ? null : new Date(),
+    fulfilledBy:
+      fulfillmentStatus === "pending" ? "" : String(actorLabel || "").trim(),
+  };
+  if (fulfillmentStatus === "cancelled") {
+    data.amountETB = 0;
+  }
+
+  await prisma.lodging_bill_line.update({
+    where: { id: match.id },
+    data,
+  });
+  await recalcBillTotal(prisma, stay.bill.id);
+  return true;
 }
 
 async function loadStayOrThrow(
@@ -1785,6 +1876,12 @@ export function createLodgingResolvers({
         ) {
           throw new Error("Stay is closed");
         }
+        if (String(line.fulfillmentStatus || "").toLowerCase() === "completed") {
+          throw new Error("Completed lines cannot be edited");
+        }
+        if (String(line.fulfillmentStatus || "").toLowerCase() === "cancelled") {
+          throw new Error("Cancelled lines cannot be edited");
+        }
         const qty = Number(quantity);
         if (!(qty > 0)) throw new Error("Quantity must be positive");
         if (!Number.isInteger(qty) && String(line.kind).toLowerCase() === "food_drink") {
@@ -1892,7 +1989,20 @@ export function createLodgingResolvers({
           }
         }
 
-        await prisma.lodging_bill_line.delete({ where: { id: line.id } });
+        const kind = String(line.kind || "").toLowerCase();
+        if (kind === "laundry" || kind === "food_drink") {
+          await prisma.lodging_bill_line.update({
+            where: { id: line.id },
+            data: {
+              fulfillmentStatus: "cancelled",
+              fulfilledAt: new Date(),
+              fulfilledBy: actorName || "Reception",
+              amountETB: 0,
+            },
+          });
+        } else {
+          await prisma.lodging_bill_line.delete({ where: { id: line.id } });
+        }
         await recalcBillTotal(prisma, billId);
         await logLodgingAction(prisma, {
           HotelName,
@@ -1902,9 +2012,94 @@ export function createLodgingResolvers({
           entityType: "lodging_bill_line",
           entityId: line.id,
           stayId,
-          detail: { description: line.description },
+          detail: { description: line.description, softCancel: kind === "laundry" || kind === "food_drink" },
         });
         return true;
+      },
+
+      setLodgingBillLineFulfillment: async (_, { lineId, status }, context) => {
+        assertReceptionOrManager(context);
+        const next = normalizeFulfillmentStatus(status);
+        if (!next) {
+          throw new Error("Status must be pending, completed, or cancelled");
+        }
+
+        const line = await prisma.lodging_bill_line.findUnique({
+          where: { id: Number(lineId) },
+          include: { bill: { include: { stay: true } } },
+        });
+        if (!line?.bill?.stay) throw new Error("Bill line not found");
+        if (!tenantHotelReadMatches(context, line.bill.stay.HotelName)) {
+          throw new Error("Bill line not found");
+        }
+        if (line.bill.status !== "open") throw new Error("Bill is not open");
+        if (
+          line.bill.stay.status === "checked_out" ||
+          line.bill.stay.status === "cancelled"
+        ) {
+          throw new Error("Stay is closed");
+        }
+
+        const kind = String(line.kind || "").toLowerCase();
+        // Completeness for laundry is receptionist-owned.
+        // F&B completion stays with kitchen/bar (café Order) — reception may only cancel via delete.
+        if (next === "completed" && kind !== "laundry") {
+          throw new Error(
+            "Only laundry lines can be marked completed by reception. Food & drink is completed by kitchen or bar.",
+          );
+        }
+        if (kind !== "laundry" && kind !== "food_drink") {
+          throw new Error("Fulfillment applies to laundry and food & drink lines");
+        }
+
+        const { actorName, actorRole } = actorFromContext(context);
+        const unit = Number(line.unitPriceETB) || 0;
+        const qty = Number(line.quantity) || 0;
+
+        if (next === "cancelled" && kind === "food_drink") {
+          const oid = cafeOrderIdFromBillDescription(line.description);
+          if (oid != null) {
+            const cafeOrder = await prisma.order.findUnique({ where: { id: oid } });
+            if (
+              cafeOrder &&
+              String(cafeOrder.payment || "").toLowerCase() !== "paid" &&
+              String(cafeOrder.status || "").toLowerCase() !== "cancelled"
+            ) {
+              await prisma.order.update({
+                where: { id: cafeOrder.id },
+                data: {
+                  status: "Cancelled",
+                  cancelledBy: actorName || "Reception",
+                  orderRevisedAt: null,
+                  orderRevisionCount: 0,
+                },
+              });
+            }
+          }
+        }
+
+        const updated = await prisma.lodging_bill_line.update({
+          where: { id: line.id },
+          data: {
+            fulfillmentStatus: next,
+            fulfilledAt: next === "pending" ? null : new Date(),
+            fulfilledBy: next === "pending" ? "" : actorName || "Reception",
+            amountETB:
+              next === "cancelled" ? 0 : Math.max(0, qty) * unit,
+          },
+        });
+        await recalcBillTotal(prisma, line.billId);
+        await logLodgingAction(prisma, {
+          HotelName: line.bill.stay.HotelName,
+          actorRole,
+          actorName,
+          action: "set_bill_line_fulfillment",
+          entityType: "lodging_bill_line",
+          entityId: line.id,
+          stayId: line.bill.stay.id,
+          detail: { status: next, kind },
+        });
+        return updated;
       },
 
       transferLodgingBillLines: async (_, { lineIds, toStayId }, context) => {
@@ -2171,6 +2366,7 @@ export function createLodgingResolvers({
           stayFresh.bill?.lines ?? [],
           stayFresh.HotelName,
         );
+        await assertLaundryLinesCompleted(stayFresh.bill?.lines ?? []);
 
         await prisma.$transaction(async (tx) => {
           await syncRoomNightCharges(tx, stayFresh, nightsN, actorName);
