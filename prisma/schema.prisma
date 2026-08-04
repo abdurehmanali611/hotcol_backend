@@ -344,7 +344,8 @@ model Order {
   /// Selling unit price frozen at order time (not updated when Item.price changes).
   price       Float
   /// Ingredient cost per serving frozen at order time (from Item.recipeJson).
-  /// Null when the menu item had no recipe; legacy rows fall back to live recipe.
+  /// Null when the menu item had no recipe at sale — those lines have no profit.
+  /// Updating Item.recipeJson later must NOT rewrite this field on existing orders.
   unitCostAtSale Float?
   waiterName  String
   status      String?

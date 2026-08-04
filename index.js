@@ -4041,8 +4041,10 @@ const resolvers = {
       if (!authCtx) throw new Error("Not Authenticated");
 
       const hotelName = tenantScopeFromContext(authCtx);
+      // Use read where (TIN + legacy display name) so recipe freeze finds the
+      // same menu items cashiers see — TIN-only missed legacy-keyed recipes.
       const menuItems = await prisma.item.findMany({
-        where: { HotelName: hotelName },
+        where: tenantHotelReadWhere(authCtx),
         select: { name: true, recipeJson: true },
       });
       const ordersWithCaptions = await Promise.all(
@@ -4214,7 +4216,7 @@ const resolvers = {
         const [serviceCaption, menuItems] = await Promise.all([
           serviceCaptionForTableNo(tableNo, authCtx),
           prisma.item.findMany({
-            where: { HotelName: hotelName },
+            where: tenantHotelReadWhere(authCtx),
             select: { name: true, recipeJson: true },
           }),
         ]);
@@ -4359,7 +4361,7 @@ const resolvers = {
         data.title != null ? data.title : order.title;
       if (data.title != null && String(data.title) !== String(order.title)) {
         const menuItems = await prisma.item.findMany({
-          where: { HotelName: tenantScopeFromContext(authCtx) },
+          where: tenantHotelReadWhere(authCtx),
           select: { name: true, recipeJson: true },
         });
         data.unitCostAtSale = unitCostAtSaleFromItems(menuItems, nextTitle);
@@ -4546,6 +4548,9 @@ const resolvers = {
         if (!item || !tenantHotelReadMatches(context, item.HotelName)) {
           throw new Error("Item not found or not authorized");
         }
+        // Update menu recipe / price only. Do NOT rewrite Order.unitCostAtSale —
+        // historical lines keep the cost frozen at their sale time; new orders
+        // pick up the updated recipe on the next create.
         const updated = await prisma.item.update({
           where: { id: id },
           data: {

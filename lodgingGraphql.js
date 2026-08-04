@@ -499,6 +499,12 @@ async function splitCafeOrderForBillLine(
       orderAmount: move,
       HotelName: order.HotelName,
       price: order.price,
+      // Keep frozen ingredient cost so profit reports stay accurate after splits.
+      unitCostAtSale:
+        order.unitCostAtSale != null &&
+        Number.isFinite(Number(order.unitCostAtSale))
+          ? Number(order.unitCostAtSale)
+          : null,
       waiterName: order.waiterName || actorName || "Reception",
       status: order.status || "Pending",
       payment: order.payment || "Unpaid",
