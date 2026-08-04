@@ -29,6 +29,7 @@ const DUMMY_LEADER_NAMES = {
   GM: "General Manager Demo",
   FB_SERVICE: "Fikadu F&B",
   STORE: "Store Lead Demo",
+  PURCHASER: "Purchaser Lead Demo",
 };
 
 const dryRun = process.argv.includes("--dry-run");

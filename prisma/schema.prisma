@@ -523,6 +523,8 @@ model ItemStatus {
 }
 
 /// One named leader per department per hotel (manager-maintained).
+/// Departments: KITCHEN, BAR, HOUSE_KEEPING_*, SECURITY, MAINTENANCE, FINANCE,
+/// HR, GM, FB_SERVICE, STORE, PURCHASER.
 model DepartmentLeader {
   id         Int      @id @default(autoincrement())
   HotelName  String
