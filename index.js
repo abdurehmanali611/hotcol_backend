@@ -86,6 +86,12 @@ import {
   syncLodgingBillForRoomServiceOrderUpdate,
   syncCafeOrderFulfillmentToBillLine,
 } from "./lodgingGraphql.js";
+import {
+  hrTypeDefsBlock,
+  hrQueryFields,
+  hrMutationFields,
+  createHrResolvers,
+} from "./hrGraphql.js";
 
 const prisma = createPrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
@@ -193,6 +199,7 @@ const ROLE_REQUIRED_MODULE = {
   HotelCashier: "Credit Management",
   Reception: "Room Management",
   CMLeader: "Cleaning and Maintenance",
+  HR: "HR Module",
 };
 
 function tenantHasModule(modules, required) {
@@ -1118,6 +1125,8 @@ const typeDefs = gql`
 
   ${lodgingTypeDefsBlock}
 
+  ${hrTypeDefsBlock}
+
   type Query {
     users: [User!]!
     items: [Item!]!
@@ -1156,6 +1165,7 @@ const typeDefs = gql`
     """
     signupRegistrationStatus(username: String!): SignupRegistrationStatus!
     ${lodgingQueryFields}
+    ${hrQueryFields}
   }
 
   type SignupPricingPreview {
@@ -1705,6 +1715,7 @@ const typeDefs = gql`
     deleteHotelCorporateCreditTier(id: Int!): Boolean!
 
     ${lodgingMutationFields}
+    ${hrMutationFields}
   }
 `;
 
@@ -2677,6 +2688,16 @@ const lodgingResolvers = createLodgingResolvers({
   assertAuthenticated,
 });
 
+const hrResolvers = createHrResolvers({
+  prisma,
+  tenantScopeFromContext,
+  tenantHotelReadWhere,
+  tenantHotelReadMatches,
+  assertRole,
+  assertAdminOrManager,
+  assertAuthenticated,
+});
+
 const resolvers = {
   JSON: GraphQLJSON,
   DateTime: DateTimeResolver,
@@ -2725,6 +2746,7 @@ const resolvers = {
   },
   Query: {
     ...lodgingResolvers.Query,
+    ...hrResolvers.Query,
     users: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.user.findMany({
@@ -7759,6 +7781,7 @@ const resolvers = {
     },
 
     ...lodgingResolvers.Mutation,
+    ...hrResolvers.Mutation,
   },
 };
 
