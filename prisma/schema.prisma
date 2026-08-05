@@ -653,12 +653,12 @@ model FreshBazaar {
   @@index([stockOutRequestId])
 }
 
-/// Daily chef / bar count rows (opening pulse, documented stock-out, closing on-hand).
+/// Daily kitchen / bar / room count rows (opening pulse, documented stock-out, closing on-hand).
 /// Implied movement for a day is derived when the next day’s opening is recorded: opening + stockOut − nextOpening.
 model KitchenBarBeginning {
   id          Int      @id @default(autoincrement())
   HotelName   String
-  /// CHEF | BAR
+  /// KITCHEN | BAR | ROOM (legacy CHEF normalized to KITCHEN)
   station     String
   itemName    String
   /// Opening pulse — count at the start of calendarDate (same unit as inventory).
@@ -672,6 +672,8 @@ model KitchenBarBeginning {
   stockOutDay    Float    @default(0)
   /// Units issued from station stock to management in that day.
   managementTakenDay Float @default(0)
+  /// Units issued from station stock for invitations in that day (same ONHAND treatment as management).
+  invitationTakenDay Float @default(0)
   /// Physical on-hand at end of day (lights-out snapshot).
   closingOnHand  Float    @default(0)
   notes       String   @default("")

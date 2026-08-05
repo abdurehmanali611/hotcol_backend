@@ -1037,6 +1037,7 @@ const typeDefs = gql`
     calendarDate: String!
     stockOutDay: Float!
     managementTakenDay: Float!
+    invitationTakenDay: Float!
     closingOnHand: Float!
     notes: String!
     createdAt: DateTime!
@@ -1607,6 +1608,7 @@ const typeDefs = gql`
       amount: Float!
       measuredBy: String!
       managementTakenDay: Float
+      invitationTakenDay: Float
       monthPeriod: String
       calendarDate: String!
       notes: String
@@ -1619,6 +1621,7 @@ const typeDefs = gql`
       amount: Float!
       measuredBy: String!
       managementTakenDay: Float
+      invitationTakenDay: Float
       monthPeriod: String
       calendarDate: String!
       notes: String
@@ -1991,6 +1994,9 @@ function normalizeKitchenBarStation(raw) {
   if (!s) return "OTHER";
   if (s === "chef" || s === "kitchen" || s === "chef (kitchen)") return "KITCHEN";
   if (s === "bar" || s === "barista") return "BAR";
+  if (s === "room" || s === "rooms" || s === "in room" || s === "in-room") {
+    return "ROOM";
+  }
   if (s === "juicer") return "JUICER";
   if (s === "cleaning service" || s === "cleaning") return "CLEANING";
   if (s === "housekeeping") return "HOUSEKEEPING";
@@ -1999,6 +2005,7 @@ function normalizeKitchenBarStation(raw) {
   const up = String(raw ?? "").trim().toUpperCase();
   if (up === "CHEF" || up === "KITCHEN") return "KITCHEN";
   if (up === "BAR") return "BAR";
+  if (up === "ROOM") return "ROOM";
   return up.replace(/\s+/g, "_") || "OTHER";
 }
 
@@ -2025,11 +2032,18 @@ function prevPhysicalLights(prevRow) {
   return c > 0 ? c : a;
 }
 
-function computeClosingOnHand(opening, stockOutSum, managementTakenDay, prevRow) {
+function computeClosingOnHand(
+  opening,
+  stockOutSum,
+  managementTakenDay,
+  prevRow,
+  invitationTakenDay = 0,
+) {
   const prevLights = prevPhysicalLights(prevRow);
   const salesToday = prevLights != null ? Number(opening) - prevLights : 0;
   const mgmt = Number(managementTakenDay ?? 0);
-  return Number(opening) + Number(stockOutSum) - salesToday - mgmt;
+  const invite = Number(invitationTakenDay ?? 0);
+  return Number(opening) + Number(stockOutSum) - salesToday - mgmt - invite;
 }
 
 function round2(n) {
@@ -2125,6 +2139,7 @@ async function refreshKitchenBarComputedFields(client, row) {
       sum,
       Number(row.managementTakenDay ?? 0),
       prev,
+      Number(row.invitationTakenDay ?? 0),
     ),
   );
   return client.kitchenBarBeginning.update({
@@ -6961,6 +6976,7 @@ const resolvers = {
         amount,
         measuredBy,
         managementTakenDay,
+        invitationTakenDay,
         monthPeriod,
         notes,
         calendarDate,
@@ -7014,6 +7030,7 @@ const resolvers = {
       );
       const opening = round2(Number(amount));
       const mgmtTaken = round2(Number(managementTakenDay ?? 0));
+      const inviteTaken = round2(Number(invitationTakenDay ?? 0));
       const prev = await findPreviousKitchenBarRow(
         prisma,
         tenant,
@@ -7021,7 +7038,9 @@ const resolvers = {
         item,
         cal,
       );
-      const closing = round2(computeClosingOnHand(opening, sum, mgmtTaken, prev));
+      const closing = round2(
+        computeClosingOnHand(opening, sum, mgmtTaken, prev, inviteTaken),
+      );
       return await prisma.kitchenBarBeginning.create({
         data: {
           HotelName: tenant,
@@ -7033,6 +7052,7 @@ const resolvers = {
           calendarDate: cal,
           stockOutDay: round2(sum),
           managementTakenDay: mgmtTaken,
+          invitationTakenDay: inviteTaken,
           closingOnHand: closing,
           notes: notes ?? "",
         },
@@ -7048,6 +7068,7 @@ const resolvers = {
         amount,
         measuredBy,
         managementTakenDay,
+        invitationTakenDay,
         monthPeriod,
         notes,
         calendarDate,
@@ -7107,6 +7128,7 @@ const resolvers = {
       );
       const opening = round2(Number(amount));
       const mgmtTaken = round2(Number(managementTakenDay ?? 0));
+      const inviteTaken = round2(Number(invitationTakenDay ?? 0));
       const prev = await findPreviousKitchenBarRow(
         prisma,
         row.HotelName,
@@ -7114,7 +7136,9 @@ const resolvers = {
         item,
         cal,
       );
-      const closing = round2(computeClosingOnHand(opening, sum, mgmtTaken, prev));
+      const closing = round2(
+        computeClosingOnHand(opening, sum, mgmtTaken, prev, inviteTaken),
+      );
       return await prisma.kitchenBarBeginning.update({
         where: { id },
         data: {
@@ -7126,6 +7150,7 @@ const resolvers = {
           calendarDate: cal,
           stockOutDay: round2(sum),
           managementTakenDay: mgmtTaken,
+          invitationTakenDay: inviteTaken,
           closingOnHand: closing,
           notes: notes ?? "",
         },
