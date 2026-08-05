@@ -1059,6 +1059,24 @@ model hr_employee {
   @@index([HotelName])
   @@index([HotelName, status])
   @@index([HotelName, department])
+  @@index([HotelName, credentialUserName])
+}
+
+/// HR — tenant-configured leave types (empty until HR adds them)
+model hr_leave_type {
+  id          Int      @id @default(autoincrement())
+  HotelName   String
+  code        String
+  label       String
+  paid        Boolean  @default(true)
+  defaultDays Float    @default(0)
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([HotelName, code])
+  @@index([HotelName])
 }
 
 model hr_leave_balance {
