@@ -334,18 +334,24 @@ async function resolveTenantSubscription(prismaClient, user) {
     user.tinNumber != null && String(user.tinNumber).trim() !== ""
       ? String(user.tinNumber).trim()
       : "";
-  const orClauses = [{ id: user.id }];
-  if (tin) orClauses.push({ tinNumber: tin });
-  else if (user.HotelName) orClauses.push({ HotelName: user.HotelName });
 
-  const owner =
-    (await prismaClient.user.findFirst({
-      where: {
-        OR: orClauses,
-        Role: { in: ["Admin", "Manager"] },
-      },
-      orderBy: { id: "asc" },
-    })) || user;
+  // Admin/Manager already carry billing + modules — skip the extra owner lookup.
+  const role = String(user.Role ?? "").trim();
+  let owner = user;
+  if (role !== "Admin" && role !== "Manager") {
+    const orClauses = [{ id: user.id }];
+    if (tin) orClauses.push({ tinNumber: tin });
+    else if (user.HotelName) orClauses.push({ HotelName: user.HotelName });
+
+    owner =
+      (await prismaClient.user.findFirst({
+        where: {
+          OR: orClauses,
+          Role: { in: ["Admin", "Manager"] },
+        },
+        orderBy: { id: "asc" },
+      })) || user;
+  }
 
   const row = owner;
   const billing = tenantBillingRowFromOwner(row);
@@ -3448,9 +3454,30 @@ const resolvers = {
           ? String(user.tinNumber).trim()
           : String(user.HotelName).trim();
 
-      const tenantAccount = await prisma.tenant_account.findUnique({
-        where: { tinNumber: tenantId },
-      });
+      const tinForBilling =
+        user.tinNumber != null && String(user.tinNumber).trim() !== ""
+          ? String(user.tinNumber).trim()
+          : String(user.HotelName).trim();
+
+      // Run independent reads in parallel — sequential round-trips to Aiven
+      // were stacking several hundred ms each (worse under pool pressure).
+      const [tenantAccount, subscription, pendingSetupRow] = await Promise.all([
+        prisma.tenant_account.findUnique({
+          where: { tinNumber: tenantId },
+        }),
+        resolveTenantSubscription(prisma, user),
+        tinForBilling
+          ? prisma.tenant_payment_submission.findFirst({
+              where: {
+                tinNumber: tinForBilling,
+                paymentKind: "setup",
+                status: "pending",
+              },
+              select: { id: true },
+            })
+          : Promise.resolve(null),
+      ]);
+
       if (tenantAccount?.accountStatus === "deleted") {
         throw new Error(
           tenantAccount.bannedReason?.trim() ||
@@ -3470,26 +3497,13 @@ const resolvers = {
         );
       }
 
-      const subscription = await resolveTenantSubscription(prisma, user);
       if (!roleAllowedForModules(user.Role, subscription.modules)) {
         throw new Error(
           "Your account role is not included in this property's subscribed modules",
         );
       }
 
-      const tinForBilling = await tenantTinFromUser(user);
-      const pendingSetupSubmission = tinForBilling
-        ? Boolean(
-            await prisma.tenant_payment_submission.findFirst({
-              where: {
-                tinNumber: tinForBilling,
-                paymentKind: "setup",
-                status: "pending",
-              },
-              select: { id: true },
-            }),
-          )
-        : false;
+      const pendingSetupSubmission = Boolean(pendingSetupRow);
 
       const periodStatus = computeSubscriptionPeriodStatus(subscription, new Date(), {
         pendingSetupSubmission,
