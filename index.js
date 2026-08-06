@@ -200,7 +200,6 @@ const ROLE_REQUIRED_MODULE = {
   Reception: "Room Management",
   CMLeader: "Cleaning and Maintenance",
   HR: "HR Module",
-  Employee: "HR Module",
 };
 
 function tenantHasModule(modules, required) {
@@ -4033,13 +4032,7 @@ const resolvers = {
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
-      const actorRole = context.user.Role;
-      const creatingEmployeeLogin = String(Role) === "Employee";
-      if (["Admin", "Manager"].includes(actorRole)) {
-        // owners can grant any subscribed staff role, including Employee
-      } else if (actorRole === "HR" && creatingEmployeeLogin) {
-        // HR issues employee self-service logins from employee registration
-      } else {
+      if (!["Admin", "Manager"].includes(actorRole)) {
         throw new Error("Not authorized");
       }
 

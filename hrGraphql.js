@@ -3,13 +3,12 @@
  * Employee master, leave requests + balances, attendance/shifts, document
  * metadata, payroll periods + payslips, incidents/warnings.
  *
- * Explicitly out of scope: job posting, applicants, recruiting pipeline.
+ * Explicitly out of scope: job posting, applicants, recruiting pipeline,
+ * employee self-service login.
  *
  * Wired into BackEnd/index.js (types + Query/Mutation fields + resolvers),
  * following the pattern established by lodgingGraphql.js.
  */
-
-import bcrypt from "bcryptjs";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -21,6 +20,8 @@ const DOC_TYPES = new Set(["contract", "id", "certificate", "other"]);
 const PAYROLL_PERIOD_STATUSES = new Set(["open", "closed"]);
 const INCIDENT_KINDS = new Set(["warning", "complaint", "commendation", "other"]);
 const HR_STAFF_ROLES = ["HR", "Admin", "Manager"];
+/** Leave type config + leave approve/reject. */
+const HR_LEAVE_MANAGER_ROLES = ["Manager", "Admin"];
 
 export const hrTypeDefsBlock = `
   type HrEmployee {
@@ -204,7 +205,6 @@ export const hrMutationFields = `
       baseSalaryETB: Float
       credentialUserId: Int
       credentialUserName: String
-      credentialPassword: String
       notes: String
     ): HrEmployee!
     updateHrEmployee(
@@ -364,32 +364,9 @@ export function createHrResolvers({
   assertAuthenticated,
 }) {
   const assertHrStaff = (context) => assertRole(context, HR_STAFF_ROLES);
-  const assertHrStaffOrEmployee = (context) =>
-    assertRole(context, [...HR_STAFF_ROLES, "Employee"]);
+  const assertLeaveManager = (context) =>
+    assertRole(context, HR_LEAVE_MANAGER_ROLES);
   const assertHrAccess = assertHrStaff;
-
-  function isEmployeeActor(context) {
-    return actorFromContext(context).actorRole === "Employee";
-  }
-
-  async function loadLinkedEmployee(context) {
-    const { actorName } = actorFromContext(context);
-    if (!actorName) return null;
-    return prisma.hr_employee.findFirst({
-      where: {
-        ...tenantHotelReadWhere(context),
-        credentialUserName: actorName,
-      },
-    });
-  }
-
-  async function requireLinkedEmployee(context) {
-    const employee = await loadLinkedEmployee(context);
-    if (!employee) {
-      throw new Error("No employee record is linked to this login");
-    }
-    return employee;
-  }
 
   async function loadEmployeeOrThrow(id) {
     const employee = await prisma.hr_employee.findUnique({
@@ -410,11 +387,7 @@ export function createHrResolvers({
   return {
     Query: {
       hrEmployees: async (_, __, context) => {
-        assertHrStaffOrEmployee(context);
-        if (isEmployeeActor(context)) {
-          const mine = await loadLinkedEmployee(context);
-          return mine ? [mine] : [];
-        }
+        assertHrAccess(context);
         return prisma.hr_employee.findMany({
           where: tenantHotelReadWhere(context),
           orderBy: [{ status: "asc" }, { fullName: "asc" }],
@@ -422,27 +395,23 @@ export function createHrResolvers({
       },
 
       hrEmployee: async (_, { id }, context) => {
-        assertHrStaffOrEmployee(context);
+        assertHrAccess(context);
         const employee = await prisma.hr_employee.findUnique({
           where: { id: Number(id) },
         });
         if (!employee || !tenantHotelReadMatches(context, employee.HotelName)) {
           return null;
         }
-        if (isEmployeeActor(context)) {
-          const mine = await loadLinkedEmployee(context);
-          if (!mine || mine.id !== employee.id) return null;
-        }
         return employee;
       },
 
       hrEmployeeMe: async (_, __, context) => {
-        assertHrStaffOrEmployee(context);
-        return loadLinkedEmployee(context);
+        assertHrAccess(context);
+        return null;
       },
 
       hrLeaveTypes: async (_, __, context) => {
-        assertHrStaffOrEmployee(context);
+        assertHrAccess(context);
         return prisma.hr_leave_type.findMany({
           where: tenantHotelReadWhere(context),
           orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
@@ -450,12 +419,8 @@ export function createHrResolvers({
       },
 
       hrLeaveRequests: async (_, { status }, context) => {
-        assertHrStaffOrEmployee(context);
+        assertHrAccess(context);
         const where = { ...tenantHotelReadWhere(context) };
-        if (isEmployeeActor(context)) {
-          const mine = await requireLinkedEmployee(context);
-          where.employeeId = mine.id;
-        }
         if (status != null && String(status).trim() !== "") {
           const s = String(status).trim();
           if (!LEAVE_STATUSES.has(s)) throw new Error("Invalid leave status");
@@ -469,12 +434,9 @@ export function createHrResolvers({
       },
 
       hrLeaveBalances: async (_, { employeeId }, context) => {
-        assertHrStaffOrEmployee(context);
+        assertHrAccess(context);
         const where = { ...tenantHotelReadWhere(context) };
-        if (isEmployeeActor(context)) {
-          const mine = await requireLinkedEmployee(context);
-          where.employeeId = mine.id;
-        } else if (employeeId != null) {
+        if (employeeId != null) {
           where.employeeId = Number(employeeId);
         }
         return prisma.hr_leave_balance.findMany({
@@ -528,7 +490,7 @@ export function createHrResolvers({
       },
 
       hrPayrollPeriods: async (_, __, context) => {
-        assertHrStaffOrEmployee(context);
+        assertHrAccess(context);
         return prisma.hr_payroll_period.findMany({
           where: tenantHotelReadWhere(context),
           orderBy: { periodKey: "desc" },
@@ -536,20 +498,15 @@ export function createHrResolvers({
       },
 
       hrPayslips: async (_, { periodId }, context) => {
-        assertHrStaffOrEmployee(context);
+        assertHrAccess(context);
         const period = await prisma.hr_payroll_period.findUnique({
           where: { id: Number(periodId) },
         });
         if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
           throw new Error("Payroll period not found");
         }
-        const where = { periodId: period.id };
-        if (isEmployeeActor(context)) {
-          const mine = await requireLinkedEmployee(context);
-          where.employeeId = mine.id;
-        }
         return prisma.hr_payslip.findMany({
-          where,
+          where: { periodId: period.id },
           include: { employee: true },
           orderBy: { employeeId: "asc" },
         });
@@ -615,9 +572,6 @@ export function createHrResolvers({
           hireDate,
           wageType,
           baseSalaryETB,
-          credentialUserId,
-          credentialUserName,
-          credentialPassword,
           notes,
         },
         context,
@@ -632,40 +586,6 @@ export function createHrResolvers({
           hireDate != null && String(hireDate).trim() !== ""
             ? assertYmd(hireDate, "hireDate")
             : "";
-        let credId =
-          credentialUserId != null ? Number(credentialUserId) : null;
-        let credName = String(credentialUserName ?? "").trim();
-        const password = String(credentialPassword ?? "");
-        if (credName && password) {
-          if (password.length < 6) {
-            throw new Error("Password must be at least 6 characters");
-          }
-          const existingUser = await prisma.user.findUnique({
-            where: { UserName: credName },
-          });
-          if (existingUser) {
-            throw new Error(
-              "Username already exists. Please choose a different username.",
-            );
-          }
-          const orgTin =
-            context.user.tinNumber != null &&
-            String(context.user.tinNumber).trim() !== ""
-              ? String(context.user.tinNumber).trim()
-              : HotelName;
-          const createdUser = await prisma.user.create({
-            data: {
-              UserName: credName,
-              Password: await bcrypt.hash(password, 12),
-              HotelName: context.user.HotelName || HotelName,
-              tinNumber: orgTin,
-              Role: "Employee",
-              LogoUrl: context.user.LogoUrl || "",
-              businessType: context.user.businessType || null,
-            },
-          });
-          credId = createdUser.id;
-        }
 
         const employee = await prisma.hr_employee.create({
           data: {
@@ -679,8 +599,8 @@ export function createHrResolvers({
             hireDate: hd,
             wageType: wt,
             baseSalaryETB: round2(Number(baseSalaryETB) || 0),
-            credentialUserId: credId,
-            credentialUserName: credName,
+            credentialUserId: null,
+            credentialUserName: "",
             notes: String(notes ?? "").trim(),
           },
         });
@@ -773,7 +693,7 @@ export function createHrResolvers({
       },
 
       replaceHrLeaveTypes: async (_, { types }, context) => {
-        assertHrStaff(context);
+        assertLeaveManager(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const incoming = Array.isArray(types) ? types : [];
         const seen = new Set();
@@ -859,12 +779,8 @@ export function createHrResolvers({
         { employeeId, leaveType, fromYmd, toYmd, days, reason },
         context,
       ) => {
-        assertHrStaffOrEmployee(context);
-        let targetId = Number(employeeId);
-        if (isEmployeeActor(context)) {
-          const mine = await requireLinkedEmployee(context);
-          targetId = mine.id;
-        }
+        assertHrAccess(context);
+        const targetId = Number(employeeId);
         const employee = await loadEmployeeInTenantOrThrow(context, targetId);
         const lt = String(leaveType ?? "").trim();
         if (!lt) throw new Error("Leave type is required");
@@ -912,7 +828,7 @@ export function createHrResolvers({
       },
 
       decideHrLeaveRequest: async (_, { id, approve }, context) => {
-        assertHrAccess(context);
+        assertLeaveManager(context);
         const request = await prisma.hr_leave_request.findUnique({
           where: { id: Number(id) },
           include: { employee: true },
