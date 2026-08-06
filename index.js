@@ -4094,6 +4094,16 @@ const resolvers = {
         );
       }
 
+      const lodgingBusiness =
+        businessType === "Hotel" ||
+        businessType === "Resort" ||
+        businessType === "Pension";
+      if (String(Role).trim() === "HR" && !lodgingBusiness) {
+        throw new Error(
+          "HR staff logins are only for hotel / resort / pension. Café Admin runs HR from the Admin workspace.",
+        );
+      }
+
       return await prisma.user.create({
         data: {
           UserName: userNameNorm,
