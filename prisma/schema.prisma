@@ -674,6 +674,8 @@ model KitchenBarBeginning {
   managementTakenDay Float @default(0)
   /// Units issued from station stock for invitations in that day (same ONHAND treatment as management).
   invitationTakenDay Float @default(0)
+  /// Units sold / counted as sales that day. Null = legacy derive from beginning − prior on hand.
+  salesDay       Float?
   /// Physical on-hand at end of day (lights-out snapshot).
   closingOnHand  Float    @default(0)
   notes       String   @default("")

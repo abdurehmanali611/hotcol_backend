@@ -1051,6 +1051,8 @@ const typeDefs = gql`
     stockOutDay: Float!
     managementTakenDay: Float!
     invitationTakenDay: Float!
+    """Null when legacy rows still derive sales from beginning − prior on hand."""
+    salesDay: Float
     closingOnHand: Float!
     notes: String!
     createdAt: DateTime!
@@ -1625,6 +1627,7 @@ const typeDefs = gql`
       measuredBy: String!
       managementTakenDay: Float
       invitationTakenDay: Float
+      salesDay: Float
       monthPeriod: String
       calendarDate: String!
       notes: String
@@ -1638,6 +1641,7 @@ const typeDefs = gql`
       measuredBy: String!
       managementTakenDay: Float
       invitationTakenDay: Float
+      salesDay: Float
       monthPeriod: String
       calendarDate: String!
       notes: String
@@ -2041,12 +2045,26 @@ function ymdUtcFromDate(d) {
   return `${y}-${m}-${day}`;
 }
 
-/** Previous day’s On Hand: prefer stored closing when > 0, else Beginning (BB) (legacy rows). */
+/** Previous day’s On Hand: prefer stored closing when set, else Beginning (BB) (legacy rows). */
 function prevPhysicalLights(prevRow) {
   if (!prevRow) return null;
   const c = Number(prevRow.closingOnHand);
-  const a = Number(prevRow.amount);
-  return c > 0 ? c : a;
+  if (Number.isFinite(c)) return c;
+  return Number(prevRow.amount) || 0;
+}
+
+/**
+ * Resolve sales for a day.
+ * Prefer explicit salesDay when provided; otherwise legacy:
+ * beginning today − prior On Hand (0 when no prior row).
+ */
+function resolveKitchenBarSalesDay(opening, prevRow, salesDay) {
+  if (salesDay != null && salesDay !== "") {
+    return round2(Number(salesDay) || 0);
+  }
+  const prevLights = prevPhysicalLights(prevRow);
+  if (prevLights == null) return 0;
+  return round2(Number(opening) - prevLights);
 }
 
 function computeClosingOnHand(
@@ -2055,9 +2073,9 @@ function computeClosingOnHand(
   managementTakenDay,
   prevRow,
   invitationTakenDay = 0,
+  salesDay = null,
 ) {
-  const prevLights = prevPhysicalLights(prevRow);
-  const salesToday = prevLights != null ? Number(opening) - prevLights : 0;
+  const salesToday = resolveKitchenBarSalesDay(opening, prevRow, salesDay);
   const mgmt = Number(managementTakenDay ?? 0);
   const invite = Number(invitationTakenDay ?? 0);
   return Number(opening) + Number(stockOutSum) - salesToday - mgmt - invite;
@@ -2157,6 +2175,7 @@ async function refreshKitchenBarComputedFields(client, row) {
       Number(row.managementTakenDay ?? 0),
       prev,
       Number(row.invitationTakenDay ?? 0),
+      row.salesDay,
     ),
   );
   return client.kitchenBarBeginning.update({
@@ -7013,6 +7032,7 @@ const resolvers = {
         measuredBy,
         managementTakenDay,
         invitationTakenDay,
+        salesDay,
         monthPeriod,
         notes,
         calendarDate,
@@ -7067,6 +7087,8 @@ const resolvers = {
       const opening = round2(Number(amount));
       const mgmtTaken = round2(Number(managementTakenDay ?? 0));
       const inviteTaken = round2(Number(invitationTakenDay ?? 0));
+      const salesTaken =
+        salesDay == null ? null : round2(Number(salesDay) || 0);
       const prev = await findPreviousKitchenBarRow(
         prisma,
         tenant,
@@ -7075,7 +7097,14 @@ const resolvers = {
         cal,
       );
       const closing = round2(
-        computeClosingOnHand(opening, sum, mgmtTaken, prev, inviteTaken),
+        computeClosingOnHand(
+          opening,
+          sum,
+          mgmtTaken,
+          prev,
+          inviteTaken,
+          salesTaken,
+        ),
       );
       return await prisma.kitchenBarBeginning.create({
         data: {
@@ -7089,6 +7118,7 @@ const resolvers = {
           stockOutDay: round2(sum),
           managementTakenDay: mgmtTaken,
           invitationTakenDay: inviteTaken,
+          salesDay: salesTaken,
           closingOnHand: closing,
           notes: notes ?? "",
         },
@@ -7105,6 +7135,7 @@ const resolvers = {
         measuredBy,
         managementTakenDay,
         invitationTakenDay,
+        salesDay,
         monthPeriod,
         notes,
         calendarDate,
@@ -7165,6 +7196,8 @@ const resolvers = {
       const opening = round2(Number(amount));
       const mgmtTaken = round2(Number(managementTakenDay ?? 0));
       const inviteTaken = round2(Number(invitationTakenDay ?? 0));
+      const salesTaken =
+        salesDay == null ? null : round2(Number(salesDay) || 0);
       const prev = await findPreviousKitchenBarRow(
         prisma,
         row.HotelName,
@@ -7173,7 +7206,14 @@ const resolvers = {
         cal,
       );
       const closing = round2(
-        computeClosingOnHand(opening, sum, mgmtTaken, prev, inviteTaken),
+        computeClosingOnHand(
+          opening,
+          sum,
+          mgmtTaken,
+          prev,
+          inviteTaken,
+          salesTaken,
+        ),
       );
       return await prisma.kitchenBarBeginning.update({
         where: { id },
@@ -7187,6 +7227,7 @@ const resolvers = {
           stockOutDay: round2(sum),
           managementTakenDay: mgmtTaken,
           invitationTakenDay: inviteTaken,
+          salesDay: salesTaken,
           closingOnHand: closing,
           notes: notes ?? "",
         },
@@ -7230,14 +7271,14 @@ const resolvers = {
           String(a.calendarDate).localeCompare(String(b.calendarDate)),
         );
         let totalSales = 0;
-        for (let i = 1; i < list.length; i++) {
-          const prev = list[i - 1];
-          const prevOnHand =
-            Number(prev.closingOnHand) > 0
-              ? Number(prev.closingOnHand)
-              : Number(prev.amount);
-          // Sales = beginning today − prior On Hand (does not include Management).
-          totalSales += Number(list[i].amount) - prevOnHand;
+        for (let i = 0; i < list.length; i++) {
+          const row = list[i];
+          const prev = i > 0 ? list[i - 1] : null;
+          totalSales += resolveKitchenBarSalesDay(
+            Number(row.amount),
+            prev,
+            row.salesDay,
+          );
         }
         const last = list[list.length - 1];
         const closing =
