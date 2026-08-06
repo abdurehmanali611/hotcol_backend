@@ -1081,6 +1081,38 @@ model hr_leave_type {
   @@index([HotelName])
 }
 
+/// HR — tenant-configured departments for shift scheduling
+model hr_department {
+  id        Int      @id @default(autoincrement())
+  HotelName String
+  code      String
+  label     String
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([HotelName, code])
+  @@index([HotelName])
+}
+
+/// HR — tenant-configured incident categories with optional pay impact
+model hr_incident_type {
+  id         Int      @id @default(autoincrement())
+  HotelName  String
+  code       String
+  label      String
+  deduct     Boolean  @default(false)
+  amountETB  Float    @default(0)
+  active     Boolean  @default(true)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([HotelName, code])
+  @@index([HotelName])
+}
+
 model hr_leave_balance {
   id           Int    @id @default(autoincrement())
   HotelName    String

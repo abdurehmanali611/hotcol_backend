@@ -176,6 +176,40 @@ export const hrTypeDefsBlock = `
     defaultDays: Float
     active: Boolean
   }
+
+  type HrDepartment {
+    id: Int!
+    HotelName: String!
+    code: String!
+    label: String!
+    active: Boolean!
+    sortOrder: Int!
+  }
+
+  input HrDepartmentInput {
+    code: String
+    label: String!
+    active: Boolean
+  }
+
+  type HrIncidentType {
+    id: Int!
+    HotelName: String!
+    code: String!
+    label: String!
+    deduct: Boolean!
+    amountETB: Float!
+    active: Boolean!
+    sortOrder: Int!
+  }
+
+  input HrIncidentTypeInput {
+    code: String
+    label: String!
+    deduct: Boolean
+    amountETB: Float
+    active: Boolean
+  }
 `;
 
 export const hrQueryFields = `
@@ -183,6 +217,8 @@ export const hrQueryFields = `
     hrEmployee(id: Int!): HrEmployee
     hrEmployeeMe: HrEmployee
     hrLeaveTypes: [HrLeaveType!]!
+    hrDepartments: [HrDepartment!]!
+    hrIncidentTypes: [HrIncidentType!]!
     hrLeaveRequests(status: String): [HrLeaveRequest!]!
     hrLeaveBalances(employeeId: Int): [HrLeaveBalance!]!
     hrAttendance(fromYmd: String!, toYmd: String!, employeeId: Int): [HrAttendance!]!
@@ -225,6 +261,8 @@ export const hrMutationFields = `
     terminateHrEmployee(id: Int!, endDate: String): HrEmployee!
 
     replaceHrLeaveTypes(types: [HrLeaveTypeInput!]!): [HrLeaveType!]!
+    replaceHrDepartments(departments: [HrDepartmentInput!]!): [HrDepartment!]!
+    replaceHrIncidentTypes(types: [HrIncidentTypeInput!]!): [HrIncidentType!]!
 
     upsertHrLeaveBalance(
       employeeId: Int!
@@ -416,6 +454,22 @@ export function createHrResolvers({
       hrLeaveTypes: async (_, __, context) => {
         assertHrAccess(context);
         return prisma.hr_leave_type.findMany({
+          where: tenantHotelReadWhere(context),
+          orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+        });
+      },
+
+      hrDepartments: async (_, __, context) => {
+        assertHrAccess(context);
+        return prisma.hr_department.findMany({
+          where: tenantHotelReadWhere(context),
+          orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+        });
+      },
+
+      hrIncidentTypes: async (_, __, context) => {
+        assertHrAccess(context);
+        return prisma.hr_incident_type.findMany({
           where: tenantHotelReadWhere(context),
           orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
         });
@@ -749,6 +803,123 @@ export function createHrResolvers({
         });
 
         return prisma.hr_leave_type.findMany({
+          where: { HotelName },
+          orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+        });
+      },
+
+      replaceHrDepartments: async (_, { departments }, context) => {
+        assertLeaveManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const incoming = Array.isArray(departments) ? departments : [];
+        const seen = new Set();
+        const rows = [];
+        incoming.forEach((row, index) => {
+          const label = String(row?.label ?? "").trim();
+          if (!label) return;
+          let code = slugLeaveTypeCode(row?.code || label);
+          if (!code) return;
+          let unique = code;
+          let n = 2;
+          while (seen.has(unique)) unique = `${code}_${n++}`;
+          seen.add(unique);
+          rows.push({
+            code: unique,
+            label,
+            active: row?.active !== false,
+            sortOrder: index,
+          });
+        });
+
+        await prisma.$transaction(async (tx) => {
+          const existing = await tx.hr_department.findMany({
+            where: { HotelName },
+          });
+          const keep = new Set(rows.map((r) => r.code));
+          const toDelete = existing.filter((row) => !keep.has(row.code));
+          if (toDelete.length) {
+            await tx.hr_department.deleteMany({
+              where: { id: { in: toDelete.map((row) => row.id) } },
+            });
+          }
+          for (const row of rows) {
+            await tx.hr_department.upsert({
+              where: {
+                HotelName_code: { HotelName, code: row.code },
+              },
+              create: { HotelName, ...row },
+              update: {
+                label: row.label,
+                active: row.active,
+                sortOrder: row.sortOrder,
+              },
+            });
+          }
+        });
+
+        return prisma.hr_department.findMany({
+          where: { HotelName },
+          orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+        });
+      },
+
+      replaceHrIncidentTypes: async (_, { types }, context) => {
+        assertLeaveManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const incoming = Array.isArray(types) ? types : [];
+        const seen = new Set();
+        const rows = [];
+        incoming.forEach((row, index) => {
+          const label = String(row?.label ?? "").trim();
+          if (!label) return;
+          let code = slugLeaveTypeCode(row?.code || label);
+          if (!code) return;
+          let unique = code;
+          let n = 2;
+          while (seen.has(unique)) unique = `${code}_${n++}`;
+          seen.add(unique);
+          rows.push({
+            code: unique,
+            label,
+            deduct: Boolean(row?.deduct),
+            amountETB: Math.max(
+              0,
+              Math.min(10_000_000, round2(Number(row?.amountETB) || 0)),
+            ),
+            active: row?.active !== false,
+            sortOrder: index,
+          });
+        });
+
+        await prisma.$transaction(async (tx) => {
+          const existing = await tx.hr_incident_type.findMany({
+            where: { HotelName },
+          });
+          const keep = new Set(rows.map((r) => r.code));
+          const toDelete = existing.filter((row) => !keep.has(row.code));
+          if (toDelete.length) {
+            await tx.hr_incident_type.deleteMany({
+              where: { id: { in: toDelete.map((row) => row.id) } },
+            });
+          }
+          for (const row of rows) {
+            await tx.hr_incident_type.upsert({
+              where: {
+                HotelName_code: { HotelName, code: row.code },
+              },
+              create: { HotelName, ...row },
+              update: {
+                label: row.label,
+                deduct: row.deduct,
+                amountETB: row.amountETB,
+                active: row.active,
+                sortOrder: row.sortOrder,
+              },
+            });
+          }
+        });
+
+        return prisma.hr_incident_type.findMany({
           where: { HotelName },
           orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
         });
