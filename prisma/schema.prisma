@@ -1215,12 +1215,15 @@ model hr_incident {
   id           Int      @id @default(autoincrement())
   HotelName    String
   employeeId   Int
-  /// warning | complaint | commendation | other
-  kind         String   @default("warning")
+  /// Manager-configured type code, or "other" for ad-hoc HR entries
+  kind         String   @default("other")
   title        String
   detail       String   @db.Text
   occurredYmd  String   @default("")
   recordedBy   String   @default("")
+  /// When true, amountETB is a salary deduction; when false, an increase
+  salaryDeduct Boolean  @default(false)
+  amountETB    Float    @default(0)
   createdAt    DateTime @default(now())
 
   employee hr_employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)

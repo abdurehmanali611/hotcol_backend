@@ -18,7 +18,6 @@ const LEAVE_STATUSES = new Set(["pending", "approved", "rejected", "cancelled"])
 const ATTENDANCE_STATUSES = new Set(["present", "late", "absent", "half_day"]);
 const DOC_TYPES = new Set(["contract", "id", "certificate", "other"]);
 const PAYROLL_PERIOD_STATUSES = new Set(["open", "closed"]);
-const INCIDENT_KINDS = new Set(["warning", "complaint", "commendation", "other"]);
 const HR_STAFF_ROLES = ["HR", "Admin", "Manager"];
 /** Leave type config + leave approve/reject. */
 const HR_LEAVE_MANAGER_ROLES = ["Manager", "Admin"];
@@ -145,6 +144,8 @@ export const hrTypeDefsBlock = `
     detail: String!
     occurredYmd: String!
     recordedBy: String!
+    salaryDeduct: Boolean!
+    amountETB: Float!
     createdAt: DateTime!
     employee: HrEmployee
   }
@@ -294,6 +295,8 @@ export const hrMutationFields = `
       detail: String
       occurredYmd: String
       recordedBy: String
+      salaryDeduct: Boolean
+      amountETB: Float
     ): HrIncident!
     deleteHrIncident(id: Int!): Boolean!
 `;
@@ -1211,20 +1214,35 @@ export function createHrResolvers({
 
       createHrIncident: async (
         _,
-        { employeeId, kind, title, detail, occurredYmd, recordedBy },
+        {
+          employeeId,
+          kind,
+          title,
+          detail,
+          occurredYmd,
+          recordedBy,
+          salaryDeduct,
+          amountETB,
+        },
         context,
       ) => {
         assertHrAccess(context);
         const employee = await loadEmployeeInTenantOrThrow(context, employeeId);
         const t = String(title ?? "").trim();
         if (!t) throw new Error("Incident title is required");
-        let k = String(kind ?? "warning").trim();
-        if (!INCIDENT_KINDS.has(k)) k = "warning";
+        let k = String(kind ?? "other")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 40);
+        if (!k) k = "other";
         const occurred =
           occurredYmd != null && String(occurredYmd).trim() !== ""
             ? assertYmd(occurredYmd, "occurredYmd")
             : todayYmd();
         const { actorName } = actorFromContext(context);
+        const amount = Math.max(0, Number(amountETB) || 0);
         return prisma.hr_incident.create({
           data: {
             HotelName: employee.HotelName,
@@ -1234,6 +1252,8 @@ export function createHrResolvers({
             detail: String(detail ?? "").trim(),
             occurredYmd: occurred,
             recordedBy: String(recordedBy ?? actorName ?? "").trim(),
+            salaryDeduct: Boolean(salaryDeduct),
+            amountETB: amount,
           },
         });
       },
