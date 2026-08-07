@@ -143,6 +143,28 @@ export function dailyRateETB(baseSalaryETB, wageType) {
   return round2(base / 30);
 }
 
+/** Clamp percent 0–100 and convert to ETB: base * (pct/100) * multiplier. */
+export function salaryPercentToETB(baseSalaryETB, percent, multiplier = 1) {
+  const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (pct <= 0) return 0;
+  const mult = Math.max(0, Number(multiplier) || 0);
+  return round2((Number(baseSalaryETB) || 0) * (pct / 100) * mult);
+}
+
+/**
+ * Resolve incident/type pay amount: percent of salary wins; else legacy fixed ETB.
+ * @param {{ percentOfSalary?: number, amountETB?: number }} row
+ * @param {number} baseSalaryETB
+ * @param {number} [multiplier=1] e.g. attendance day count
+ */
+export function resolveIncidentPayETB(row, baseSalaryETB, multiplier = 1) {
+  const pct = Number(row?.percentOfSalary) || 0;
+  if (pct > 0) return salaryPercentToETB(baseSalaryETB, pct, multiplier);
+  const fixed = round2(Number(row?.amountETB) || 0);
+  if (fixed <= 0) return 0;
+  return round2(fixed * Math.max(0, Number(multiplier) || 0));
+}
+
 /**
  * Build earnings/deductions for one employee in a payroll From–To window.
  * Integrates: common line rules, recorded incidents, unpaid leave, attendance-linked types.
@@ -177,20 +199,22 @@ export function buildIntegratedPayLines({
     }));
 
   for (const inc of incidents) {
-    const amount = round2(Number(inc.amountETB) || 0);
+    const pct = Number(inc.percentOfSalary) || 0;
+    const amount = resolveIncidentPayETB(inc, gross, 1);
     if (amount <= 0) continue;
     const title =
       String(inc.title || "").trim() ||
       String(inc.kind || "Incident").trim() ||
       "Incident";
+    const pctNote = pct > 0 ? ` (${pct}% of salary)` : "";
     if (inc.salaryDeduct) {
       deductions.push({
-        label: `Incident · ${title}`,
+        label: `Incident · ${title}${pctNote}`,
         amountETB: amount,
       });
     } else {
       earnings.push({
-        label: `Incident credit · ${title}`,
+        label: `Incident credit · ${title}${pctNote}`,
         amountETB: amount,
       });
     }
@@ -216,21 +240,24 @@ export function buildIntegratedPayLines({
 
   for (const type of attendanceLinkedTypes) {
     const link = String(type.attendanceLink || "").trim();
-    const perDay = round2(Number(type.amountETB) || 0);
-    if (!link || perDay <= 0) continue;
+    const pct = Number(type.percentOfSalary) || 0;
+    if (!link) continue;
     let count = 0;
     for (const [ymd, status] of attendanceByDate) {
       if (leaveDates.has(ymd)) continue;
       if (status === link) count += 1;
     }
     if (count <= 0) continue;
-    const verb = type.deduct === false ? "credit" : "deduct";
+    const amount = resolveIncidentPayETB(type, gross, count);
+    if (amount <= 0) continue;
+    const pctNote =
+      pct > 0 ? ` · ${pct}% of salary × ${count}` : ` · ${count} day${count === 1 ? "" : "s"}`;
     const line = {
-      label: `${type.label || link} · attendance (${count} day${count === 1 ? "" : "s"})`,
-      amountETB: round2(perDay * count),
+      label: `${type.label || link} · attendance${pctNote}`,
+      amountETB: amount,
     };
     if (type.deduct === false) {
-      earnings.push({ ...line, label: `${line.label} · ${verb}` });
+      earnings.push(line);
     } else {
       deductions.push(line);
     }

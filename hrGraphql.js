@@ -239,6 +239,7 @@ export const hrTypeDefsBlock = `
     occurredYmd: String!
     recordedBy: String!
     salaryDeduct: Boolean!
+    percentOfSalary: Float!
     amountETB: Float!
     createdAt: DateTime!
     employee: HrEmployee
@@ -292,6 +293,7 @@ export const hrTypeDefsBlock = `
     code: String!
     label: String!
     deduct: Boolean!
+    percentOfSalary: Float!
     amountETB: Float!
     attendanceLink: String!
     active: Boolean!
@@ -302,6 +304,7 @@ export const hrTypeDefsBlock = `
     code: String
     label: String!
     deduct: Boolean
+    percentOfSalary: Float
     amountETB: Float
     attendanceLink: String
     active: Boolean
@@ -430,6 +433,7 @@ export const hrMutationFields = `
       occurredYmd: String
       recordedBy: String
       salaryDeduct: Boolean
+      percentOfSalary: Float
       amountETB: Float
     ): HrIncident!
     deleteHrIncident(id: Int!): Boolean!
@@ -1200,10 +1204,11 @@ export function createHrResolvers({
             code: unique,
             label,
             deduct: Boolean(row?.deduct),
-            amountETB: Math.max(
+            percentOfSalary: Math.max(
               0,
-              Math.min(10_000_000, round2(Number(row?.amountETB) || 0)),
+              Math.min(100, round2(Number(row?.percentOfSalary) || 0)),
             ),
+            amountETB: 0,
             attendanceLink: (() => {
               const link = String(row?.attendanceLink ?? "").trim();
               return ATTENDANCE_LINK_VALUES.has(link) ? link : "";
@@ -1233,6 +1238,7 @@ export function createHrResolvers({
               update: {
                 label: row.label,
                 deduct: row.deduct,
+                percentOfSalary: row.percentOfSalary,
                 amountETB: row.amountETB,
                 attendanceLink: row.attendanceLink,
                 active: row.active,
@@ -1720,7 +1726,7 @@ export function createHrResolvers({
         const attendanceLinkedTypes = incidentTypes.filter(
           (t) =>
             String(t.attendanceLink || "").trim() &&
-            Number(t.amountETB) > 0,
+            (Number(t.percentOfSalary) > 0 || Number(t.amountETB) > 0),
         );
 
         const period = await prisma.$transaction(async (tx) => {
@@ -2036,6 +2042,7 @@ export function createHrResolvers({
           occurredYmd,
           recordedBy,
           salaryDeduct,
+          percentOfSalary,
           amountETB,
         },
         context,
@@ -2056,7 +2063,14 @@ export function createHrResolvers({
             ? assertYmd(occurredYmd, "occurredYmd")
             : todayYmd();
         const { actorName } = actorFromContext(context);
-        const amount = Math.max(0, Number(amountETB) || 0);
+        const percent = Math.max(
+          0,
+          Math.min(100, round2(Number(percentOfSalary) || 0)),
+        );
+        const amount =
+          percent > 0
+            ? 0
+            : Math.max(0, Number(amountETB) || 0);
         return prisma.hr_incident.create({
           data: {
             HotelName: employee.HotelName,
@@ -2067,6 +2081,7 @@ export function createHrResolvers({
             occurredYmd: occurred,
             recordedBy: String(recordedBy ?? actorName ?? "").trim(),
             salaryDeduct: Boolean(salaryDeduct),
+            percentOfSalary: percent,
             amountETB: amount,
           },
         });

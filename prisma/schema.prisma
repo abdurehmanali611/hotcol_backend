@@ -1105,8 +1105,11 @@ model hr_incident_type {
   code       String
   label      String
   deduct     Boolean  @default(false)
+  /// Percent of employee base salary applied on payslip (0–100)
+  percentOfSalary Float @default(0)
+  /// Legacy fixed ETB — prefer percentOfSalary when > 0
   amountETB  Float    @default(0)
-  /// "" | absent | late | half_day — when set, payroll multiplies amount by matching attendance days
+  /// "" | absent | late | half_day — payroll applies percent × days of matching attendance
   attendanceLink String @default("")
   active     Boolean  @default(true)
   sortOrder  Int      @default(0)
@@ -1323,8 +1326,11 @@ model hr_incident {
   detail       String   @db.Text
   occurredYmd  String   @default("")
   recordedBy   String   @default("")
-  /// When true, amountETB is a salary deduction; when false, an increase
+  /// When true, pay impact is a salary deduction; when false, an increase
   salaryDeduct Boolean  @default(false)
+  /// Percent of base salary (0–100). Preferred over amountETB when > 0.
+  percentOfSalary Float @default(0)
+  /// Legacy fixed ETB amount
   amountETB    Float    @default(0)
   createdAt    DateTime @default(now())
 
