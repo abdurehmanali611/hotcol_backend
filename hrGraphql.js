@@ -10,16 +10,32 @@
  * following the pattern established by lodgingGraphql.js.
  */
 
+import {
+  namedMonthFromPayRange,
+  payslipNumberFor,
+} from "./hrPayrollHelpers.js";
+
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const EMPLOYEE_STATUSES = new Set(["active", "on_leave", "terminated"]);
-const WAGE_TYPES = new Set(["hourly", "monthly", "tip_eligible"]);
+const WAGE_TYPES = new Set(["hourly", "monthly", "weekly", "tip_eligible"]);
 const LEAVE_STATUSES = new Set(["pending", "approved", "rejected", "cancelled"]);
 const ATTENDANCE_STATUSES = new Set(["present", "late", "absent", "half_day"]);
 const DOC_TYPES = new Set(["contract", "id", "certificate", "other"]);
-const PAYROLL_PERIOD_STATUSES = new Set(["open", "closed"]);
+const PAYROLL_PERIOD_STATUSES = new Set([
+  "open",
+  "awaiting_manager",
+  "approved",
+  "closed",
+]);
+const PAYSLIP_PAYMENT_STATUSES = new Set([
+  "unpaid",
+  "marked_paid",
+  "approved",
+]);
+const PAYROLL_LINE_KINDS = new Set(["deduction", "increase"]);
 const HR_STAFF_ROLES = ["HR", "Admin", "Manager"];
-/** Leave type config + leave approve/reject. */
+/** Leave type config + leave approve/reject + payroll rules / approve pay. */
 const HR_LEAVE_MANAGER_ROLES = ["Manager", "Admin"];
 
 export const hrTypeDefsBlock = `
@@ -36,6 +52,8 @@ export const hrTypeDefsBlock = `
     endDate: String!
     wageType: String!
     baseSalaryETB: Float!
+    bankName: String!
+    accountNumber: String!
     credentialUserId: Int
     credentialUserName: String!
     notes: String!
@@ -111,13 +129,20 @@ export const hrTypeDefsBlock = `
     id: Int!
     HotelName: String!
     periodKey: String!
+    monthName: String!
     fromYmd: String!
     toYmd: String!
     status: String!
     notes: String!
+    createdBy: String!
     closedAt: DateTime
     closedBy: String!
     createdAt: DateTime!
+  }
+
+  type HrPayslipLine {
+    label: String!
+    amountETB: Float!
   }
 
   type HrPayslip {
@@ -125,14 +150,74 @@ export const hrTypeDefsBlock = `
     HotelName: String!
     periodId: Int!
     employeeId: Int!
+    payslipNumber: String!
+    employeeName: String!
+    jobTitle: String!
+    taxPeriod: String!
+    organizationLocation: String!
+    payDate: String!
+    hireDate: String!
+    wageType: String!
+    bankName: String!
+    accountNumber: String!
     basePayETB: Float!
     overtimeETB: Float!
     tipsETB: Float!
     deductionsETB: Float!
     netPayETB: Float!
+    grossSalaryETB: Float!
+    totalEarningsETB: Float!
+    totalDeductionsETB: Float!
+    earnings: [HrPayslipLine!]!
+    deductions: [HrPayslipLine!]!
+    paymentStatus: String!
+    hrMarkedPaidAt: DateTime
+    hrMarkedPaidBy: String!
+    managerApprovedAt: DateTime
+    managerApprovedBy: String!
     notes: String!
     createdAt: DateTime!
     employee: HrEmployee
+    period: HrPayrollPeriod
+  }
+
+  type HrPayrollLineRule {
+    id: Int!
+    HotelName: String!
+    kind: String!
+    label: String!
+    amountETB: Float!
+    whenMode: String!
+    fromDay: Int
+    toDay: Int
+    active: Boolean!
+    sortOrder: Int!
+  }
+
+  input HrPayrollLineRuleInput {
+    kind: String!
+    label: String!
+    amountETB: Float
+    whenMode: String
+    fromDay: Int
+    toDay: Int
+    active: Boolean
+  }
+
+  type HrWagePayWindow {
+    id: Int!
+    HotelName: String!
+    wageType: String!
+    fromDay: Int!
+    toDay: Int!
+    active: Boolean!
+  }
+
+  input HrWagePayWindowInput {
+    wageType: String!
+    fromDay: Int!
+    toDay: Int!
+    active: Boolean
   }
 
   type HrIncident {
@@ -225,7 +310,9 @@ export const hrQueryFields = `
     hrShifts(fromYmd: String, toYmd: String, employeeId: Int): [HrShift!]!
     hrDocuments(employeeId: Int): [HrDocument!]!
     hrPayrollPeriods: [HrPayrollPeriod!]!
-    hrPayslips(periodId: Int!): [HrPayslip!]!
+    hrPayslips(periodId: Int, paymentStatus: String): [HrPayslip!]!
+    hrPayrollLineRules: [HrPayrollLineRule!]!
+    hrWagePayWindows: [HrWagePayWindow!]!
     hrIncidents(employeeId: Int): [HrIncident!]!
     hrDashboardStats: HrDashboardStats!
 `;
@@ -240,6 +327,8 @@ export const hrMutationFields = `
       hireDate: String
       wageType: String
       baseSalaryETB: Float
+      bankName: String
+      accountNumber: String
       credentialUserId: Int
       credentialUserName: String
       notes: String
@@ -254,6 +343,8 @@ export const hrMutationFields = `
       status: String
       wageType: String
       baseSalaryETB: Float
+      bankName: String
+      accountNumber: String
       credentialUserId: Int
       credentialUserName: String
       notes: String
@@ -309,22 +400,15 @@ export const hrMutationFields = `
     deleteHrDocument(id: Int!): Boolean!
 
     createHrPayrollPeriod(
-      periodKey: String!
       fromYmd: String!
       toYmd: String!
       notes: String
+      employeeIds: [Int!]
     ): HrPayrollPeriod!
-    closeHrPayrollPeriod(id: Int!): HrPayrollPeriod!
-    upsertHrPayslip(
-      id: Int
-      periodId: Int!
-      employeeId: Int!
-      basePayETB: Float
-      overtimeETB: Float
-      tipsETB: Float
-      deductionsETB: Float
-      notes: String
-    ): HrPayslip!
+    markHrPayslipsPaid(payslipIds: [Int!]!): [HrPayslip!]!
+    approveHrPayslipsPayment(payslipIds: [Int!]!): [HrPayslip!]!
+    replaceHrPayrollLineRules(rules: [HrPayrollLineRuleInput!]!): [HrPayrollLineRule!]!
+    replaceHrWagePayWindows(windows: [HrWagePayWindowInput!]!): [HrWagePayWindow!]!
 
     createHrIncident(
       employeeId: Int!
@@ -407,6 +491,8 @@ export function createHrResolvers({
   const assertHrStaff = (context) => assertRole(context, HR_STAFF_ROLES);
   const assertLeaveManager = (context) =>
     assertRole(context, HR_LEAVE_MANAGER_ROLES);
+  const assertPayrollRunner = (context) =>
+    assertRole(context, ["HR", "Admin"]);
   const assertHrAccess = assertHrStaff;
 
   async function loadEmployeeOrThrow(id) {
@@ -425,7 +511,49 @@ export function createHrResolvers({
     return employee;
   }
 
+  function dayOfYmd(ymd) {
+    return Number(String(ymd).slice(8, 10));
+  }
+
+  function parsePayLines(raw) {
+    try {
+      const parsed = JSON.parse(String(raw || "[]"));
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((row) => ({
+          label: String(row?.label ?? "").trim(),
+          amountETB: round2(Number(row?.amountETB) || 0),
+        }))
+        .filter((row) => row.label);
+    } catch {
+      return [];
+    }
+  }
+
+  function lineRuleApplies(rule, fromYmd, toYmd) {
+    if (rule.active === false) return false;
+    const mode = String(rule.whenMode || "always").trim();
+    if (mode !== "day_range") return true;
+    const fd = Number(rule.fromDay);
+    const td = Number(rule.toDay);
+    if (!Number.isFinite(fd) || !Number.isFinite(td)) return true;
+    const fromD = dayOfYmd(fromYmd);
+    const toD = dayOfYmd(toYmd);
+    const lo = Math.min(fd, td);
+    const hi = Math.max(fd, td);
+    return (
+      (fromD >= lo && fromD <= hi) ||
+      (toD >= lo && toD <= hi) ||
+      (fromD <= lo && toD >= hi)
+    );
+  }
+
   return {
+    HrPayslip: {
+      earnings: (row) => parsePayLines(row.earningsJson),
+      deductions: (row) => parsePayLines(row.deductionsJson),
+    },
+
     Query: {
       hrEmployees: async (_, __, context) => {
         assertHrAccess(context);
@@ -558,22 +686,49 @@ export function createHrResolvers({
         assertHrAccess(context);
         return prisma.hr_payroll_period.findMany({
           where: tenantHotelReadWhere(context),
-          orderBy: { periodKey: "desc" },
+          orderBy: [{ fromYmd: "desc" }, { id: "desc" }],
         });
       },
 
-      hrPayslips: async (_, { periodId }, context) => {
+      hrPayslips: async (_, { periodId, paymentStatus }, context) => {
         assertHrAccess(context);
-        const period = await prisma.hr_payroll_period.findUnique({
-          where: { id: Number(periodId) },
-        });
-        if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
-          throw new Error("Payroll period not found");
+        const where = { ...tenantHotelReadWhere(context) };
+        if (periodId != null) {
+          const period = await prisma.hr_payroll_period.findUnique({
+            where: { id: Number(periodId) },
+          });
+          if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
+            throw new Error("Payroll period not found");
+          }
+          where.periodId = period.id;
+        }
+        if (paymentStatus != null && String(paymentStatus).trim() !== "") {
+          const ps = String(paymentStatus).trim();
+          if (!PAYSLIP_PAYMENT_STATUSES.has(ps)) {
+            throw new Error("Invalid payment status");
+          }
+          where.paymentStatus = ps;
         }
         return prisma.hr_payslip.findMany({
-          where: { periodId: period.id },
-          include: { employee: true },
-          orderBy: { employeeId: "asc" },
+          where,
+          include: { employee: true, period: true },
+          orderBy: [{ periodId: "desc" }, { employeeId: "asc" }],
+        });
+      },
+
+      hrPayrollLineRules: async (_, __, context) => {
+        assertHrAccess(context);
+        return prisma.hr_payroll_line_rule.findMany({
+          where: tenantHotelReadWhere(context),
+          orderBy: [{ kind: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
+        });
+      },
+
+      hrWagePayWindows: async (_, __, context) => {
+        assertHrAccess(context);
+        return prisma.hr_wage_pay_window.findMany({
+          where: tenantHotelReadWhere(context),
+          orderBy: { wageType: "asc" },
         });
       },
 
@@ -637,6 +792,8 @@ export function createHrResolvers({
           hireDate,
           wageType,
           baseSalaryETB,
+          bankName,
+          accountNumber,
           notes,
         },
         context,
@@ -664,6 +821,8 @@ export function createHrResolvers({
             hireDate: hd,
             wageType: wt,
             baseSalaryETB: round2(Number(baseSalaryETB) || 0),
+            bankName: String(bankName ?? "").trim(),
+            accountNumber: String(accountNumber ?? "").trim(),
             credentialUserId: null,
             credentialUserName: "",
             notes: String(notes ?? "").trim(),
@@ -699,6 +858,8 @@ export function createHrResolvers({
           status,
           wageType,
           baseSalaryETB,
+          bankName,
+          accountNumber,
           credentialUserId,
           credentialUserName,
           notes,
@@ -729,6 +890,10 @@ export function createHrResolvers({
         }
         if (baseSalaryETB != null) {
           data.baseSalaryETB = round2(Number(baseSalaryETB) || 0);
+        }
+        if (bankName != null) data.bankName = String(bankName).trim();
+        if (accountNumber != null) {
+          data.accountNumber = String(accountNumber).trim();
         }
         if (credentialUserId !== undefined) {
           data.credentialUserId =
@@ -1235,159 +1400,365 @@ export function createHrResolvers({
 
       createHrPayrollPeriod: async (
         _,
-        { periodKey, fromYmd, toYmd, notes },
+        { fromYmd, toYmd, notes, employeeIds },
         context,
       ) => {
-        assertHrAccess(context);
+        assertPayrollRunner(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorName } = actorFromContext(context);
         const from = assertYmd(fromYmd, "fromYmd");
         const to = assertYmd(toYmd, "toYmd");
         if (to < from) throw new Error("toYmd must not be before fromYmd");
-        const pk = String(periodKey ?? "").trim() || periodKeyFromYmd(from);
-        return prisma.hr_payroll_period.create({
-          data: {
-            HotelName,
-            periodKey: pk,
-            fromYmd: from,
-            toYmd: to,
-            status: "open",
-            notes: String(notes ?? "").trim(),
+        const named = namedMonthFromPayRange(from, to);
+        const payDate = todayYmd();
+
+        const existing = await prisma.hr_payroll_period.findUnique({
+          where: {
+            HotelName_fromYmd_toYmd: { HotelName, fromYmd: from, toYmd: to },
           },
         });
-      },
-
-      closeHrPayrollPeriod: async (_, { id }, context) => {
-        assertHrAccess(context);
-        const period = await prisma.hr_payroll_period.findUnique({
-          where: { id: Number(id) },
-        });
-        if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
-          throw new Error("Payroll period not found");
+        if (existing) {
+          throw new Error(
+            "A payroll run already exists for this From–To range",
+          );
         }
-        if (period.status !== "open") {
-          throw new Error("Payroll period already closed");
-        }
-        const { actorName } = actorFromContext(context);
 
-        const employees = await prisma.hr_employee.findMany({
-          where: { HotelName: period.HotelName, status: "active" },
+        const windows = await prisma.hr_wage_pay_window.findMany({
+          where: { HotelName, active: true },
         });
+        const fromDay = dayOfYmd(from);
+        const toDay = dayOfYmd(to);
+        const matchingWageTypes = new Set(
+          windows
+            .filter((w) => w.fromDay === fromDay && w.toDay === toDay)
+            .map((w) => w.wageType),
+        );
 
-        await prisma.$transaction(async (tx) => {
-          for (const employee of employees) {
-            const basePayETB = round2(Number(employee.baseSalaryETB) || 0);
-            const overtimeETB = 0;
-            const tipsETB = 0;
-            const deductionsETB = 0;
-            const netPayETB = round2(
-              basePayETB + overtimeETB + tipsETB - deductionsETB,
+        const idFilter = Array.isArray(employeeIds)
+          ? employeeIds.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+          : [];
+
+        let employees;
+        if (idFilter.length) {
+          employees = await prisma.hr_employee.findMany({
+            where: {
+              HotelName,
+              id: { in: idFilter },
+              status: { in: ["active", "on_leave"] },
+            },
+            orderBy: { fullName: "asc" },
+          });
+        } else {
+          if (!matchingWageTypes.size) {
+            throw new Error(
+              "No Manager wage-type windows match this From–To (start/end day). Configure wage pay windows first, or pick employees explicitly.",
             );
-            await tx.hr_payslip.upsert({
-              where: {
-                periodId_employeeId: {
-                  periodId: period.id,
-                  employeeId: employee.id,
-                },
-              },
-              create: {
-                HotelName: period.HotelName,
-                periodId: period.id,
+          }
+          employees = await prisma.hr_employee.findMany({
+            where: {
+              HotelName,
+              status: { in: ["active", "on_leave"] },
+              wageType: { in: [...matchingWageTypes] },
+            },
+            orderBy: { fullName: "asc" },
+          });
+        }
+        if (!employees.length) {
+          throw new Error("No eligible employees for this payroll run");
+        }
+
+        const lineRules = await prisma.hr_payroll_line_rule.findMany({
+          where: { HotelName, active: true },
+          orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+        });
+        const appliedRules = lineRules.filter((rule) =>
+          lineRuleApplies(rule, from, to),
+        );
+
+        const period = await prisma.$transaction(async (tx) => {
+          const created = await tx.hr_payroll_period.create({
+            data: {
+              HotelName,
+              periodKey: named.periodKey,
+              monthName: named.monthName,
+              fromYmd: from,
+              toYmd: to,
+              status: "open",
+              notes: String(notes ?? "").trim(),
+              createdBy: actorName,
+            },
+          });
+
+          let seq = 1;
+          for (const employee of employees) {
+            const gross = round2(Number(employee.baseSalaryETB) || 0);
+            const earnings = [
+              { label: "Gross salary", amountETB: gross },
+              ...appliedRules
+                .filter((r) => r.kind === "increase")
+                .map((r) => ({
+                  label: r.label,
+                  amountETB: round2(Number(r.amountETB) || 0),
+                })),
+            ];
+            const deductions = appliedRules
+              .filter((r) => r.kind === "deduction")
+              .map((r) => ({
+                label: r.label,
+                amountETB: round2(Number(r.amountETB) || 0),
+              }));
+            const totalEarningsETB = round2(
+              earnings.reduce((s, r) => s + r.amountETB, 0),
+            );
+            const totalDeductionsETB = round2(
+              deductions.reduce((s, r) => s + r.amountETB, 0),
+            );
+            const netPayETB = round2(totalEarningsETB - totalDeductionsETB);
+            const number = payslipNumberFor(employee.id, created.id, seq++);
+
+            await tx.hr_payslip.create({
+              data: {
+                HotelName,
+                periodId: created.id,
                 employeeId: employee.id,
-                basePayETB,
-                overtimeETB,
-                tipsETB,
-                deductionsETB,
+                payslipNumber: number,
+                employeeName: employee.fullName,
+                jobTitle: employee.jobTitle || "",
+                taxPeriod: named.monthName,
+                organizationLocation: HotelName,
+                payDate,
+                hireDate: employee.hireDate || "",
+                wageType: employee.wageType || "",
+                bankName: employee.bankName || "",
+                accountNumber: employee.accountNumber || "",
+                basePayETB: gross,
+                overtimeETB: 0,
+                tipsETB: 0,
+                deductionsETB: totalDeductionsETB,
                 netPayETB,
-              },
-              update: {
-                basePayETB,
-                overtimeETB,
-                tipsETB,
-                deductionsETB,
-                netPayETB,
+                grossSalaryETB: gross,
+                totalEarningsETB,
+                totalDeductionsETB,
+                earningsJson: JSON.stringify(earnings),
+                deductionsJson: JSON.stringify(deductions),
+                paymentStatus: "unpaid",
               },
             });
           }
-
-          await tx.hr_payroll_period.update({
-            where: { id: period.id },
-            data: { status: "closed", closedAt: new Date(), closedBy: actorName },
-          });
+          return created;
         });
 
-        return prisma.hr_payroll_period.findUnique({ where: { id: period.id } });
+        return period;
       },
 
-      upsertHrPayslip: async (
-        _,
-        {
-          id,
-          periodId,
-          employeeId,
-          basePayETB,
-          overtimeETB,
-          tipsETB,
-          deductionsETB,
-          notes,
-        },
-        context,
-      ) => {
-        assertHrAccess(context);
-        const period = await prisma.hr_payroll_period.findUnique({
-          where: { id: Number(periodId) },
-        });
-        if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
-          throw new Error("Payroll period not found");
-        }
-        const employee = await loadEmployeeInTenantOrThrow(context, employeeId);
-        if (employee.HotelName !== period.HotelName) {
-          throw new Error("Employee does not belong to this payroll period's tenant");
-        }
+      markHrPayslipsPaid: async (_, { payslipIds }, context) => {
+        assertPayrollRunner(context);
+        const { actorName } = actorFromContext(context);
+        const ids = (Array.isArray(payslipIds) ? payslipIds : [])
+          .map((n) => Number(n))
+          .filter((n) => Number.isFinite(n));
+        if (!ids.length) throw new Error("Select at least one payslip");
 
-        let existing = null;
-        if (id != null) {
-          existing = await prisma.hr_payslip.findUnique({
-            where: { id: Number(id) },
-          });
-          if (!existing || !tenantHotelReadMatches(context, existing.HotelName)) {
+        const rows = await prisma.hr_payslip.findMany({
+          where: { id: { in: ids } },
+          include: { period: true },
+        });
+        for (const row of rows) {
+          if (!tenantHotelReadMatches(context, row.HotelName)) {
             throw new Error("Payslip not found");
+          }
+          if (row.paymentStatus === "approved") {
+            throw new Error(
+              `Payslip ${row.payslipNumber || row.id} is already approved`,
+            );
           }
         }
 
-        const base = round2(
-          Number(basePayETB ?? existing?.basePayETB ?? 0) || 0,
-        );
-        const ot = round2(
-          Number(overtimeETB ?? existing?.overtimeETB ?? 0) || 0,
-        );
-        const tips = round2(Number(tipsETB ?? existing?.tipsETB ?? 0) || 0);
-        const deductions = round2(
-          Number(deductionsETB ?? existing?.deductionsETB ?? 0) || 0,
-        );
-        const netPayETB = round2(base + ot + tips - deductions);
-        const payload = {
-          basePayETB: base,
-          overtimeETB: ot,
-          tipsETB: tips,
-          deductionsETB: deductions,
-          netPayETB,
-          notes: notes != null ? String(notes).trim() : existing?.notes ?? "",
-        };
-
-        return prisma.hr_payslip.upsert({
+        await prisma.hr_payslip.updateMany({
           where: {
-            periodId_employeeId: {
-              periodId: period.id,
-              employeeId: employee.id,
+            id: { in: rows.map((r) => r.id) },
+            paymentStatus: { in: ["unpaid", "marked_paid"] },
+          },
+          data: {
+            paymentStatus: "marked_paid",
+            hrMarkedPaidAt: new Date(),
+            hrMarkedPaidBy: actorName,
+          },
+        });
+
+        const periodIds = [...new Set(rows.map((r) => r.periodId))];
+        for (const periodId of periodIds) {
+          const unpaidLeft = await prisma.hr_payslip.count({
+            where: {
+              periodId,
+              paymentStatus: "unpaid",
             },
+          });
+          if (unpaidLeft === 0) {
+            await prisma.hr_payroll_period.update({
+              where: { id: periodId },
+              data: { status: "awaiting_manager" },
+            });
+          }
+        }
+
+        return prisma.hr_payslip.findMany({
+          where: { id: { in: rows.map((r) => r.id) } },
+          include: { employee: true, period: true },
+        });
+      },
+
+      approveHrPayslipsPayment: async (_, { payslipIds }, context) => {
+        assertLeaveManager(context);
+        const { actorName } = actorFromContext(context);
+        const ids = (Array.isArray(payslipIds) ? payslipIds : [])
+          .map((n) => Number(n))
+          .filter((n) => Number.isFinite(n));
+        if (!ids.length) throw new Error("Select at least one payslip");
+
+        const rows = await prisma.hr_payslip.findMany({
+          where: { id: { in: ids } },
+        });
+        for (const row of rows) {
+          if (!tenantHotelReadMatches(context, row.HotelName)) {
+            throw new Error("Payslip not found");
+          }
+          if (row.paymentStatus !== "marked_paid") {
+            throw new Error(
+              `Payslip ${row.payslipNumber || row.id} must be marked paid by HR first`,
+            );
+          }
+        }
+
+        await prisma.hr_payslip.updateMany({
+          where: { id: { in: rows.map((r) => r.id) } },
+          data: {
+            paymentStatus: "approved",
+            managerApprovedAt: new Date(),
+            managerApprovedBy: actorName,
           },
-          create: {
-            HotelName: period.HotelName,
-            periodId: period.id,
-            employeeId: employee.id,
-            ...payload,
-          },
-          update: payload,
+        });
+
+        const periodIds = [...new Set(rows.map((r) => r.periodId))];
+        for (const periodId of periodIds) {
+          const pending = await prisma.hr_payslip.count({
+            where: {
+              periodId,
+              paymentStatus: { not: "approved" },
+            },
+          });
+          if (pending === 0) {
+            await prisma.hr_payroll_period.update({
+              where: { id: periodId },
+              data: {
+                status: "approved",
+                closedAt: new Date(),
+                closedBy: actorName,
+              },
+            });
+          }
+        }
+
+        return prisma.hr_payslip.findMany({
+          where: { id: { in: rows.map((r) => r.id) } },
+          include: { employee: true, period: true },
+        });
+      },
+
+      replaceHrPayrollLineRules: async (_, { rules }, context) => {
+        assertLeaveManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const incoming = Array.isArray(rules) ? rules : [];
+        const rows = [];
+        incoming.forEach((row, index) => {
+          const label = String(row?.label ?? "").trim();
+          if (!label) return;
+          const kind = String(row?.kind ?? "").trim();
+          if (!PAYROLL_LINE_KINDS.has(kind)) return;
+          let whenMode = String(row?.whenMode ?? "always").trim() || "always";
+          if (whenMode !== "day_range") whenMode = "always";
+          let fromDay =
+            row?.fromDay != null && row.fromDay !== ""
+              ? Number(row.fromDay)
+              : null;
+          let toDay =
+            row?.toDay != null && row.toDay !== "" ? Number(row.toDay) : null;
+          if (whenMode === "day_range") {
+            if (!Number.isFinite(fromDay) || fromDay < 1 || fromDay > 31) {
+              fromDay = 1;
+            }
+            if (!Number.isFinite(toDay) || toDay < 1 || toDay > 31) {
+              toDay = 31;
+            }
+          } else {
+            fromDay = null;
+            toDay = null;
+          }
+          rows.push({
+            kind,
+            label,
+            amountETB: round2(Number(row?.amountETB) || 0),
+            whenMode,
+            fromDay,
+            toDay,
+            active: row?.active !== false,
+            sortOrder: index,
+          });
+        });
+
+        await prisma.$transaction(async (tx) => {
+          await tx.hr_payroll_line_rule.deleteMany({ where: { HotelName } });
+          if (rows.length) {
+            await tx.hr_payroll_line_rule.createMany({
+              data: rows.map((r) => ({ HotelName, ...r })),
+            });
+          }
+        });
+
+        return prisma.hr_payroll_line_rule.findMany({
+          where: { HotelName },
+          orderBy: [{ kind: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
+        });
+      },
+
+      replaceHrWagePayWindows: async (_, { windows }, context) => {
+        assertLeaveManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const incoming = Array.isArray(windows) ? windows : [];
+        const seen = new Set();
+        const rows = [];
+        for (const row of incoming) {
+          const wageType = String(row?.wageType ?? "").trim();
+          if (!WAGE_TYPES.has(wageType) || seen.has(wageType)) continue;
+          seen.add(wageType);
+          let fromDay = Number(row?.fromDay);
+          let toDay = Number(row?.toDay);
+          if (!Number.isFinite(fromDay) || fromDay < 1 || fromDay > 31) {
+            throw new Error(`Invalid from day for ${wageType}`);
+          }
+          if (!Number.isFinite(toDay) || toDay < 1 || toDay > 31) {
+            throw new Error(`Invalid to day for ${wageType}`);
+          }
+          rows.push({
+            wageType,
+            fromDay: Math.trunc(fromDay),
+            toDay: Math.trunc(toDay),
+            active: row?.active !== false,
+          });
+        }
+
+        await prisma.$transaction(async (tx) => {
+          await tx.hr_wage_pay_window.deleteMany({ where: { HotelName } });
+          if (rows.length) {
+            await tx.hr_wage_pay_window.createMany({
+              data: rows.map((r) => ({ HotelName, ...r })),
+            });
+          }
+        });
+
+        return prisma.hr_wage_pay_window.findMany({
+          where: { HotelName },
+          orderBy: { wageType: "asc" },
         });
       },
 

@@ -1041,9 +1041,11 @@ model hr_employee {
   status          String    @default("active")
   hireDate        String    @default("") // YYYY-MM-DD
   endDate         String    @default("")
-  /// hourly | monthly | tip_eligible
+  /// hourly | monthly | weekly | tip_eligible
   wageType        String    @default("monthly")
   baseSalaryETB   Float     @default(0)
+  bankName        String    @default("")
+  accountNumber   String    @default("")
   credentialUserId Int?
   credentialUserName String @default("")
   notes           String    @db.Text
@@ -1205,42 +1207,108 @@ model hr_document {
 model hr_payroll_period {
   id           Int      @id @default(autoincrement())
   HotelName    String
-  /// YYYY-MM
+  /// YYYY-MM of the named payslip month (most days in range; tie → earlier)
   periodKey    String
+  /// Display month name e.g. August
+  monthName    String   @default("")
   fromYmd      String
   toYmd        String
-  /// open | closed
+  /// open | awaiting_manager | approved
   status       String   @default("open")
   notes        String   @default("")
+  createdBy    String   @default("")
   closedAt     DateTime?
   closedBy     String   @default("")
   createdAt    DateTime @default(now())
 
   payslips hr_payslip[]
 
-  @@unique([HotelName, periodKey])
+  @@unique([HotelName, fromYmd, toYmd])
   @@index([HotelName])
+  @@index([HotelName, periodKey])
 }
 
 model hr_payslip {
-  id              Int      @id @default(autoincrement())
-  HotelName       String
-  periodId        Int
-  employeeId      Int
-  basePayETB      Float    @default(0)
-  overtimeETB     Float    @default(0)
-  tipsETB         Float    @default(0)
-  deductionsETB   Float    @default(0)
-  netPayETB       Float    @default(0)
-  notes           String   @default("")
-  createdAt       DateTime @default(now())
+  id                   Int       @id @default(autoincrement())
+  HotelName            String
+  periodId             Int
+  employeeId           Int
+  payslipNumber        String    @default("")
+  employeeName         String    @default("")
+  jobTitle             String    @default("")
+  taxPeriod            String    @default("")
+  organizationLocation String    @default("")
+  payDate              String    @default("")
+  hireDate             String    @default("")
+  wageType             String    @default("")
+  bankName             String    @default("")
+  accountNumber        String    @default("")
+  /// Snapshot gross (base salary)
+  basePayETB           Float     @default(0)
+  overtimeETB          Float     @default(0)
+  tipsETB              Float     @default(0)
+  /// Total deductions (legacy + computed)
+  deductionsETB        Float     @default(0)
+  netPayETB            Float     @default(0)
+  grossSalaryETB       Float     @default(0)
+  totalEarningsETB     Float     @default(0)
+  totalDeductionsETB   Float     @default(0)
+  /// JSON array [{ label, amountETB }]
+  earningsJson         String    @db.Text
+  deductionsJson       String    @db.Text
+  /// unpaid | marked_paid | approved
+  paymentStatus        String    @default("unpaid")
+  hrMarkedPaidAt       DateTime?
+  hrMarkedPaidBy       String    @default("")
+  managerApprovedAt    DateTime?
+  managerApprovedBy    String    @default("")
+  notes                String    @default("")
+  createdAt            DateTime  @default(now())
 
   period   hr_payroll_period @relation(fields: [periodId], references: [id], onDelete: Cascade)
   employee hr_employee       @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 
   @@unique([periodId, employeeId])
+  @@unique([HotelName, payslipNumber])
   @@index([HotelName])
   @@index([employeeId])
+  @@index([HotelName, paymentStatus])
+}
+
+/// Manager-configured common payroll deductions / increases
+model hr_payroll_line_rule {
+  id         Int      @id @default(autoincrement())
+  HotelName  String
+  /// deduction | increase
+  kind       String
+  label      String
+  amountETB  Float    @default(0)
+  /// always | day_range
+  whenMode   String   @default("always")
+  fromDay    Int?
+  toDay      Int?
+  active     Boolean  @default(true)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([HotelName])
+  @@index([HotelName, kind])
+}
+
+/// Manager-approved From–To day-of-month window per wage type
+model hr_wage_pay_window {
+  id        Int      @id @default(autoincrement())
+  HotelName String
+  wageType  String
+  fromDay   Int
+  toDay     Int
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([HotelName, wageType])
+  @@index([HotelName])
 }
 
 model hr_incident {

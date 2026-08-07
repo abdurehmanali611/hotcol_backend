@@ -2730,6 +2730,9 @@ const resolvers = {
     periodFrom: (p) => periodBoundsFromSnapshotMonthPeriod(p.monthPeriod).from,
     periodTo: (p) => periodBoundsFromSnapshotMonthPeriod(p.monthPeriod).to,
   },
+  HrPayslip: {
+    ...(hrResolvers.HrPayslip || {}),
+  },
   DepartmentLeader: {
     departmentLabel: (p) => departmentLabel(p.department),
   },
