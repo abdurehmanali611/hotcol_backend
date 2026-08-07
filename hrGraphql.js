@@ -221,8 +221,8 @@ export const hrQueryFields = `
     hrIncidentTypes: [HrIncidentType!]!
     hrLeaveRequests(status: String): [HrLeaveRequest!]!
     hrLeaveBalances(employeeId: Int): [HrLeaveBalance!]!
-    hrAttendance(fromYmd: String!, toYmd: String!, employeeId: Int): [HrAttendance!]!
-    hrShifts(fromYmd: String!, toYmd: String!, employeeId: Int): [HrShift!]!
+    hrAttendance(fromYmd: String, toYmd: String, employeeId: Int): [HrAttendance!]!
+    hrShifts(fromYmd: String, toYmd: String, employeeId: Int): [HrShift!]!
     hrDocuments(employeeId: Int): [HrDocument!]!
     hrPayrollPeriods: [HrPayrollPeriod!]!
     hrPayslips(periodId: Int!): [HrPayslip!]!
@@ -505,12 +505,16 @@ export function createHrResolvers({
 
       hrAttendance: async (_, { fromYmd, toYmd, employeeId }, context) => {
         assertHrAccess(context);
-        const from = assertYmd(fromYmd, "fromYmd");
-        const to = assertYmd(toYmd, "toYmd");
         const where = {
           ...tenantHotelReadWhere(context),
-          workDate: { gte: from, lte: to },
         };
+        const fromRaw = fromYmd != null ? String(fromYmd).trim() : "";
+        const toRaw = toYmd != null ? String(toYmd).trim() : "";
+        if (fromRaw && toRaw) {
+          const from = assertYmd(fromRaw, "fromYmd");
+          const to = assertYmd(toRaw, "toYmd");
+          where.workDate = { gte: from, lte: to };
+        }
         if (employeeId != null) where.employeeId = Number(employeeId);
         return prisma.hr_attendance.findMany({
           where,
@@ -521,12 +525,16 @@ export function createHrResolvers({
 
       hrShifts: async (_, { fromYmd, toYmd, employeeId }, context) => {
         assertHrAccess(context);
-        const from = assertYmd(fromYmd, "fromYmd");
-        const to = assertYmd(toYmd, "toYmd");
         const where = {
           ...tenantHotelReadWhere(context),
-          workDate: { gte: from, lte: to },
         };
+        const fromRaw = fromYmd != null ? String(fromYmd).trim() : "";
+        const toRaw = toYmd != null ? String(toYmd).trim() : "";
+        if (fromRaw && toRaw) {
+          const from = assertYmd(fromRaw, "fromYmd");
+          const to = assertYmd(toRaw, "toYmd");
+          where.workDate = { gte: from, lte: to };
+        }
         if (employeeId != null) where.employeeId = Number(employeeId);
         return prisma.hr_shift.findMany({
           where,
