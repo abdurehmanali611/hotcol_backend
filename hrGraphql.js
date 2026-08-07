@@ -13,6 +13,8 @@
 import {
   namedMonthFromPayRange,
   payslipNumberFor,
+  buildIntegratedPayLines,
+  eachYmdInRange,
 } from "./hrPayrollHelpers.js";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -20,7 +22,14 @@ const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 const EMPLOYEE_STATUSES = new Set(["active", "on_leave", "terminated"]);
 const WAGE_TYPES = new Set(["hourly", "monthly", "weekly", "tip_eligible"]);
 const LEAVE_STATUSES = new Set(["pending", "approved", "rejected", "cancelled"]);
-const ATTENDANCE_STATUSES = new Set(["present", "late", "absent", "half_day"]);
+const ATTENDANCE_STATUSES = new Set([
+  "present",
+  "late",
+  "absent",
+  "half_day",
+  "on_leave",
+]);
+const ATTENDANCE_LINK_VALUES = new Set(["", "absent", "late", "half_day"]);
 const DOC_TYPES = new Set(["contract", "id", "certificate", "other"]);
 const PAYROLL_PERIOD_STATUSES = new Set([
   "open",
@@ -284,6 +293,7 @@ export const hrTypeDefsBlock = `
     label: String!
     deduct: Boolean!
     amountETB: Float!
+    attendanceLink: String!
     active: Boolean!
     sortOrder: Int!
   }
@@ -293,6 +303,7 @@ export const hrTypeDefsBlock = `
     label: String!
     deduct: Boolean
     amountETB: Float
+    attendanceLink: String
     active: Boolean
   }
 `;
@@ -499,6 +510,41 @@ async function syncEmployeeLeaveStatus(db, employeeId) {
   });
 }
 
+/** Upsert attendance rows as on_leave for each day of an approved leave. */
+async function markAttendanceOnLeave(db, employee, fromYmd, toYmd) {
+  const days = eachYmdInRange(fromYmd, toYmd);
+  for (const workDate of days) {
+    await db.hr_attendance.upsert({
+      where: {
+        employeeId_workDate: { employeeId: employee.id, workDate },
+      },
+      create: {
+        HotelName: employee.HotelName,
+        employeeId: employee.id,
+        workDate,
+        status: "on_leave",
+        notes: "Approved leave",
+      },
+      update: {
+        status: "on_leave",
+        notes: "Approved leave",
+        clockInAt: null,
+        clockOutAt: null,
+      },
+    });
+  }
+}
+
+function approvedLeaveCoversDate(leaves, employeeId, ymd) {
+  return leaves.some(
+    (l) =>
+      l.employeeId === employeeId &&
+      l.status === "approved" &&
+      l.fromYmd <= ymd &&
+      l.toYmd >= ymd,
+  );
+}
+
 function periodKeyFromYmd(ymd) {
   return String(ymd || "").slice(0, 7);
 }
@@ -688,16 +734,47 @@ export function createHrResolvers({
         };
         const fromRaw = fromYmd != null ? String(fromYmd).trim() : "";
         const toRaw = toYmd != null ? String(toYmd).trim() : "";
+        let from = "";
+        let to = "";
         if (fromRaw && toRaw) {
-          const from = assertYmd(fromRaw, "fromYmd");
-          const to = assertYmd(toRaw, "toYmd");
+          from = assertYmd(fromRaw, "fromYmd");
+          to = assertYmd(toRaw, "toYmd");
           where.workDate = { gte: from, lte: to };
         }
         if (employeeId != null) where.employeeId = Number(employeeId);
-        return prisma.hr_attendance.findMany({
+        const rows = await prisma.hr_attendance.findMany({
           where,
           include: { employee: true },
           orderBy: [{ workDate: "desc" }, { employeeId: "asc" }],
+        });
+        const leaveWhere = { ...tenantHotelReadWhere(context), status: "approved" };
+        if (from && to) {
+          leaveWhere.fromYmd = { lte: to };
+          leaveWhere.toYmd = { gte: from };
+        }
+        if (employeeId != null) leaveWhere.employeeId = Number(employeeId);
+        const leaves = await prisma.hr_leave_request.findMany({
+          where: leaveWhere,
+          select: {
+            employeeId: true,
+            fromYmd: true,
+            toYmd: true,
+            status: true,
+          },
+        });
+        return rows.map((row) => {
+          if (approvedLeaveCoversDate(leaves, row.employeeId, row.workDate)) {
+            return {
+              ...row,
+              status: "on_leave",
+              notes: row.notes?.includes("leave")
+                ? row.notes
+                : row.notes
+                  ? `${row.notes} · Approved leave`
+                  : "Approved leave",
+            };
+          }
+          return row;
         });
       },
 
@@ -1127,6 +1204,10 @@ export function createHrResolvers({
               0,
               Math.min(10_000_000, round2(Number(row?.amountETB) || 0)),
             ),
+            attendanceLink: (() => {
+              const link = String(row?.attendanceLink ?? "").trim();
+              return ATTENDANCE_LINK_VALUES.has(link) ? link : "";
+            })(),
             active: row?.active !== false,
             sortOrder: index,
           });
@@ -1153,6 +1234,7 @@ export function createHrResolvers({
                 label: row.label,
                 deduct: row.deduct,
                 amountETB: row.amountETB,
+                attendanceLink: row.attendanceLink,
                 active: row.active,
                 sortOrder: row.sortOrder,
               },
@@ -1306,6 +1388,14 @@ export function createHrResolvers({
           }
 
           await syncEmployeeLeaveStatus(tx, request.employeeId);
+          if (approve) {
+            await markAttendanceOnLeave(
+              tx,
+              request.employee,
+              request.fromYmd,
+              request.toYmd,
+            );
+          }
         });
 
         return prisma.hr_leave_request.findUnique({
@@ -1322,6 +1412,20 @@ export function createHrResolvers({
           throw new Error("action must be 'in' or 'out'");
         }
         const workDate = todayYmd();
+        const onLeaveToday = await prisma.hr_leave_request.findFirst({
+          where: {
+            employeeId: employee.id,
+            status: "approved",
+            fromYmd: { lte: workDate },
+            toYmd: { gte: workDate },
+          },
+          select: { id: true },
+        });
+        if (onLeaveToday) {
+          throw new Error(
+            "Employee is on approved leave today — mark attendance as on leave, not clock in/out",
+          );
+        }
         const now = new Date();
         const existing = await prisma.hr_attendance.findUnique({
           where: {
@@ -1368,28 +1472,58 @@ export function createHrResolvers({
         assertHrAccess(context);
         const employee = await loadEmployeeInTenantOrThrow(context, employeeId);
         const wd = assertYmd(workDate, "workDate");
+        const onLeave = await prisma.hr_leave_request.findFirst({
+          where: {
+            employeeId: employee.id,
+            status: "approved",
+            fromYmd: { lte: wd },
+            toYmd: { gte: wd },
+          },
+          select: { id: true },
+        });
         let st = status != null ? String(status).trim() : undefined;
-        if (st != null && !ATTENDANCE_STATUSES.has(st)) {
+        if (onLeave) {
+          st = "on_leave";
+        } else if (st != null && !ATTENDANCE_STATUSES.has(st)) {
           throw new Error("Invalid attendance status");
         }
         const createData = {
           HotelName: employee.HotelName,
           employeeId: employee.id,
           workDate: wd,
-          clockInAt: clockInAt != null ? new Date(clockInAt) : null,
-          clockOutAt: clockOutAt != null ? new Date(clockOutAt) : null,
-          status: st ?? "present",
-          notes: String(notes ?? "").trim(),
+          clockInAt: onLeave
+            ? null
+            : clockInAt != null
+              ? new Date(clockInAt)
+              : null,
+          clockOutAt: onLeave
+            ? null
+            : clockOutAt != null
+              ? new Date(clockOutAt)
+              : null,
+          status: st ?? (onLeave ? "on_leave" : "present"),
+          notes: onLeave
+            ? "Approved leave"
+            : String(notes ?? "").trim(),
         };
         const updateData = {};
-        if (clockInAt !== undefined) {
-          updateData.clockInAt = clockInAt != null ? new Date(clockInAt) : null;
+        if (onLeave) {
+          updateData.clockInAt = null;
+          updateData.clockOutAt = null;
+          updateData.status = "on_leave";
+          updateData.notes = "Approved leave";
+        } else {
+          if (clockInAt !== undefined) {
+            updateData.clockInAt =
+              clockInAt != null ? new Date(clockInAt) : null;
+          }
+          if (clockOutAt !== undefined) {
+            updateData.clockOutAt =
+              clockOutAt != null ? new Date(clockOutAt) : null;
+          }
+          if (st != null) updateData.status = st;
+          if (notes != null) updateData.notes = String(notes).trim();
         }
-        if (clockOutAt !== undefined) {
-          updateData.clockOutAt = clockOutAt != null ? new Date(clockOutAt) : null;
-        }
-        if (st != null) updateData.status = st;
-        if (notes != null) updateData.notes = String(notes).trim();
 
         return prisma.hr_attendance.upsert({
           where: {
@@ -1545,6 +1679,50 @@ export function createHrResolvers({
           lineRuleApplies(rule, from, to),
         );
 
+        const employeeIdList = employees.map((e) => e.id);
+        const [incidents, leaveRequests, leaveTypes, attendanceRows, incidentTypes] =
+          await Promise.all([
+            prisma.hr_incident.findMany({
+              where: {
+                HotelName,
+                employeeId: { in: employeeIdList },
+                occurredYmd: { gte: from, lte: to },
+              },
+            }),
+            prisma.hr_leave_request.findMany({
+              where: {
+                HotelName,
+                employeeId: { in: employeeIdList },
+                status: "approved",
+                fromYmd: { lte: to },
+                toYmd: { gte: from },
+              },
+            }),
+            prisma.hr_leave_type.findMany({ where: { HotelName } }),
+            prisma.hr_attendance.findMany({
+              where: {
+                HotelName,
+                employeeId: { in: employeeIdList },
+                workDate: { gte: from, lte: to },
+              },
+            }),
+            prisma.hr_incident_type.findMany({
+              where: { HotelName, active: true },
+            }),
+          ]);
+
+        const leaveTypesByCode = Object.fromEntries(
+          leaveTypes.map((t) => [t.code, t]),
+        );
+        const leaveTypeLabels = Object.fromEntries(
+          leaveTypes.map((t) => [t.code, t.label]),
+        );
+        const attendanceLinkedTypes = incidentTypes.filter(
+          (t) =>
+            String(t.attendanceLink || "").trim() &&
+            Number(t.amountETB) > 0,
+        );
+
         const period = await prisma.$transaction(async (tx) => {
           const created = await tx.hr_payroll_period.create({
             data: {
@@ -1561,29 +1739,45 @@ export function createHrResolvers({
 
           let seq = 1;
           for (const employee of employees) {
-            const gross = round2(Number(employee.baseSalaryETB) || 0);
-            const earnings = [
-              { label: "Gross salary", amountETB: gross },
-              ...appliedRules
-                .filter((r) => r.kind === "increase")
-                .map((r) => ({
-                  label: r.label,
-                  amountETB: round2(Number(r.amountETB) || 0),
-                })),
-            ];
-            const deductions = appliedRules
-              .filter((r) => r.kind === "deduction")
-              .map((r) => ({
-                label: r.label,
-                amountETB: round2(Number(r.amountETB) || 0),
-              }));
-            const totalEarningsETB = round2(
-              earnings.reduce((s, r) => s + r.amountETB, 0),
+            const empIncidents = incidents.filter(
+              (i) => i.employeeId === employee.id,
             );
-            const totalDeductionsETB = round2(
-              deductions.reduce((s, r) => s + r.amountETB, 0),
+            const empLeaves = leaveRequests.filter(
+              (l) => l.employeeId === employee.id,
             );
-            const netPayETB = round2(totalEarningsETB - totalDeductionsETB);
+            const unpaidLeaves = empLeaves.filter((l) => {
+              const type = leaveTypesByCode[l.leaveType];
+              if (type) return type.paid === false;
+              return String(l.leaveType).toLowerCase().includes("unpaid");
+            });
+            const leaveDates = new Set();
+            for (const leave of empLeaves) {
+              for (const ymd of eachYmdInRange(
+                leave.fromYmd > from ? leave.fromYmd : from,
+                leave.toYmd < to ? leave.toYmd : to,
+              )) {
+                leaveDates.add(ymd);
+              }
+            }
+            const attendanceByDate = new Map();
+            for (const row of attendanceRows) {
+              if (row.employeeId !== employee.id) continue;
+              if (leaveDates.has(row.workDate)) continue;
+              attendanceByDate.set(row.workDate, row.status);
+            }
+
+            const built = buildIntegratedPayLines({
+              employee,
+              fromYmd: from,
+              toYmd: to,
+              appliedRules,
+              incidents: empIncidents,
+              unpaidLeaves,
+              leaveTypeLabels,
+              attendanceByDate,
+              leaveDates,
+              attendanceLinkedTypes,
+            });
             const number = payslipNumberFor(employee.id, created.id, seq++);
 
             await tx.hr_payslip.create({
@@ -1601,16 +1795,16 @@ export function createHrResolvers({
                 wageType: employee.wageType || "",
                 bankName: employee.bankName || "",
                 accountNumber: employee.accountNumber || "",
-                basePayETB: gross,
+                basePayETB: built.gross,
                 overtimeETB: 0,
                 tipsETB: 0,
-                deductionsETB: totalDeductionsETB,
-                netPayETB,
-                grossSalaryETB: gross,
-                totalEarningsETB,
-                totalDeductionsETB,
-                earningsJson: JSON.stringify(earnings),
-                deductionsJson: JSON.stringify(deductions),
+                deductionsETB: built.totalDeductionsETB,
+                netPayETB: built.netPayETB,
+                grossSalaryETB: built.gross,
+                totalEarningsETB: built.totalEarningsETB,
+                totalDeductionsETB: built.totalDeductionsETB,
+                earningsJson: JSON.stringify(built.earnings),
+                deductionsJson: JSON.stringify(built.deductions),
                 paymentStatus: "unpaid",
               },
             });

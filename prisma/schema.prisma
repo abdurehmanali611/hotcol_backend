@@ -1106,6 +1106,8 @@ model hr_incident_type {
   label      String
   deduct     Boolean  @default(false)
   amountETB  Float    @default(0)
+  /// "" | absent | late | half_day — when set, payroll multiplies amount by matching attendance days
+  attendanceLink String @default("")
   active     Boolean  @default(true)
   sortOrder  Int      @default(0)
   createdAt  DateTime @default(now())
@@ -1159,7 +1161,7 @@ model hr_attendance {
   workDate     String    // YYYY-MM-DD
   clockInAt    DateTime?
   clockOutAt   DateTime?
-  /// present | late | absent | half_day
+  /// present | late | absent | half_day | on_leave
   status       String    @default("present")
   notes        String    @default("")
   createdAt    DateTime  @default(now())
