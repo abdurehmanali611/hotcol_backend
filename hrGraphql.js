@@ -341,6 +341,7 @@ export const hrMutationFields = `
       department: String
       jobTitle: String
       status: String
+      hireDate: String
       wageType: String
       baseSalaryETB: Float
       bankName: String
@@ -455,6 +456,49 @@ function todayYmd() {
   return `${y}-${m}-${d}`;
 }
 
+/** Active approved leave covering `ymd` (default today). */
+async function employeeIdsOnLeave(db, scope, ymd = todayYmd()) {
+  const rows = await db.hr_leave_request.findMany({
+    where: {
+      ...scope,
+      status: "approved",
+      fromYmd: { lte: ymd },
+      toYmd: { gte: ymd },
+    },
+    select: { employeeId: true },
+  });
+  return new Set(rows.map((r) => r.employeeId));
+}
+
+function withEffectiveEmployeeStatus(employee, onLeaveIds) {
+  if (!employee || employee.status === "terminated") return employee;
+  const next = onLeaveIds.has(employee.id) ? "on_leave" : "active";
+  return next === employee.status ? employee : { ...employee, status: next };
+}
+
+async function syncEmployeeLeaveStatus(db, employeeId) {
+  const employee = await db.hr_employee.findUnique({
+    where: { id: Number(employeeId) },
+  });
+  if (!employee || employee.status === "terminated") return employee;
+  const today = todayYmd();
+  const activeLeave = await db.hr_leave_request.findFirst({
+    where: {
+      employeeId: employee.id,
+      status: "approved",
+      fromYmd: { lte: today },
+      toYmd: { gte: today },
+    },
+    select: { id: true },
+  });
+  const next = activeLeave ? "on_leave" : "active";
+  if (employee.status === next) return employee;
+  return db.hr_employee.update({
+    where: { id: employee.id },
+    data: { status: next },
+  });
+}
+
 function periodKeyFromYmd(ymd) {
   return String(ymd || "").slice(0, 7);
 }
@@ -557,10 +601,13 @@ export function createHrResolvers({
     Query: {
       hrEmployees: async (_, __, context) => {
         assertHrAccess(context);
-        return prisma.hr_employee.findMany({
-          where: tenantHotelReadWhere(context),
+        const where = tenantHotelReadWhere(context);
+        const employees = await prisma.hr_employee.findMany({
+          where,
           orderBy: [{ status: "asc" }, { fullName: "asc" }],
         });
+        const onLeaveIds = await employeeIdsOnLeave(prisma, where);
+        return employees.map((e) => withEffectiveEmployeeStatus(e, onLeaveIds));
       },
 
       hrEmployee: async (_, { id }, context) => {
@@ -571,7 +618,10 @@ export function createHrResolvers({
         if (!employee || !tenantHotelReadMatches(context, employee.HotelName)) {
           return null;
         }
-        return employee;
+        const onLeaveIds = await employeeIdsOnLeave(prisma, {
+          HotelName: employee.HotelName,
+        });
+        return withEffectiveEmployeeStatus(employee, onLeaveIds);
       },
 
       hrEmployeeMe: async (_, __, context) => {
@@ -749,7 +799,7 @@ export function createHrResolvers({
         const today = todayYmd();
         const [
           headcount,
-          onLeaveToday,
+          onLeaveRows,
           pendingLeave,
           openShiftsToday,
           openPayrollPeriods,
@@ -757,8 +807,15 @@ export function createHrResolvers({
           prisma.hr_employee.count({
             where: { ...scope, status: { in: ["active", "on_leave"] } },
           }),
-          prisma.hr_employee.count({
-            where: { ...scope, status: "on_leave" },
+          prisma.hr_leave_request.findMany({
+            where: {
+              ...scope,
+              status: "approved",
+              fromYmd: { lte: today },
+              toYmd: { gte: today },
+            },
+            select: { employeeId: true },
+            distinct: ["employeeId"],
           }),
           prisma.hr_leave_request.count({
             where: { ...scope, status: "pending" },
@@ -772,7 +829,7 @@ export function createHrResolvers({
         ]);
         return {
           headcount,
-          onLeaveToday,
+          onLeaveToday: onLeaveRows.length,
           pendingLeave,
           openShiftsToday,
           openPayrollPeriods,
@@ -856,6 +913,7 @@ export function createHrResolvers({
           department,
           jobTitle,
           status,
+          hireDate,
           wageType,
           baseSalaryETB,
           bankName,
@@ -883,6 +941,12 @@ export function createHrResolvers({
           if (!EMPLOYEE_STATUSES.has(s)) throw new Error("Invalid employee status");
           data.status = s;
         }
+        if (hireDate != null) {
+          data.hireDate =
+            String(hireDate).trim() !== ""
+              ? assertYmd(hireDate, "hireDate")
+              : "";
+        }
         if (wageType != null) {
           const wt = String(wageType).trim();
           if (!WAGE_TYPES.has(wt)) throw new Error("Invalid wage type");
@@ -903,10 +967,14 @@ export function createHrResolvers({
           data.credentialUserName = String(credentialUserName).trim();
         }
         if (notes != null) data.notes = String(notes).trim();
-        return prisma.hr_employee.update({
+        const updated = await prisma.hr_employee.update({
           where: { id: employee.id },
           data,
         });
+        const onLeaveIds = await employeeIdsOnLeave(prisma, {
+          HotelName: updated.HotelName,
+        });
+        return withEffectiveEmployeeStatus(updated, onLeaveIds);
       },
 
       terminateHrEmployee: async (_, { id, endDate }, context) => {
@@ -1236,6 +1304,8 @@ export function createHrResolvers({
               update: { balanceDays: nextBalance },
             });
           }
+
+          await syncEmployeeLeaveStatus(tx, request.employeeId);
         });
 
         return prisma.hr_leave_request.findUnique({
