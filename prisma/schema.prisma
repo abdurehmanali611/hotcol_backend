@@ -1304,7 +1304,9 @@ model hr_payroll_line_rule {
   @@index([HotelName, kind])
 }
 
-/// Manager-approved From–To day-of-month window per wage type
+/// Manager-approved pay window per wage type.
+/// fromDay = minimum inclusive From–To calendar length (days) when generating payroll.
+/// toDay kept for reference / display.
 model hr_wage_pay_window {
   id        Int      @id @default(autoincrement())
   HotelName String

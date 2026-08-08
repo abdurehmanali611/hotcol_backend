@@ -15,6 +15,7 @@ import {
   payslipNumberFor,
   buildIntegratedPayLines,
   eachYmdInRange,
+  inclusiveDayCount,
 } from "./hrPayrollHelpers.js";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -421,6 +422,7 @@ export const hrMutationFields = `
       toYmd: String!
       notes: String
       employeeIds: [Int!]
+      wageScope: String
     ): HrPayrollPeriod!
     markHrPayslipsPaid(payslipIds: [Int!]!): [HrPayslip!]!
     approveHrPayslipsPayment(payslipIds: [Int!]!): [HrPayslip!]!
@@ -1612,7 +1614,7 @@ export function createHrResolvers({
 
       createHrPayrollPeriod: async (
         _,
-        { fromYmd, toYmd, notes, employeeIds },
+        { fromYmd, toYmd, notes, employeeIds, wageScope },
         context,
       ) => {
         assertPayrollRunner(context);
@@ -1623,6 +1625,7 @@ export function createHrResolvers({
         if (to < from) throw new Error("toYmd must not be before fromYmd");
         const named = namedMonthFromPayRange(from, to);
         const payDate = todayYmd();
+        const rangeDays = inclusiveDayCount(from, to);
 
         const existing = await prisma.hr_payroll_period.findUnique({
           where: {
@@ -1638,17 +1641,50 @@ export function createHrResolvers({
         const windows = await prisma.hr_wage_pay_window.findMany({
           where: { HotelName, active: true },
         });
-        const fromDay = dayOfYmd(from);
-        const toDay = dayOfYmd(to);
-        const matchingWageTypes = new Set(
-          windows
-            .filter((w) => w.fromDay === fromDay && w.toDay === toDay)
-            .map((w) => w.wageType),
+        const windowByWage = new Map(
+          windows.map((w) => [String(w.wageType), w]),
         );
 
         const idFilter = Array.isArray(employeeIds)
           ? employeeIds.map((n) => Number(n)).filter((n) => Number.isFinite(n))
           : [];
+
+        let scope = String(wageScope ?? "").trim().toLowerCase();
+        if (idFilter.length) scope = "employee";
+        if (!scope) scope = "batch";
+        if (!["batch", "monthly", "weekly", "employee"].includes(scope)) {
+          throw new Error("Invalid wage scope");
+        }
+
+        const minGapForWages = (wageTypes) => {
+          let minGap = 0;
+          for (const wt of wageTypes) {
+            const w = windowByWage.get(wt);
+            if (!w) continue;
+            const fd = Number(w.fromDay) || 0;
+            if (fd > minGap) minGap = fd;
+          }
+          return minGap;
+        };
+
+        let targetWageTypes = [];
+        if (scope === "batch") {
+          targetWageTypes = ["monthly", "weekly"].filter((wt) =>
+            windowByWage.has(wt),
+          );
+          if (!targetWageTypes.length) {
+            throw new Error(
+              "Configure wage-type pay windows (monthly and/or weekly) before batch generate",
+            );
+          }
+        } else if (scope === "monthly" || scope === "weekly") {
+          if (!windowByWage.has(scope)) {
+            throw new Error(
+              `Configure a ${scope} wage-type pay window in Payroll settings first`,
+            );
+          }
+          targetWageTypes = [scope];
+        }
 
         let employees;
         if (idFilter.length) {
@@ -1660,17 +1696,31 @@ export function createHrResolvers({
             },
             orderBy: { fullName: "asc" },
           });
-        } else {
-          if (!matchingWageTypes.size) {
+          const empWages = [
+            ...new Set(
+              employees
+                .map((e) => String(e.wageType || "").trim())
+                .filter((wt) => WAGE_TYPES.has(wt)),
+            ),
+          ];
+          const minGap = minGapForWages(empWages);
+          if (minGap > 0 && rangeDays < minGap) {
             throw new Error(
-              "No Manager wage-type windows match this From–To (start/end day). Configure wage pay windows first, or pick employees explicitly.",
+              `From–To must cover at least ${minGap} day${minGap === 1 ? "" : "s"} for the selected employee wage type(s)`,
+            );
+          }
+        } else {
+          const minGap = minGapForWages(targetWageTypes);
+          if (minGap > 0 && rangeDays < minGap) {
+            throw new Error(
+              `From–To must cover at least ${minGap} day${minGap === 1 ? "" : "s"} for ${scope === "batch" ? "batch (largest wage-window from-day)" : `${scope} wage window`}`,
             );
           }
           employees = await prisma.hr_employee.findMany({
             where: {
               HotelName,
               status: { in: ["active", "on_leave"] },
-              wageType: { in: [...matchingWageTypes] },
+              wageType: { in: targetWageTypes },
             },
             orderBy: { fullName: "asc" },
           });
@@ -1787,6 +1837,11 @@ export function createHrResolvers({
               attendanceLinkedTypes,
             });
             const number = payslipNumberFor(employee.id, created.id, seq++);
+            const weeksNote =
+              String(employee.wageType || "").trim() === "weekly" &&
+              built.weeks
+                ? `payrollWeeks=${built.weeks}`
+                : "";
 
             await tx.hr_payslip.create({
               data: {
@@ -1814,6 +1869,7 @@ export function createHrResolvers({
                 earningsJson: JSON.stringify(built.earnings),
                 deductionsJson: JSON.stringify(built.deductions),
                 paymentStatus: "unpaid",
+                notes: weeksNote,
               },
             });
           }

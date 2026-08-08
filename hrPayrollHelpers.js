@@ -87,6 +87,13 @@ export function payslipNumberFor(employeeId, periodId, seq) {
   return `PS-${p}-${e}-${s}`;
 }
 
+/** Weeks in From–To (inclusive days ÷ 7, 2 decimals). */
+export function payrollWeeksInRange(fromYmd, toYmd) {
+  const days = inclusiveDayCount(fromYmd, toYmd);
+  if (days <= 0) return 0;
+  return Math.round((days / 7) * 100) / 100;
+}
+
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
@@ -191,9 +198,18 @@ export function buildIntegratedPayLines({
   leaveDates = new Set(),
   attendanceLinkedTypes = [],
 }) {
-  const gross = round2(Number(employee.baseSalaryETB) || 0);
+  const base = Number(employee.baseSalaryETB) || 0;
+  const wt = String(employee.wageType || "monthly").trim();
+  const isWeekly = wt === "weekly";
+  const weeks = isWeekly ? payrollWeeksInRange(fromYmd, toYmd) : 0;
+  const gross = isWeekly
+    ? round2(base * Math.max(weeks, 0))
+    : round2(base);
+  const grossLabel = isWeekly
+    ? `Gross salary (${weeks} week${weeks === 1 ? "" : "s"})`
+    : "Gross salary";
   const earnings = [
-    { label: "Gross salary", amountETB: gross },
+    { label: grossLabel, amountETB: gross },
     ...appliedRules
       .filter((r) => r.kind === "increase")
       .map((r) => {
@@ -240,7 +256,7 @@ export function buildIntegratedPayLines({
     }
   }
 
-  const rate = dailyRateETB(gross, employee.wageType);
+  const rate = dailyRateETB(base, employee.wageType);
   for (const leave of unpaidLeaves) {
     const days = overlapInclusiveDays(
       leave.fromYmd,
@@ -291,6 +307,7 @@ export function buildIntegratedPayLines({
   );
   return {
     gross,
+    weeks: isWeekly ? weeks : 0,
     earnings,
     deductions,
     totalEarningsETB,
