@@ -20,7 +20,7 @@ import {
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const EMPLOYEE_STATUSES = new Set(["active", "on_leave", "terminated"]);
-const WAGE_TYPES = new Set(["hourly", "monthly", "weekly", "tip_eligible"]);
+const WAGE_TYPES = new Set(["monthly", "weekly"]);
 const LEAVE_STATUSES = new Set(["pending", "approved", "rejected", "cancelled"]);
 const ATTENDANCE_STATUSES = new Set([
   "present",

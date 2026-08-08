@@ -1041,7 +1041,7 @@ model hr_employee {
   status          String    @default("active")
   hireDate        String    @default("") // YYYY-MM-DD
   endDate         String    @default("")
-  /// hourly | monthly | weekly | tip_eligible
+  /// monthly | weekly
   wageType        String    @default("monthly")
   baseSalaryETB   Float     @default(0)
   bankName        String    @default("")

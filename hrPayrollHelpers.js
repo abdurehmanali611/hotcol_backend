@@ -133,7 +133,8 @@ export function eachYmdInRange(fromYmd, toYmd) {
 
 /**
  * Daily rate for unpaid-leave / absence prorating.
- * monthly & tip_eligible → base / 30; weekly → base / 7; hourly → base (treated as daily).
+ * monthly → base / 30; weekly → base / 7.
+ * Legacy hourly/tip_eligible still map for older employee rows.
  */
 export function dailyRateETB(baseSalaryETB, wageType) {
   const base = Number(baseSalaryETB) || 0;
