@@ -1287,6 +1287,9 @@ model hr_payroll_line_rule {
   /// deduction | increase
   kind       String
   label      String
+  /// Percent of employee base salary (0–100). Preferred over amountETB.
+  percentOfSalary Float @default(0)
+  /// Legacy fixed ETB — used only when percentOfSalary is 0
   amountETB  Float    @default(0)
   /// always | day_range
   whenMode   String   @default("always")

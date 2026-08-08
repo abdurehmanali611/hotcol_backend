@@ -195,6 +195,7 @@ export const hrTypeDefsBlock = `
     HotelName: String!
     kind: String!
     label: String!
+    percentOfSalary: Float!
     amountETB: Float!
     whenMode: String!
     fromDay: Int
@@ -206,6 +207,7 @@ export const hrTypeDefsBlock = `
   input HrPayrollLineRuleInput {
     kind: String!
     label: String!
+    percentOfSalary: Float
     amountETB: Float
     whenMode: String
     fromDay: Int
@@ -1967,6 +1969,10 @@ export function createHrResolvers({
           rows.push({
             kind,
             label,
+            percentOfSalary: Math.max(
+              0,
+              Math.min(100, Number(row?.percentOfSalary) || 0),
+            ),
             amountETB: round2(Number(row?.amountETB) || 0),
             whenMode,
             fromDay,

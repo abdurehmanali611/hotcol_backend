@@ -167,6 +167,15 @@ export function resolveIncidentPayETB(row, baseSalaryETB, multiplier = 1) {
 }
 
 /**
+ * Resolve common payroll line amount: percent of salary wins; else legacy fixed ETB.
+ */
+export function resolveLineRuleAmountETB(rule, baseSalaryETB) {
+  const pct = Number(rule?.percentOfSalary) || 0;
+  if (pct > 0) return salaryPercentToETB(baseSalaryETB, pct, 1);
+  return round2(Number(rule?.amountETB) || 0);
+}
+
+/**
  * Build earnings/deductions for one employee in a payroll From–To window.
  * Integrates: common line rules, recorded incidents, unpaid leave, attendance-linked types.
  */
@@ -187,17 +196,27 @@ export function buildIntegratedPayLines({
     { label: "Gross salary", amountETB: gross },
     ...appliedRules
       .filter((r) => r.kind === "increase")
-      .map((r) => ({
-        label: r.label,
-        amountETB: round2(Number(r.amountETB) || 0),
-      })),
+      .map((r) => {
+        const pct = Number(r.percentOfSalary) || 0;
+        const amount = resolveLineRuleAmountETB(r, gross);
+        const pctNote = pct > 0 ? ` (${pct}% of salary)` : "";
+        return {
+          label: `${r.label}${pctNote}`,
+          amountETB: amount,
+        };
+      }),
   ];
   const deductions = appliedRules
     .filter((r) => r.kind === "deduction")
-    .map((r) => ({
-      label: r.label,
-      amountETB: round2(Number(r.amountETB) || 0),
-    }));
+    .map((r) => {
+      const pct = Number(r.percentOfSalary) || 0;
+      const amount = resolveLineRuleAmountETB(r, gross);
+      const pctNote = pct > 0 ? ` (${pct}% of salary)` : "";
+      return {
+        label: `${r.label}${pctNote}`,
+        amountETB: amount,
+      };
+    });
 
   for (const inc of incidents) {
     const pct = Number(inc.percentOfSalary) || 0;
