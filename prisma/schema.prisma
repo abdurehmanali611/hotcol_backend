@@ -704,6 +704,10 @@ model KitchenBarMonthlySnapshot {
   totalImpliedSales    Float    @default(0)
   /// closingOnHand from the last calendar day present in that month for this key.
   lastDayClosingOnHand Float    @default(0)
+  /// Sum of info-only shortage variance amounts across days in the range.
+  totalShortage        Float    @default(0)
+  /// Sum of info-only overage variance amounts across days in the range.
+  totalOverage         Float    @default(0)
   syncedAt             DateTime @default(now())
 
   @@unique([HotelName, station, itemName, monthPeriod])

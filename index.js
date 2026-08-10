@@ -1075,6 +1075,10 @@ const typeDefs = gql`
     periodTo: String!
     totalImpliedSales: Float!
     lastDayClosingOnHand: Float!
+    """Sum of info-only shortage amounts across days in the range."""
+    totalShortage: Float!
+    """Sum of info-only overage amounts across days in the range."""
+    totalOverage: Float!
     syncedAt: DateTime!
   }
 
@@ -7509,6 +7513,8 @@ const resolvers = {
           String(a.calendarDate).localeCompare(String(b.calendarDate)),
         );
         let totalSales = 0;
+        let totalShortage = 0;
+        let totalOverage = 0;
         for (let i = 0; i < list.length; i++) {
           const row = list[i];
           const prev = i > 0 ? list[i - 1] : null;
@@ -7517,6 +7523,12 @@ const resolvers = {
             prev,
             row.salesDay,
           );
+          const varianceKind = normalizeCountVariance(row.countVariance);
+          const varianceAmt = round2(
+            Math.max(0, Number(row.countVarianceAmount) || 0),
+          );
+          if (varianceKind === "SHORTAGE") totalShortage += varianceAmt;
+          else if (varianceKind === "OVERAGE") totalOverage += varianceAmt;
         }
         const last = list[list.length - 1];
         const closing =
@@ -7536,6 +7548,8 @@ const resolvers = {
         const payload = {
           totalImpliedSales: round2(totalSales),
           lastDayClosingOnHand: closing,
+          totalShortage: round2(totalShortage),
+          totalOverage: round2(totalOverage),
           syncedAt: new Date(),
         };
         if (existing) {
