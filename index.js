@@ -2042,6 +2042,9 @@ function normalizeKitchenBarStation(raw) {
   if (up === "CHEF" || up === "KITCHEN") return "KITCHEN";
   if (up === "BAR") return "BAR";
   if (up === "ROOM") return "ROOM";
+  // Department destination labels from store (e.g. "Bar", "Kitchen").
+  if (s.startsWith("kitchen")) return "KITCHEN";
+  if (s.startsWith("bar")) return "BAR";
   return up.replace(/\s+/g, "_") || "OTHER";
 }
 
