@@ -156,7 +156,11 @@ export function salaryPercentToETB(baseSalaryETB, percent, multiplier = 1) {
   const pct = Math.max(0, Math.min(100, Number(percent) || 0));
   if (pct <= 0) return 0;
   const mult = Math.max(0, Number(multiplier) || 0);
-  return round2((Number(baseSalaryETB) || 0) * (pct / 100) * mult);
+  const raw = (Number(baseSalaryETB) || 0) * (pct / 100) * mult;
+  if (raw <= 0) return 0;
+  const rounded = round2(raw);
+  // Keep sub-cent pay impacts visible when percent is intentional (e.g. tiny %).
+  return rounded > 0 ? rounded : round2(Math.max(raw, 0.01));
 }
 
 /**
@@ -243,14 +247,20 @@ export function buildIntegratedPayLines({
       String(inc.kind || "Incident").trim() ||
       "Incident";
     const pctNote = pct > 0 ? ` (${pct}% of salary)` : "";
-    if (inc.salaryDeduct) {
-      deductions.push({
-        label: `Incident · ${title}${pctNote}`,
+    const rawDeduct = inc.salaryDeduct;
+    const isCredit =
+      rawDeduct === false ||
+      rawDeduct === 0 ||
+      rawDeduct === "0" ||
+      String(rawDeduct).toLowerCase() === "false";
+    if (isCredit) {
+      earnings.push({
+        label: `Incident credit · ${title}${pctNote}`,
         amountETB: amount,
       });
     } else {
-      earnings.push({
-        label: `Incident credit · ${title}${pctNote}`,
+      deductions.push({
+        label: `Incident · ${title}${pctNote}`,
         amountETB: amount,
       });
     }

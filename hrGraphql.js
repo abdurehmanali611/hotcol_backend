@@ -1633,9 +1633,17 @@ export function createHrResolvers({
           },
         });
         if (existing) {
-          throw new Error(
-            "A payroll run already exists for this From–To range",
-          );
+          const st = String(existing.status || "").trim();
+          // Open runs can be replaced so later incidents/attendance are picked up.
+          if (st === "open") {
+            await prisma.hr_payroll_period.delete({
+              where: { id: existing.id },
+            });
+          } else {
+            throw new Error(
+              "A payroll run already exists for this From–To range. Only open runs can be replaced — choose different dates or keep the existing run.",
+            );
+          }
         }
 
         const windows = await prisma.hr_wage_pay_window.findMany({
@@ -1798,7 +1806,7 @@ export function createHrResolvers({
           let seq = 1;
           for (const employee of employees) {
             const empIncidents = incidents.filter(
-              (i) => i.employeeId === employee.id,
+              (i) => Number(i.employeeId) === Number(employee.id),
             );
             const empLeaves = leaveRequests.filter(
               (l) => l.employeeId === employee.id,
