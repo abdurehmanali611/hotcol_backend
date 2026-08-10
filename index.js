@@ -3,7 +3,7 @@ import { ApolloServer, gql } from "apollo-server-express";
 import cors from "cors";
 import crypto from "crypto";
 import { createPrismaClient } from "./lib/prismaClient.js";
-import { isSameCafeBusinessDay } from "./cafeBusinessDay.js";
+import { isSameCafeBusinessDay, cafeBusinessDateYmd } from "./cafeBusinessDay.js";
 import {
   isBarStationOrder,
   isKitchenStationOrder,
@@ -2063,17 +2063,25 @@ function ymdUtcFromDate(d) {
 
 /**
  * Business day for a stock-out line: prefer store movementDate, else approval time.
- * Daily counts must use this day's stock-outs (sum of all), never a prior day's last move.
+ * Uses Africa/Addis_Ababa (same as café business day) so morning stock-outs in
+ * Ethiopia are not shifted to the previous UTC calendar day.
  */
 function stockOutBusinessYmd(reqRow) {
-  if (reqRow?.movementDate) {
-    const ymd = ymdUtcFromDate(reqRow.movementDate);
-    if (ymd) return ymd;
-  }
-  if (reqRow?.decidedAt) {
-    return ymdUtcFromDate(reqRow.decidedAt);
-  }
-  return "";
+  const raw = reqRow?.movementDate || reqRow?.decidedAt;
+  if (!raw) return "";
+  return cafeBusinessDateYmd(raw);
+}
+
+function stockOutMatchesCalendarDay(reqRow, calendarDateYmd) {
+  const cal = String(calendarDateYmd || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cal)) return false;
+  const raw = reqRow?.movementDate || reqRow?.decidedAt;
+  if (!raw) return false;
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) return false;
+  const addis = cafeBusinessDateYmd(dt);
+  const utc = ymdUtcFromDate(dt);
+  return addis === cal || utc === cal;
 }
 
 /** Previous day’s On Hand: prefer stored closing when set, else Beginning (BB) (legacy rows). */
@@ -2228,11 +2236,11 @@ async function sumApprovedStockOutToStation(
 ) {
   const cal = String(calendarDateYmd).trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cal)) return 0;
+  // ±1 day UTC window so East-Africa local midnights aren't excluded before match.
   const start = new Date(`${cal}T00:00:00.000Z`);
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 1);
-  // Pull anything that might belong to this calendar day by either date field,
-  // then keep only rows whose business day (movementDate || decidedAt) matches.
+  start.setUTCDate(start.getUTCDate() - 1);
+  const end = new Date(`${cal}T00:00:00.000Z`);
+  end.setUTCDate(end.getUTCDate() + 2);
   const requests = await client.stockOutRequest.findMany({
     where: {
       HotelName: hotelName,
@@ -2256,7 +2264,7 @@ async function sumApprovedStockOutToStation(
   const normItem = String(itemNameTrimmed).trim();
   let sum = 0;
   for (const r of requests) {
-    if (stockOutBusinessYmd(r) !== cal) continue;
+    if (!stockOutMatchesCalendarDay(r, cal)) continue;
     if (normalizeKitchenBarStation(r.stakeHolderOrReason) !== stationKey) {
       continue;
     }
