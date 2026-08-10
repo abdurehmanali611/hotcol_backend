@@ -1053,6 +1053,11 @@ const typeDefs = gql`
     invitationTakenDay: Float!
     """Null when legacy rows still derive sales from beginning − prior on hand."""
     salesDay: Float
+    """NEUTRAL | SHORTAGE | OVERAGE — physical cross-check vs calculated on-hand."""
+    countVariance: String!
+    countVarianceAmount: Float!
+    """When station is ROOM: KITCHEN or BAR source for reallocated sales."""
+    roomSourceStation: String!
     closingOnHand: Float!
     notes: String!
     createdAt: DateTime!
@@ -1628,6 +1633,9 @@ const typeDefs = gql`
       managementTakenDay: Float
       invitationTakenDay: Float
       salesDay: Float
+      countVariance: String
+      countVarianceAmount: Float
+      roomSourceStation: String
       monthPeriod: String
       calendarDate: String!
       notes: String
@@ -1642,6 +1650,9 @@ const typeDefs = gql`
       managementTakenDay: Float
       invitationTakenDay: Float
       salesDay: Float
+      countVariance: String
+      countVarianceAmount: Float
+      roomSourceStation: String
       monthPeriod: String
       calendarDate: String!
       notes: String
@@ -2039,10 +2050,26 @@ function kitchenBarStationPrismaWhere(stationKey) {
 
 function ymdUtcFromDate(d) {
   const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return "";
   const y = dt.getUTCFullYear();
   const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const day = String(dt.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/**
+ * Business day for a stock-out line: prefer store movementDate, else approval time.
+ * Daily counts must use this day's stock-outs (sum of all), never a prior day's last move.
+ */
+function stockOutBusinessYmd(reqRow) {
+  if (reqRow?.movementDate) {
+    const ymd = ymdUtcFromDate(reqRow.movementDate);
+    if (ymd) return ymd;
+  }
+  if (reqRow?.decidedAt) {
+    return ymdUtcFromDate(reqRow.decidedAt);
+  }
+  return "";
 }
 
 /** Previous day’s On Hand: prefer stored closing when set, else Beginning (BB) (legacy rows). */
@@ -2081,6 +2108,89 @@ function computeClosingOnHand(
   return Number(opening) + Number(stockOutSum) - salesToday - mgmt - invite;
 }
 
+function normalizeCountVariance(raw) {
+  const v = String(raw ?? "")
+    .trim()
+    .toUpperCase();
+  if (v === "SHORTAGE" || v === "OVERAGE") return v;
+  return "NEUTRAL";
+}
+
+function normalizeRoomSourceStation(raw, stationKey) {
+  if (normalizeKitchenBarStation(stationKey) !== "ROOM") return "";
+  const key = normalizeKitchenBarStation(raw);
+  if (key === "KITCHEN" || key === "BAR") return key;
+  return "";
+}
+
+/** Shortage/overage is info-only — does not change calculated closing On Hand. */
+
+/**
+ * Room uses kitchen/bar stock: register room sales and deduct the same qty
+ * from the source station's sales that calendar day (reallocation).
+ */
+async function adjustSourceStationSales(
+  client,
+  hotelName,
+  sourceStationKey,
+  itemNameTrimmed,
+  calendarDateYmd,
+  deltaSales,
+) {
+  const delta = round2(Number(deltaSales) || 0);
+  if (!delta || !sourceStationKey) return;
+  const source = await client.kitchenBarBeginning.findFirst({
+    where: {
+      HotelName: hotelName,
+      itemName: String(itemNameTrimmed).trim(),
+      calendarDate: String(calendarDateYmd).trim(),
+      ...kitchenBarStationPrismaWhere(sourceStationKey),
+    },
+  });
+  if (!source) {
+    throw new Error(
+      `No ${sourceStationKey === "BAR" ? "Bar" : "Kitchen"} daily count for “${itemNameTrimmed}” on ${calendarDateYmd}. Count that station first, then register Room.`,
+    );
+  }
+  const currentSales =
+    source.salesDay != null && Number.isFinite(Number(source.salesDay))
+      ? round2(Number(source.salesDay) || 0)
+      : 0;
+  const nextSales = round2(Math.max(0, currentSales + delta));
+  const sum = await sumApprovedStockOutToStation(
+    client,
+    hotelName,
+    sourceStationKey,
+    itemNameTrimmed,
+    calendarDateYmd,
+  );
+  const prev = await findPreviousKitchenBarRow(
+    client,
+    hotelName,
+    sourceStationKey,
+    itemNameTrimmed,
+    calendarDateYmd,
+  );
+  const closing = round2(
+    computeClosingOnHand(
+      Number(source.amount),
+      sum,
+      Number(source.managementTakenDay ?? 0),
+      prev,
+      Number(source.invitationTakenDay ?? 0),
+      nextSales,
+    ),
+  );
+  await client.kitchenBarBeginning.update({
+    where: { id: source.id },
+    data: {
+      salesDay: nextSales,
+      stockOutDay: round2(sum),
+      closingOnHand: closing,
+    },
+  });
+}
+
 function round2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 }
@@ -2113,15 +2223,21 @@ async function sumApprovedStockOutToStation(
   calendarDateYmd,
 ) {
   const cal = String(calendarDateYmd).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cal)) return 0;
   const start = new Date(`${cal}T00:00:00.000Z`);
   const end = new Date(start);
   end.setUTCDate(end.getUTCDate() + 1);
+  // Pull anything that might belong to this calendar day by either date field,
+  // then keep only rows whose business day (movementDate || decidedAt) matches.
   const requests = await client.stockOutRequest.findMany({
     where: {
       HotelName: hotelName,
       movementType: "STOCK_OUT",
       status: "APPROVED",
-      decidedAt: { gte: start, lt: end },
+      OR: [
+        { decidedAt: { gte: start, lt: end } },
+        { movementDate: { gte: start, lt: end } },
+      ],
     },
   });
   if (requests.length === 0) return 0;
@@ -2136,6 +2252,7 @@ async function sumApprovedStockOutToStation(
   const normItem = String(itemNameTrimmed).trim();
   let sum = 0;
   for (const r of requests) {
+    if (stockOutBusinessYmd(r) !== cal) continue;
     if (normalizeKitchenBarStation(r.stakeHolderOrReason) !== stationKey) {
       continue;
     }
@@ -2145,7 +2262,7 @@ async function sumApprovedStockOutToStation(
     if (reqItemName !== normItem.toLowerCase()) {
       continue;
     }
-    sum += Number(r.amount);
+    sum += Number(r.amount) || 0;
   }
   return sum;
 }
@@ -2592,12 +2709,16 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
     });
   }
   if (reqRow.movementType === "STOCK_OUT") {
+    const businessDay =
+      reqRow.movementDate != null
+        ? new Date(reqRow.movementDate)
+        : decidedNow;
     await reconcileKitchenBarDailyRows(
       tx,
       reqRow.HotelName,
       String(item.name).trim(),
       reqRow.stakeHolderOrReason,
-      actionDate,
+      businessDay,
     );
   }
   return decidedNow;
@@ -7046,6 +7167,9 @@ const resolvers = {
         managementTakenDay,
         invitationTakenDay,
         salesDay,
+        countVariance,
+        countVarianceAmount,
+        roomSourceStation,
         monthPeriod,
         notes,
         calendarDate,
@@ -7067,6 +7191,21 @@ const resolvers = {
         throw new Error("Item name is required");
       }
       const stationKey = normalizeKitchenBarStation(station);
+      const variance = normalizeCountVariance(countVariance);
+      const varianceAmt =
+        variance === "NEUTRAL"
+          ? 0
+          : round2(Math.max(0, Number(countVarianceAmount) || 0));
+      if (variance !== "NEUTRAL" && varianceAmt <= 0) {
+        throw new Error("Enter the shortage or overage amount");
+      }
+      const roomSource = normalizeRoomSourceStation(
+        roomSourceStation,
+        stationKey,
+      );
+      if (stationKey === "ROOM" && !roomSource) {
+        throw new Error("Room counts require Kitchen or Bar as the source station");
+      }
       const inv = await prisma.itemRegistration.findFirst({
         where: {
           ...tenantHotelReadWhere(context),
@@ -7119,6 +7258,19 @@ const resolvers = {
           salesTaken,
         ),
       );
+
+      // Room: reallocate sales from kitchen/bar (deduct from source sales).
+      if (stationKey === "ROOM" && roomSource && (salesTaken || 0) > 0) {
+        await adjustSourceStationSales(
+          prisma,
+          tenant,
+          roomSource,
+          item,
+          cal,
+          -Number(salesTaken || 0),
+        );
+      }
+
       return await prisma.kitchenBarBeginning.create({
         data: {
           HotelName: tenant,
@@ -7132,6 +7284,9 @@ const resolvers = {
           managementTakenDay: mgmtTaken,
           invitationTakenDay: inviteTaken,
           salesDay: salesTaken,
+          countVariance: variance,
+          countVarianceAmount: varianceAmt,
+          roomSourceStation: roomSource,
           closingOnHand: closing,
           notes: notes ?? "",
         },
@@ -7149,6 +7304,9 @@ const resolvers = {
         managementTakenDay,
         invitationTakenDay,
         salesDay,
+        countVariance,
+        countVarianceAmount,
+        roomSourceStation,
         monthPeriod,
         notes,
         calendarDate,
@@ -7175,6 +7333,21 @@ const resolvers = {
         throw new Error("Item name is required");
       }
       const stationKey = normalizeKitchenBarStation(station);
+      const variance = normalizeCountVariance(countVariance);
+      const varianceAmt =
+        variance === "NEUTRAL"
+          ? 0
+          : round2(Math.max(0, Number(countVarianceAmount) || 0));
+      if (variance !== "NEUTRAL" && varianceAmt <= 0) {
+        throw new Error("Enter the shortage or overage amount");
+      }
+      const roomSource = normalizeRoomSourceStation(
+        roomSourceStation,
+        stationKey,
+      );
+      if (stationKey === "ROOM" && !roomSource) {
+        throw new Error("Room counts require Kitchen or Bar as the source station");
+      }
       const inv = await prisma.itemRegistration.findFirst({
         where: {
           ...tenantHotelReadWhere(context),
@@ -7199,6 +7372,26 @@ const resolvers = {
           "Another row already uses this station, item, and calendar date.",
         );
       }
+
+      // Reverse prior room→source sales reallocation before applying the new one.
+      const prevStation = normalizeKitchenBarStation(row.station);
+      const prevRoomSource = normalizeRoomSourceStation(
+        row.roomSourceStation,
+        prevStation,
+      );
+      const prevSales =
+        row.salesDay != null ? round2(Number(row.salesDay) || 0) : 0;
+      if (prevStation === "ROOM" && prevRoomSource && prevSales > 0) {
+        await adjustSourceStationSales(
+          prisma,
+          row.HotelName,
+          prevRoomSource,
+          String(row.itemName).trim(),
+          String(row.calendarDate).trim(),
+          prevSales,
+        );
+      }
+
       const sum = await sumApprovedStockOutToStation(
         prisma,
         row.HotelName,
@@ -7228,6 +7421,18 @@ const resolvers = {
           salesTaken,
         ),
       );
+
+      if (stationKey === "ROOM" && roomSource && (salesTaken || 0) > 0) {
+        await adjustSourceStationSales(
+          prisma,
+          row.HotelName,
+          roomSource,
+          item,
+          cal,
+          -Number(salesTaken || 0),
+        );
+      }
+
       return await prisma.kitchenBarBeginning.update({
         where: { id },
         data: {
@@ -7241,6 +7446,9 @@ const resolvers = {
           managementTakenDay: mgmtTaken,
           invitationTakenDay: inviteTaken,
           salesDay: salesTaken,
+          countVariance: variance,
+          countVarianceAmount: varianceAmt,
+          roomSourceStation: roomSource,
           closingOnHand: closing,
           notes: notes ?? "",
         },
@@ -7254,6 +7462,23 @@ const resolvers = {
       });
       if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
         throw new Error("Record not found");
+      }
+      const stationKey = normalizeKitchenBarStation(row.station);
+      const roomSource = normalizeRoomSourceStation(
+        row.roomSourceStation,
+        stationKey,
+      );
+      const sales =
+        row.salesDay != null ? round2(Number(row.salesDay) || 0) : 0;
+      if (stationKey === "ROOM" && roomSource && sales > 0) {
+        await adjustSourceStationSales(
+          prisma,
+          row.HotelName,
+          roomSource,
+          String(row.itemName).trim(),
+          String(row.calendarDate).trim(),
+          sales,
+        );
       }
       await prisma.kitchenBarBeginning.delete({ where: { id } });
       return true;

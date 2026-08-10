@@ -676,6 +676,12 @@ model KitchenBarBeginning {
   invitationTakenDay Float @default(0)
   /// Units sold / counted as sales that day. Null = legacy derive from beginning − prior on hand.
   salesDay       Float?
+  /// Cross-check vs calculated on-hand: NEUTRAL | SHORTAGE | OVERAGE.
+  countVariance  String   @default("NEUTRAL")
+  /// Absolute units short or over when countVariance is SHORTAGE/OVERAGE.
+  countVarianceAmount Float @default(0)
+  /// When station is ROOM: KITCHEN or BAR — source station whose sales are reallocated.
+  roomSourceStation String @default("")
   /// Physical on-hand at end of day (lights-out snapshot).
   closingOnHand  Float    @default(0)
   notes       String   @default("")
