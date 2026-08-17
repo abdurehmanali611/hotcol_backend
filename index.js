@@ -64,6 +64,13 @@ import {
   subscriptionRenewalPaymentKind,
 } from "./lib/subscriptionBillingPeriod.js";
 import {
+  applyCafeOrderModeChange,
+  cafeOrderModeSnapshot,
+  initialCafeOrderModeHistory,
+  loadTenantCafeOrderMode,
+  parseCafeOrderMode,
+} from "./lib/cafeOrderMode.js";
+import {
   HOTEL_DEPARTMENTS,
   REGISTRATION_RECEIVED_BY_DEPARTMENTS,
   REQUESTED_BY_DEPARTMENTS,
@@ -207,7 +214,13 @@ function tenantHasModule(modules, required) {
   return modules.includes(required);
 }
 
-function roleAllowedForModules(role, modules) {
+function roleAllowedForModules(role, modules, cafeOrderMode = "digital") {
+  if (
+    (role === "Kitchen" || role === "Barista" || role === "Chef" || role === "Bar") &&
+    parseCafeOrderMode(cafeOrderMode) === "analog"
+  ) {
+    return false;
+  }
   // Cashier and legacy HotelCashier are one role: café POS and/or corporate credit.
   if (role === "Cashier" || role === "HotelCashier") {
     return (
@@ -355,9 +368,26 @@ async function resolveTenantSubscription(prismaClient, user) {
 
   const row = owner;
   const billing = tenantBillingRowFromOwner(row);
+  const tinForMode =
+    row.tinNumber != null && String(row.tinNumber).trim() !== ""
+      ? String(row.tinNumber).trim()
+      : tin;
+  const account = tinForMode
+    ? await prismaClient.tenant_account.findUnique({
+        where: { tinNumber: tinForMode },
+        select: {
+          cafeOrderMode: true,
+          cafeOrderModeHistory: true,
+          cashierCancelOrdersEnabled: true,
+        },
+      })
+    : null;
+  const modeSnap = cafeOrderModeSnapshot(account, row.createdAt);
   return {
     ...billing,
     modules: parseModulesJson(row.modules),
+    ...modeSnap,
+    cashierCancelOrdersEnabled: Boolean(account?.cashierCancelOrdersEnabled),
   };
 }
 
@@ -379,6 +409,9 @@ function attachSubscriptionFields(user, subscription, options = {}) {
     subscriptionPaymentApproved: subscription.subscriptionPaymentApproved,
     paidQuartersCount: subscription.paidQuartersCount,
     paymentTransactionRef: subscription.paymentTransactionRef ?? null,
+    cafeOrderMode: subscription.cafeOrderMode ?? "digital",
+    cafeOrderModeHistory: subscription.cafeOrderModeHistory ?? [],
+    cashierCancelOrdersEnabled: Boolean(subscription.cashierCancelOrdersEnabled),
     awaitingSelfSignupSetup: selfSignupAwaitingSetup(
       subscription,
       pendingSetupSubmission,
@@ -605,6 +638,9 @@ const typeDefs = gql`
     awaitingSelfSignupSetup: Boolean
     Role: String!
     LogoUrl: String
+    cafeOrderMode: String
+    cafeOrderModeHistory: JSON
+    cashierCancelOrdersEnabled: Boolean
   }
 
   type TenantPaymentSubmission {
@@ -659,6 +695,17 @@ const typeDefs = gql`
     createdAt: DateTime!
   }
 
+  type TenantOrderModeChangeRequest {
+    id: Int!
+    tinNumber: String!
+    status: String!
+    requestedBySide: String!
+    requestNote: String
+    currentMode: String!
+    requestedMode: String!
+    createdAt: DateTime!
+  }
+
   type TenantSubscriptionSnapshot {
     modules: JSON!
     setupFeeETB: Int!
@@ -674,6 +721,9 @@ const typeDefs = gql`
     paidQuartersCount: Int!
     paymentTransactionRef: String
     awaitingSelfSignupSetup: Boolean!
+    cafeOrderMode: String!
+    cafeOrderModeHistory: JSON!
+    cashierCancelOrdersEnabled: Boolean!
   }
 
   type Item {
@@ -1222,6 +1272,7 @@ const typeDefs = gql`
       quarterlyFeeETB: Int
       paymentChannel: String
       paymentTransactionRef: String
+      cafeOrderMode: String
     ): User!
     ApproveTenantQuarterPayment(tinNumber: String!): User!
     ApproveTenantSetupPayment(tinNumber: String!): User!
@@ -1252,6 +1303,19 @@ const typeDefs = gql`
       modules: JSON!
       requestNote: String
     ): TenantModuleChangeRequest!
+    """
+    Admin/Manager: request switching café ordering between digital screens
+    and USB thermal printer. Creates a pending request for Apex review.
+    """
+    requestTenantOrderModeChange(
+      requestedMode: String!
+      requestNote: String
+    ): TenantOrderModeChangeRequest!
+    """
+    Manager/Admin: allow or revoke cashier permission to cancel unpaid live orders.
+    Default off — only managers cancel unless explicitly enabled.
+    """
+    setCashierCancelOrdersEnabled(enabled: Boolean!): TenantSubscriptionSnapshot!
     CreateCashout(
       items: JSON
       prices: JSON
@@ -1776,20 +1840,49 @@ function roleIsOneOf(user, allowedRoles) {
   );
 }
 
-/** Kitchen/Bar may cancel only their station's queue; cashier+ can cancel any live line.
+/** Digital: cashier+ can cancel any live line; kitchen/bar only their station.
+ * Analog: manager/admin always; cashier only when the tenant opt-in is on.
  * Reception may cancel room-service (lodging F&B) tickets only.
  */
-function canCancelLiveOrder(user, order) {
-  if (roleIsOneOf(user, ["Cashier", "HotelCashier", "Admin", "Manager"]))
-    return true;
+async function canCancelLiveOrder(user, order, prismaClient) {
+  const tin =
+    user.tinNumber != null && String(user.tinNumber).trim() !== ""
+      ? String(user.tinNumber).trim()
+      : String(order?.HotelName || user.HotelName || "").trim();
+  const analog =
+    tin && prismaClient
+      ? (await loadTenantCafeOrderMode(prismaClient, tin)) === "analog"
+      : false;
+
+  if (!analog) {
+    if (roleIsOneOf(user, ["Cashier", "HotelCashier", "Admin", "Manager"]))
+      return true;
+    if (
+      isRoomServiceTableNo(order?.tableNo) &&
+      roleIsOneOf(user, ["Reception", "Admin", "Manager"])
+    ) {
+      return true;
+    }
+    if (roleIsOneOf(user, ["Kitchen", "Chef"])) return isKitchenStationOrder(order);
+    if (roleIsOneOf(user, ["Barista", "Bar"])) return isBarStationOrder(order);
+    return false;
+  }
+
+  if (roleIsOneOf(user, ["Admin", "Manager"])) return true;
+  if (roleIsOneOf(user, ["Cashier", "HotelCashier"])) {
+    if (!tin) return false;
+    const account = await prismaClient.tenant_account.findUnique({
+      where: { tinNumber: tin },
+      select: { cashierCancelOrdersEnabled: true },
+    });
+    return Boolean(account?.cashierCancelOrdersEnabled);
+  }
   if (
     isRoomServiceTableNo(order?.tableNo) &&
     roleIsOneOf(user, ["Reception", "Admin", "Manager"])
   ) {
     return true;
   }
-  if (roleIsOneOf(user, ["Kitchen", "Chef"])) return isKitchenStationOrder(order);
-  if (roleIsOneOf(user, ["Barista", "Bar"])) return isBarStationOrder(order);
   return false;
 }
 
@@ -3424,6 +3517,8 @@ const resolvers = {
         ),
         paidQuartersCount: Number(subscription.paidQuartersCount) || 0,
         paymentTransactionRef: subscription.paymentTransactionRef ?? null,
+        cafeOrderMode: subscription.cafeOrderMode ?? "digital",
+        cafeOrderModeHistory: subscription.cafeOrderModeHistory ?? [],
         awaitingSelfSignupSetup: selfSignupAwaitingSetup(
           subscription,
           pendingSetupSubmission,
@@ -3471,6 +3566,7 @@ const resolvers = {
         quarterlyFeeETB,
         paymentChannel,
         paymentTransactionRef,
+        cafeOrderMode,
       },
     ) => {
       const userNameNorm = String(UserName).trim();
@@ -3573,6 +3669,34 @@ const resolvers = {
         });
       }
 
+      const hasCafe = parseModulesJson(modulesJson).includes(
+        "Cafe and Restaurant",
+      );
+      const resolvedMode = hasCafe
+        ? parseCafeOrderMode(cafeOrderMode)
+        : "digital";
+      await prisma.tenant_account.upsert({
+        where: { tinNumber: resolvedTin },
+        create: {
+          tinNumber: resolvedTin,
+          hotelDisplayName: String(created.HotelName || "").trim() || resolvedTin,
+          businessType: created.businessType ?? null,
+          logoUrl: created.LogoUrl ?? null,
+          modules: modulesJson,
+          cafeOrderMode: resolvedMode,
+          cafeOrderModeHistory: initialCafeOrderModeHistory(resolvedMode, now),
+          accountStatus: "active",
+        },
+        update: {
+          hotelDisplayName: String(created.HotelName || "").trim() || resolvedTin,
+          businessType: created.businessType ?? null,
+          logoUrl: created.LogoUrl ?? null,
+          modules: modulesJson,
+          cafeOrderMode: resolvedMode,
+          cafeOrderModeHistory: initialCafeOrderModeHistory(resolvedMode, now),
+        },
+      });
+
       return created;
     },
     CreateCashout: async (
@@ -3655,9 +3779,12 @@ const resolvers = {
         );
       }
 
-      if (!roleAllowedForModules(user.Role, subscription.modules)) {
+      if (!roleAllowedForModules(user.Role, subscription.modules, subscription.cafeOrderMode)) {
         throw new Error(
-          "Your account role is not included in this property's subscribed modules",
+          parseCafeOrderMode(subscription.cafeOrderMode) === "analog" &&
+            (user.Role === "Kitchen" || user.Role === "Barista")
+            ? "This property uses thermal printer tickets. Kitchen and bar logins are not available."
+            : "Your account role is not included in this property's subscribed modules",
         );
       }
 
@@ -4184,6 +4311,152 @@ const resolvers = {
         createdAt: row.createdAt,
       };
     },
+    requestTenantOrderModeChange: async (_, { requestedMode, requestNote }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertAdminOrManager(context);
+
+      const tin = tenantScopeFromContext(context);
+      if (!tin) throw new Error("Tenant scope missing");
+
+      const nextMode = parseCafeOrderMode(requestedMode);
+      const owner =
+        (await prisma.user.findFirst({
+          where: { tinNumber: tin, Role: { in: ["Admin", "Manager"] } },
+          orderBy: { id: "asc" },
+        })) ||
+        (await prisma.user.findUnique({
+          where: { id: context.user.userId },
+        }));
+      if (!owner) throw new Error("Tenant owner not found");
+
+      const subscription = await resolveTenantSubscription(prisma, owner);
+      const current = parseModulesJson(subscription.modules);
+      if (!current.includes("Cafe and Restaurant") && current.length > 0) {
+        throw new Error(
+          "Café ordering mode can only be requested when Cafe and Restaurant is subscribed",
+        );
+      }
+
+      const currentMode = parseCafeOrderMode(subscription.cafeOrderMode);
+      if (nextMode === currentMode) {
+        throw new Error(
+          nextMode === "analog"
+            ? "This property already uses thermal printer tickets"
+            : "This property already uses digital ordering",
+        );
+      }
+
+      const pending = await prisma.tenant_order_mode_change_request.findFirst({
+        where: { tinNumber: tin, status: "pending" },
+        orderBy: { createdAt: "desc" },
+      });
+      if (pending) {
+        throw new Error(
+          "An order-mode change request is already pending Apex review. Wait for approval or rejection before sending another.",
+        );
+      }
+
+      let account = await prisma.tenant_account.findUnique({
+        where: { tinNumber: tin },
+      });
+      if (!account) {
+        account = await prisma.tenant_account.create({
+          data: {
+            tinNumber: tin,
+            hotelDisplayName: String(owner.HotelName || "").trim() || tin,
+            businessType: owner.businessType ?? null,
+            logoUrl: owner.LogoUrl ?? null,
+            modules: current,
+            cafeOrderMode: currentMode,
+            cafeOrderModeHistory: initialCafeOrderModeHistory(
+              currentMode,
+              owner.createdAt,
+            ),
+            accountStatus: "active",
+          },
+        });
+      }
+
+      const noteParts = [
+        `[Order mode change]`,
+        `Current mode: ${currentMode}`,
+        `Requested mode: ${nextMode}`,
+        `Requested by: ${context.user.UserName} (${context.user.Role})`,
+      ];
+      const freeNote = String(requestNote || "").trim();
+      if (freeNote) {
+        noteParts.push("---", freeNote);
+      }
+
+      const row = await prisma.tenant_order_mode_change_request.create({
+        data: {
+          tinNumber: tin,
+          currentMode,
+          requestedMode: nextMode,
+          requestNote: noteParts.join("\n"),
+          status: "pending",
+          requestedBySide: "tenant",
+          requestedByUserId: context.user.userId,
+        },
+      });
+
+      return {
+        id: row.id,
+        tinNumber: row.tinNumber,
+        status: row.status,
+        requestedBySide: row.requestedBySide,
+        requestNote: row.requestNote,
+        currentMode: row.currentMode,
+        requestedMode: row.requestedMode,
+        createdAt: row.createdAt,
+      };
+    },
+    setCashierCancelOrdersEnabled: async (_, { enabled }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertAdminOrManager(context);
+      const tin = tenantScopeFromContext(context);
+      if (!tin) throw new Error("Tenant scope missing");
+
+      const owner =
+        (await prisma.user.findFirst({
+          where: { tinNumber: tin, Role: { in: ["Admin", "Manager"] } },
+          orderBy: { id: "asc" },
+        })) ||
+        (await prisma.user.findUnique({
+          where: { id: context.user.userId },
+        }));
+      if (!owner) throw new Error("Tenant owner not found");
+
+      const subscription = await resolveTenantSubscription(prisma, owner);
+      const current = parseModulesJson(subscription.modules);
+      const currentMode = parseCafeOrderMode(subscription.cafeOrderMode);
+      if (currentMode !== "analog") {
+        throw new Error(
+          "Cashier cancel permission applies only to thermal-printer (analog) properties",
+        );
+      }
+
+      await prisma.tenant_account.upsert({
+        where: { tinNumber: tin },
+        create: {
+          tinNumber: tin,
+          hotelDisplayName: String(owner.HotelName || "").trim() || tin,
+          businessType: owner.businessType ?? null,
+          logoUrl: owner.LogoUrl ?? null,
+          modules: current,
+          cafeOrderMode: currentMode,
+          cafeOrderModeHistory: initialCafeOrderModeHistory(
+            currentMode,
+            owner.createdAt,
+          ),
+          cashierCancelOrdersEnabled: Boolean(enabled),
+          accountStatus: "active",
+        },
+        update: { cashierCancelOrdersEnabled: Boolean(enabled) },
+      });
+
+      return resolveTenantSubscription(prisma, owner);
+    },
     CreateCredential: async (
       _,
       { UserName, Password, Role, HotelName, LogoUrl },
@@ -4227,9 +4500,12 @@ const resolvers = {
           "Staff credentials cannot be created while subscription payment is pending or in grace renewal.",
         );
       }
-      if (!roleAllowedForModules(Role, subscription.modules)) {
+      if (!roleAllowedForModules(Role, subscription.modules, subscription.cafeOrderMode)) {
         throw new Error(
-          `Role "${Role}" requires a module that is not subscribed for this property`,
+          parseCafeOrderMode(subscription.cafeOrderMode) === "analog" &&
+            (Role === "Kitchen" || Role === "Barista")
+            ? "Thermal printer properties do not use Kitchen or Bar logins"
+            : `Role "${Role}" requires a module that is not subscribed for this property`,
         );
       }
 
@@ -4446,9 +4722,9 @@ const resolvers = {
             tableNo,
             waiterName,
             orderAmount,
-            status,
+            status: status,
             HotelName: hotelName,
-            payment,
+            payment: payment,
             category,
             type,
             price,
@@ -4490,6 +4766,14 @@ const resolvers = {
         roleIsOneOf(authCtx.user, ["Reception", "Admin", "Manager"]);
       if (!canCashierUpdate && !canReceptionRoomService) {
         throw new Error("Not authorized to update live orders");
+      }
+      const analogMode =
+        (await loadTenantCafeOrderMode(prisma, tenantScopeFromContext(authCtx))) ===
+        "analog";
+      if (analogMode && !isRoomService) {
+        throw new Error(
+          "Thermal printer properties can add items to a ticket, but cannot edit existing lines",
+        );
       }
       if (String(order.payment || "").toLowerCase() === "paid") {
         throw new Error("Paid orders cannot be edited");
@@ -4656,12 +4940,18 @@ const resolvers = {
         }
       }
       // Room-service settle at checkout should count as completed for café reports.
+      // Analog thermal tickets have no kitchen screen — payment approval completes them.
       if (
-        isRoomService &&
         String(payment || "").toLowerCase() === "paid" &&
-        String(order.status || "").toLowerCase() !== "cancelled"
+        String(order.status || "").toLowerCase() !== "cancelled" &&
+        String(order.status || "").toLowerCase() !== "failed"
       ) {
-        data.status = "Completed";
+        const analogPaid =
+          (await loadTenantCafeOrderMode(prisma, tenantScopeFromContext(authCtx))) ===
+          "analog";
+        if (isRoomService || analogPaid) {
+          data.status = "Completed";
+        }
       }
       return await prisma.order.update({
         where: { id: id },
@@ -4693,6 +4983,14 @@ const resolvers = {
             creditAmount: creditAmount,
             payment: "Paid",
             withBank: null,
+            ...(((await loadTenantCafeOrderMode(
+              prisma,
+              tenantScopeFromContext(authCtx),
+            )) === "analog" &&
+              String(order.status || "").toLowerCase() !== "cancelled" &&
+              String(order.status || "").toLowerCase() !== "failed")
+              ? { status: "Completed" }
+              : {}),
           },
         });
 
@@ -4840,7 +5138,7 @@ const resolvers = {
       const next = status != null ? String(status).trim() : "";
       const nextLower = next.toLowerCase();
       if (nextLower === "cancelled") {
-        if (!canCancelLiveOrder(authCtx.user, order)) {
+        if (!(await canCancelLiveOrder(authCtx.user, order, prisma))) {
           throw new Error("Not authorized to remove this order");
         }
         if (String(order.payment || "").toLowerCase() === "paid") {
