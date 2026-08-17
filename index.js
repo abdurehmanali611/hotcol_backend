@@ -65,6 +65,8 @@ import {
 } from "./lib/subscriptionBillingPeriod.js";
 import {
   applyCafeOrderModeChange,
+  cafeModuleSelected,
+  cafeOrderModeNoteLine,
   cafeOrderModeSnapshot,
   initialCafeOrderModeHistory,
   loadTenantCafeOrderMode,
@@ -1302,6 +1304,7 @@ const typeDefs = gql`
       changeType: String!
       modules: JSON!
       requestNote: String
+      cafeOrderMode: String
     ): TenantModuleChangeRequest!
     """
     Admin/Manager: request switching café ordering between digital screens
@@ -4189,7 +4192,7 @@ const resolvers = {
       });
       return true;
     },
-    requestTenantModuleChange: async (_, { changeType, modules, requestNote }, context) => {
+    requestTenantModuleChange: async (_, { changeType, modules, requestNote, cafeOrderMode }, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       assertAdminOrManager(context);
 
@@ -4278,6 +4281,16 @@ const resolvers = {
         });
       }
 
+      const addingCafe = type === "add" && cafeModuleSelected(delta);
+      const requestedCafeMode = addingCafe
+        ? parseCafeOrderMode(cafeOrderMode)
+        : null;
+      if (addingCafe && !String(cafeOrderMode || "").trim()) {
+        throw new Error(
+          "Choose digital or analog ordering when requesting Cafe and Restaurant",
+        );
+      }
+
       const noteParts = [
         `[Module change: ${type}]`,
         `Changed modules: ${delta.join(", ")}`,
@@ -4285,6 +4298,9 @@ const resolvers = {
         `Projected modules: ${projected.join(", ") || "None"}`,
         `Requested by: ${context.user.UserName} (${context.user.Role})`,
       ];
+      if (requestedCafeMode) {
+        noteParts.push(cafeOrderModeNoteLine(requestedCafeMode));
+      }
       const freeNote = String(requestNote || "").trim();
       if (freeNote) {
         noteParts.push("---", freeNote);
