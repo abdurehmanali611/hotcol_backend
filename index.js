@@ -4479,9 +4479,7 @@ const resolvers = {
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
-      if (!["Admin", "Manager"].includes(actorRole)) {
-        throw new Error("Not authorized");
-      }
+      assertAdminOrManager(context);
 
       const userNameNorm = String(UserName).trim();
       const existingUser = await prisma.user.findUnique({
