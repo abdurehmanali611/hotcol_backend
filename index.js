@@ -73,6 +73,10 @@ import {
   parseCafeOrderMode,
 } from "./lib/cafeOrderMode.js";
 import {
+  listActiveSalesAgents,
+  resolveActiveSalesAgentId,
+} from "./lib/salesAgents.js";
+import {
   HOTEL_DEPARTMENTS,
   REGISTRATION_RECEIVED_BY_DEPARTMENTS,
   REQUESTED_BY_DEPARTMENTS,
@@ -1285,6 +1289,8 @@ const typeDefs = gql`
     Used so registrees keep seeing pending/approved/rejected after refresh.
     """
     signupRegistrationStatus(username: String!): SignupRegistrationStatus!
+    """Public: active field sales people for optional signup attribution."""
+    salesAgents: [SalesAgent!]!
     ${lodgingQueryFields}
     ${hrQueryFields}
   }
@@ -1293,6 +1299,14 @@ const typeDefs = gql`
     setupFeeETB: Int!
     quarterlyFeeETB: Int!
     source: String!
+  }
+
+  type SalesAgent {
+    id: Int!
+    displayName: String!
+    phone: String
+    city: String
+    isActive: Boolean!
   }
 
   type SignupRegistrationStatus {
@@ -1327,6 +1341,7 @@ const typeDefs = gql`
       paymentChannel: String
       paymentTransactionRef: String
       cafeOrderMode: String
+      salesAgentId: Int
     ): User!
     ApproveTenantQuarterPayment(tinNumber: String!): User!
     ApproveTenantSetupPayment(tinNumber: String!): User!
@@ -3566,6 +3581,8 @@ const resolvers = {
 
       return buildSignupRegistrationStatus(prisma, user);
     },
+
+    salesAgents: async () => listActiveSalesAgents(prisma),
   },
   Mutation: {
     CreateAdmin: async (
@@ -3584,6 +3601,7 @@ const resolvers = {
         paymentChannel,
         paymentTransactionRef,
         cafeOrderMode,
+        salesAgentId,
       },
     ) => {
       const userNameNorm = String(UserName).trim();
@@ -3692,6 +3710,10 @@ const resolvers = {
       const resolvedMode = hasCafe
         ? parseCafeOrderMode(cafeOrderMode)
         : "digital";
+      const resolvedSalesAgentId = await resolveActiveSalesAgentId(
+        prisma,
+        salesAgentId,
+      );
       await prisma.tenant_account.upsert({
         where: { tinNumber: resolvedTin },
         create: {
@@ -3703,6 +3725,7 @@ const resolvers = {
           cafeOrderMode: resolvedMode,
           cafeOrderModeHistory: initialCafeOrderModeHistory(resolvedMode, now),
           accountStatus: "active",
+          salesAgentId: resolvedSalesAgentId,
         },
         update: {
           hotelDisplayName: String(created.HotelName || "").trim() || resolvedTin,
@@ -3711,6 +3734,7 @@ const resolvers = {
           modules: modulesJson,
           cafeOrderMode: resolvedMode,
           cafeOrderModeHistory: initialCafeOrderModeHistory(resolvedMode, now),
+          salesAgentId: resolvedSalesAgentId,
         },
       });
 
