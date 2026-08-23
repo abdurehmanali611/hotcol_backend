@@ -393,6 +393,58 @@ async function resolveTenantSubscription(prismaClient, user) {
   };
 }
 
+function graphqlTenantSubscriptionSnapshot(
+  subscription,
+  pendingSetupSubmission = false,
+) {
+  return {
+    modules: subscription.modules,
+    setupFeeETB: Number(subscription.setupFeeETB) || 0,
+    quarterlyFeeETB: Number(subscription.quarterlyFeeETB) || 0,
+    setupFeeApproved: Boolean(subscription.setupFeeApproved),
+    createdAt: subscription.createdAt ?? null,
+    billingStartedAt: subscription.billingStartedAt ?? null,
+    billingHold: Boolean(subscription.billingHold),
+    isIllustrationTenant: Boolean(subscription.isIllustrationTenant),
+    freeTrialEndsAt: subscription.freeTrialEndsAt ?? null,
+    subscriptionPaidUntil: subscription.subscriptionPaidUntil ?? null,
+    subscriptionPaymentApproved: Boolean(
+      subscription.subscriptionPaymentApproved,
+    ),
+    paidQuartersCount: Number(subscription.paidQuartersCount) || 0,
+    paymentTransactionRef: subscription.paymentTransactionRef ?? null,
+    cafeOrderMode: subscription.cafeOrderMode ?? "digital",
+    cafeOrderModeHistory: subscription.cafeOrderModeHistory ?? [],
+    awaitingSelfSignupSetup: Boolean(
+      selfSignupAwaitingSetup(subscription, pendingSetupSubmission),
+    ),
+    cashierCancelOrdersEnabled: Boolean(
+      subscription.cashierCancelOrdersEnabled,
+    ),
+  };
+}
+
+async function loadGraphqlTenantSubscription(prismaClient, user) {
+  const subscription = await resolveTenantSubscription(prismaClient, user);
+  const tinForBilling = await tenantTinFromUser(user);
+  const pendingSetupSubmission = tinForBilling
+    ? Boolean(
+        await prismaClient.tenant_payment_submission.findFirst({
+          where: {
+            tinNumber: tinForBilling,
+            paymentKind: "setup",
+            status: "pending",
+          },
+          select: { id: true },
+        }),
+      )
+    : false;
+  return graphqlTenantSubscriptionSnapshot(
+    subscription,
+    pendingSetupSubmission,
+  );
+}
+
 function attachSubscriptionFields(user, subscription, options = {}) {
   const { pendingSetupSubmission = false } = options;
   return {
@@ -3488,45 +3540,7 @@ const resolvers = {
         where: { id: context.user.userId },
       });
       if (!dbUser) throw new Error("User not found");
-
-      const subscription = await resolveTenantSubscription(prisma, dbUser);
-      const tinForBilling = await tenantTinFromUser(dbUser);
-      const pendingSetupSubmission = tinForBilling
-        ? Boolean(
-            await prisma.tenant_payment_submission.findFirst({
-              where: {
-                tinNumber: tinForBilling,
-                paymentKind: "setup",
-                status: "pending",
-              },
-              select: { id: true },
-            }),
-          )
-        : false;
-
-      return {
-        modules: subscription.modules,
-        setupFeeETB: Number(subscription.setupFeeETB) || 0,
-        quarterlyFeeETB: Number(subscription.quarterlyFeeETB) || 0,
-        setupFeeApproved: Boolean(subscription.setupFeeApproved),
-        createdAt: subscription.createdAt ?? null,
-        billingStartedAt: subscription.billingStartedAt ?? null,
-        billingHold: Boolean(subscription.billingHold),
-        isIllustrationTenant: Boolean(subscription.isIllustrationTenant),
-        freeTrialEndsAt: subscription.freeTrialEndsAt ?? null,
-        subscriptionPaidUntil: subscription.subscriptionPaidUntil ?? null,
-        subscriptionPaymentApproved: Boolean(
-          subscription.subscriptionPaymentApproved,
-        ),
-        paidQuartersCount: Number(subscription.paidQuartersCount) || 0,
-        paymentTransactionRef: subscription.paymentTransactionRef ?? null,
-        cafeOrderMode: subscription.cafeOrderMode ?? "digital",
-        cafeOrderModeHistory: subscription.cafeOrderModeHistory ?? [],
-        awaitingSelfSignupSetup: selfSignupAwaitingSetup(
-          subscription,
-          pendingSetupSubmission,
-        ),
-      };
+      return loadGraphqlTenantSubscription(prisma, dbUser);
     },
 
     signupPricingPreview: async (_, { businessType, modules }) => {
@@ -4471,7 +4485,7 @@ const resolvers = {
         update: { cashierCancelOrdersEnabled: Boolean(enabled) },
       });
 
-      return resolveTenantSubscription(prisma, owner);
+      return loadGraphqlTenantSubscription(prisma, owner);
     },
     CreateCredential: async (
       _,
