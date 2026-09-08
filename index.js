@@ -9,6 +9,12 @@ import {
   isKitchenStationOrder,
 } from "./lib/cafeOrderStation.js";
 import { unitCostAtSaleFromItems } from "./lib/cafeRecipe.js";
+import {
+  applyRecipeStockDecrementOnComplete,
+  creditStationIngredientStock,
+  ensureStationIngredientStockSeeded,
+  isRecipeStationKey,
+} from "./lib/recipeStockDecrement.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { DateTimeResolver, GraphQLJSON } from "graphql-scalars";
@@ -1028,6 +1034,34 @@ const typeDefs = gql`
     stockOutRequestId: Int
   }
 
+  type StationIngredientStock {
+    id: Int!
+    HotelName: String!
+    station: String!
+    itemName: String!
+    measuredBy: String!
+    unitPrice: Float!
+    amount: Float!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+  }
+
+  type RecipeStockConsumption {
+    id: Int!
+    HotelName: String!
+    orderId: Int!
+    menuItemTitle: String!
+    orderAmount: Int!
+    station: String!
+    ingredientName: String!
+    amount: Float!
+    measuredBy: String!
+    unitPrice: Float!
+    shortfallAmount: Float!
+    completedBy: String!
+    createdAt: DateTime!
+  }
+
   type CostControllerProfile {
     id: Int!
     displayName: String!
@@ -1265,6 +1299,8 @@ const typeDefs = gql`
     CreditRegistration: [CreditRegistration!]!
     ItemRegistration: [ItemRegistration!]!
     ItemStatus: [ItemStatus!]!
+    stationIngredientStocks: [StationIngredientStock!]!
+    recipeStockConsumptions(from: DateTime, to: DateTime): [RecipeStockConsumption!]!
     costControllerProfiles: [CostControllerProfile!]!
     departmentLeaders: [DepartmentLeader!]!
     tenantHotelContact: TenantHotelContact!
@@ -2898,6 +2934,18 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
       reqRow.stakeHolderOrReason,
       businessDay,
     );
+    const stationKey = normalizeKitchenBarStation(reqRow.stakeHolderOrReason);
+    if (isRecipeStationKey(stationKey)) {
+      await creditStationIngredientStock(tx, {
+        hotelName: reqRow.HotelName,
+        stationKey,
+        itemName: String(item.name).trim(),
+        amount: reqRow.amount,
+        measuredBy: item.measuredBy,
+        unitPrice: item.unitPrice,
+        normalizeStation: normalizeKitchenBarStation,
+      });
+    }
   }
   return decidedNow;
 }
@@ -3227,6 +3275,42 @@ const resolvers = {
         orderBy: { actionDate: "desc" },
       });
       return rows.map(withVoucherDisplay);
+    },
+    stationIngredientStocks: async (_, __, context) => {
+      assertAdminOrManager(context);
+      const scope = tenantHotelReadWhere(context);
+      const keys = tenantHotelKeysFromContext(context);
+      for (const hotel of keys) {
+        try {
+          await ensureStationIngredientStockSeeded(
+            prisma,
+            hotel,
+            normalizeKitchenBarStation,
+          );
+        } catch (err) {
+          console.warn(
+            "[hotcol] Station stock seed failed:",
+            err?.message || err,
+          );
+        }
+      }
+      return prisma.stationIngredientStock.findMany({
+        where: scope,
+        orderBy: [{ station: "asc" }, { itemName: "asc" }],
+      });
+    },
+    recipeStockConsumptions: async (_, { from, to }, context) => {
+      assertAdminOrManager(context);
+      const where = { ...tenantHotelReadWhere(context) };
+      if (from || to) {
+        where.createdAt = {};
+        if (from) where.createdAt.gte = new Date(from);
+        if (to) where.createdAt.lte = new Date(to);
+      }
+      return prisma.recipeStockConsumption.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+      });
     },
     costControllerProfiles: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
@@ -5189,6 +5273,7 @@ const resolvers = {
       }
       const next = status != null ? String(status).trim() : "";
       const nextLower = next.toLowerCase();
+      const prevStatusLower = String(order.status || "").trim().toLowerCase();
       if (nextLower === "cancelled") {
         if (!(await canCancelLiveOrder(authCtx.user, order, prisma))) {
           throw new Error("Not authorized to remove this order");
@@ -5219,6 +5304,38 @@ const resolvers = {
         where: { id: id },
         data: updateData,
       });
+      if (
+        nextLower === "completed" &&
+        prevStatusLower !== "completed"
+      ) {
+        try {
+          const subscription = await resolveTenantSubscription(
+            prisma,
+            authCtx.user,
+          );
+          await applyRecipeStockDecrementOnComplete(prisma, {
+            order: updatedOrder,
+            completedBy:
+              cancelledByLabelFromUser(authCtx.user) ||
+              authCtx.user?.name ||
+              authCtx.user?.UserName ||
+              "",
+            modules: subscription.modules,
+            tenantHasModule,
+            calendarDateYmd: cafeBusinessDateYmd(new Date()),
+            normalizeStation: normalizeKitchenBarStation,
+            kitchenBarStationPrismaWhere,
+            sumApprovedStockOutToStation,
+            findPreviousKitchenBarRow,
+            computeClosingOnHand,
+          });
+        } catch (err) {
+          console.warn(
+            "[hotcol] Recipe stock decrement failed after order complete:",
+            err?.message || err,
+          );
+        }
+      }
       if (
         nextLower === "cancelled" &&
         isRoomServiceTableNo(updatedOrder.tableNo)
@@ -8413,7 +8530,7 @@ const resolvers = {
         VOUCHER_TYPES.STOCK_MOVEMENT,
         tenantHotelKeysFromContext(context),
       );
-      return await prisma.itemStatus.create({
+      const created = await prisma.itemStatus.create({
         data: {
           name: name,
           imageUrl: imageUrl,
@@ -8434,6 +8551,28 @@ const resolvers = {
           voucherNumber,
         },
       });
+      try {
+        if (String(status || "").trim().toLowerCase() === "stock out") {
+          const stationKey = normalizeKitchenBarStation(statusBy);
+          if (isRecipeStationKey(stationKey)) {
+            await creditStationIngredientStock(prisma, {
+              hotelName: tenant,
+              stationKey,
+              itemName: String(name || "").trim(),
+              amount,
+              measuredBy,
+              unitPrice,
+              normalizeStation: normalizeKitchenBarStation,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(
+          "[hotcol] Station ingredient credit failed after CreateItemStatus:",
+          err?.message || err,
+        );
+      }
+      return created;
     },
     DeleteItemStatus: async (_, {id}, context) => {
       if (!context.user) throw new Error("Not Authorized")

@@ -584,6 +584,51 @@ model ItemStatus {
   @@index([stockOutRequestId])
 }
 
+/// Live on-hand of ingredients at kitchen/bar after store stock-outs.
+/// Credited on stock-out to KITCHEN/BAR; debited when a recipe line is completed.
+model StationIngredientStock {
+  id         Int      @id @default(autoincrement())
+  HotelName  String
+  /// KITCHEN | BAR
+  station    String
+  itemName   String
+  measuredBy String   @default("")
+  unitPrice  Float    @default(0)
+  amount     Float    @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([HotelName, station, itemName])
+  @@index([HotelName])
+  @@index([HotelName, station])
+}
+
+/// Audit trail: recipe ingredient qty deducted when kitchen/bar completes an order.
+model RecipeStockConsumption {
+  id              Int      @id @default(autoincrement())
+  HotelName       String
+  orderId         Int
+  menuItemTitle   String
+  /// Servings on the completed order line.
+  orderAmount     Int
+  /// KITCHEN | BAR
+  station         String
+  ingredientName  String
+  /// Total qty deducted (recipe amount × servings).
+  amount          Float
+  measuredBy      String   @default("")
+  unitPrice       Float    @default(0)
+  /// Qty that could not be covered by station on-hand (still recorded).
+  shortfallAmount Float    @default(0)
+  completedBy     String   @default("")
+  createdAt       DateTime @default(now())
+
+  @@index([HotelName])
+  @@index([HotelName, createdAt])
+  @@index([orderId])
+  @@index([HotelName, station, ingredientName])
+}
+
 /// One named leader per department per hotel (manager-maintained).
 /// Departments: KITCHEN, BAR, HOUSE_KEEPING_*, SECURITY, MAINTENANCE, FINANCE,
 /// HR, GM, FB_SERVICE, STORE, PURCHASER.
