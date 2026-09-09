@@ -2249,7 +2249,28 @@ function normalizeKitchenBarStation(raw) {
 
 function kitchenBarStationPrismaWhere(stationKey) {
   if (stationKey === "KITCHEN") {
-    return { OR: [{ station: "KITCHEN" }, { station: "CHEF" }] };
+    return {
+      OR: [
+        { station: "KITCHEN" },
+        { station: "CHEF" },
+        { station: "Kitchen" },
+        { station: "Chef" },
+        { station: "kitchen" },
+        { station: "chef" },
+      ],
+    };
+  }
+  if (stationKey === "BAR") {
+    return {
+      OR: [
+        { station: "BAR" },
+        { station: "BARISTA" },
+        { station: "Bar" },
+        { station: "Barista" },
+        { station: "bar" },
+        { station: "barista" },
+      ],
+    };
   }
   return { station: stationKey };
 }
@@ -5314,7 +5335,7 @@ const resolvers = {
             prisma,
             authCtx.user,
           );
-          await applyRecipeStockDecrementOnComplete(prisma, {
+          const decrementResult = await applyRecipeStockDecrementOnComplete(prisma, {
             order: updatedOrder,
             hotelKeys: tenantHotelKeysFromContext(authCtx),
             completedBy:
@@ -5331,6 +5352,11 @@ const resolvers = {
             findPreviousKitchenBarRow,
             computeClosingOnHand,
           });
+          if (decrementResult?.skipped) {
+            console.info(
+              `[hotcol] Order ${updatedOrder.id} recipe decrement: ${decrementResult.reason}`,
+            );
+          }
         } catch (err) {
           console.warn(
             "[hotcol] Recipe stock decrement failed after order complete:",
