@@ -11,6 +11,7 @@ import {
 import { unitCostAtSaleFromItems } from "./lib/cafeRecipe.js";
 import {
   applyRecipeStockDecrementOnComplete,
+  assertRecipeStationStockForOrder,
   creditStationIngredientStock,
   ensureStationIngredientStockSeeded,
   isRecipeStationKey,
@@ -3299,7 +3300,19 @@ const resolvers = {
       return rows.map(withVoucherDisplay);
     },
     stationIngredientStocks: async (_, __, context) => {
-      assertAdminOrManager(context);
+      // Cashier/kitchen need on-hand to block orders when Cafe+Inventory are both on.
+      assertRole(context, [
+        "Admin",
+        "Manager",
+        "Cashier",
+        "HotelCashier",
+        "Kitchen",
+        "Chef",
+        "Barista",
+        "Bar",
+        "Store",
+        "CostControl",
+      ]);
       const scope = tenantHotelReadWhere(context);
       const keys = tenantHotelKeysFromContext(context);
       for (const hotel of keys) {
@@ -4694,12 +4707,44 @@ const resolvers = {
       if (!authCtx) throw new Error("Not Authenticated");
 
       const hotelName = tenantScopeFromContext(authCtx);
+      const subscription = await resolveTenantSubscription(
+        prisma,
+        authCtx.user,
+      );
       // Use read where (TIN + legacy display name) so recipe freeze finds the
       // same menu items cashiers see — TIN-only missed legacy-keyed recipes.
       const menuItems = await prisma.item.findMany({
         where: tenantHotelReadWhere(authCtx),
-        select: { name: true, recipeJson: true },
+        select: { name: true, recipeJson: true, isSuspended: true },
       });
+      const hotelKeys = tenantHotelKeysFromContext(authCtx);
+
+      for (const orderData of orders) {
+        const title = String(orderData.title || "").trim();
+        const menuHit = menuItems.find(
+          (i) =>
+            String(i.name || "")
+              .trim()
+              .toLowerCase() === title.toLowerCase(),
+        );
+        if (menuHit?.isSuspended) {
+          throw new Error(
+            `“${title}” is suspended and cannot be ordered.`,
+          );
+        }
+        await assertRecipeStationStockForOrder(prisma, {
+          hotelName,
+          hotelKeys,
+          title,
+          category: orderData.category,
+          type: orderData.type,
+          servings: orderData.orderAmount,
+          modules: subscription.modules,
+          tenantHasModule,
+          normalizeStation: normalizeKitchenBarStation,
+        });
+      }
+
       const ordersWithCaptions = await Promise.all(
         orders.map(async (orderData) => {
           const explicit =
@@ -4866,13 +4911,39 @@ const resolvers = {
       if (!authCtx) throw new Error("Not Authenticated");
       try {
         const hotelName = tenantScopeFromContext(authCtx);
+        const subscription = await resolveTenantSubscription(
+          prisma,
+          authCtx.user,
+        );
         const [serviceCaption, menuItems] = await Promise.all([
           serviceCaptionForTableNo(tableNo, authCtx),
           prisma.item.findMany({
             where: tenantHotelReadWhere(authCtx),
-            select: { name: true, recipeJson: true },
+            select: { name: true, recipeJson: true, isSuspended: true },
           }),
         ]);
+        const menuHit = menuItems.find(
+          (i) =>
+            String(i.name || "")
+              .trim()
+              .toLowerCase() === String(title || "").trim().toLowerCase(),
+        );
+        if (menuHit?.isSuspended) {
+          throw new Error(
+            `“${String(title || "").trim()}” is suspended and cannot be ordered.`,
+          );
+        }
+        await assertRecipeStationStockForOrder(prisma, {
+          hotelName,
+          hotelKeys: tenantHotelKeysFromContext(authCtx),
+          title,
+          category,
+          type,
+          servings: orderAmount,
+          modules: subscription.modules,
+          tenantHasModule,
+          normalizeStation: normalizeKitchenBarStation,
+        });
         const order = await prisma.order.create({
           data: {
             title,
@@ -5003,6 +5074,23 @@ const resolvers = {
       if (orderAmount != null) {
         const nextAmount = Math.floor(Number(orderAmount));
         if (nextAmount !== Math.floor(Number(order.orderAmount))) {
+          if (nextAmount > Math.floor(Number(order.orderAmount))) {
+            const subscription = await resolveTenantSubscription(
+              prisma,
+              authCtx.user,
+            );
+            await assertRecipeStationStockForOrder(prisma, {
+              hotelName: String(order.HotelName || "").trim(),
+              hotelKeys: tenantHotelKeysFromContext(authCtx),
+              title: order.title,
+              category: order.category,
+              type: order.type,
+              servings: nextAmount,
+              modules: subscription.modules,
+              tenantHasModule,
+              normalizeStation: normalizeKitchenBarStation,
+            });
+          }
           data.orderAmount = nextAmount;
           // Re-queue same ticket at kitchen/bar with the new total quantity.
           data.status = "Pending";
