@@ -2938,6 +2938,7 @@ async function applyStockOutToInventory(tx, reqRow, actorName) {
     if (isRecipeStationKey(stationKey)) {
       await creditStationIngredientStock(tx, {
         hotelName: reqRow.HotelName,
+        hotelKeys: [reqRow.HotelName],
         stationKey,
         itemName: String(item.name).trim(),
         amount: reqRow.amount,
@@ -5315,6 +5316,7 @@ const resolvers = {
           );
           await applyRecipeStockDecrementOnComplete(prisma, {
             order: updatedOrder,
+            hotelKeys: tenantHotelKeysFromContext(authCtx),
             completedBy:
               cancelledByLabelFromUser(authCtx.user) ||
               authCtx.user?.name ||
@@ -8557,6 +8559,7 @@ const resolvers = {
           if (isRecipeStationKey(stationKey)) {
             await creditStationIngredientStock(prisma, {
               hotelName: tenant,
+              hotelKeys: tenantHotelKeysFromContext(context),
               stationKey,
               itemName: String(name || "").trim(),
               amount,
