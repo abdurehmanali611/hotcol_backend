@@ -112,6 +112,12 @@ import {
   hrMutationFields,
   createHrResolvers,
 } from "./hrGraphql.js";
+import {
+  crystalNameTypeDefsBlock,
+  crystalNameQueryFields,
+  crystalNameMutationFields,
+  createCrystalNameResolvers,
+} from "./crystalNameGraphql.js";
 
 const prisma = createPrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
@@ -1287,6 +1293,8 @@ const typeDefs = gql`
 
   ${hrTypeDefsBlock}
 
+  ${crystalNameTypeDefsBlock}
+
   type Query {
     users: [User!]!
     items: [Item!]!
@@ -1330,6 +1338,7 @@ const typeDefs = gql`
     salesAgents: [SalesAgent!]!
     ${lodgingQueryFields}
     ${hrQueryFields}
+    ${crystalNameQueryFields}
   }
 
   type SignupPricingPreview {
@@ -1912,6 +1921,7 @@ const typeDefs = gql`
 
     ${lodgingMutationFields}
     ${hrMutationFields}
+    ${crystalNameMutationFields}
   }
 `;
 
@@ -3093,6 +3103,12 @@ const hrResolvers = createHrResolvers({
   assertAuthenticated,
 });
 
+const crystalNameResolvers = createCrystalNameResolvers({
+  prisma,
+  assertAuthenticated,
+  assertRole,
+});
+
 const resolvers = {
   JSON: GraphQLJSON,
   DateTime: DateTimeResolver,
@@ -3102,6 +3118,9 @@ const resolvers = {
   },
   HrPayslip: {
     ...(hrResolvers.HrPayslip || {}),
+  },
+  CrystalName: {
+    ...(crystalNameResolvers.CrystalName || {}),
   },
   DepartmentLeader: {
     departmentLabel: (p) => departmentLabel(p.department),
@@ -3145,6 +3164,7 @@ const resolvers = {
   Query: {
     ...lodgingResolvers.Query,
     ...hrResolvers.Query,
+    ...crystalNameResolvers.Query,
     users: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.user.findMany({
@@ -8706,6 +8726,7 @@ const resolvers = {
 
     ...lodgingResolvers.Mutation,
     ...hrResolvers.Mutation,
+    ...crystalNameResolvers.Mutation,
   },
 };
 

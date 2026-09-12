@@ -1461,3 +1461,23 @@ model hr_incident {
   @@index([HotelName])
   @@index([employeeId])
 }
+
+/// Canonical crystal (catalyst) product names for inventory / recipe / purchase selectors.
+/// Global catalog (not hotel-scoped): Amharic | Romanized | English.
+model CrystalName {
+  id        Int      @id @default(autoincrement())
+  /// Amharic script segment (e.g. ዳቦ)
+  amharic   String   @db.VarChar(255)
+  /// Romanized Amharic segment (e.g. Dabo) — not Latin-as-a-language
+  romanized String   @db.VarChar(255)
+  /// English meaning segment (e.g. Bread)
+  english   String   @db.VarChar(255)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([amharic, romanized, english], name: "crystal_name_triple_unique")
+  @@index([amharic])
+  @@index([romanized])
+  @@index([english])
+  @@map("crystal_name")
+}

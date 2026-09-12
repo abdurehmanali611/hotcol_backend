@@ -10,6 +10,7 @@
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
+    "db:sync-crystal-names": "node scripts/sync-crystal-names-from-approval.mjs",
     "db:backfill-receipt-snapshots": "node scripts/backfill-receipt-snapshots.js",
     "db:backfill-receipt-snapshots:dry": "node scripts/backfill-receipt-snapshots.js --dry-run",
     "db:backfill-purchase-vat": "node scripts/backfill-purchase-vat.js",
