@@ -38,7 +38,7 @@ const STOCK = [
   { name: "እንቁላል|Enqulal|Egg", category: "Food", amount: 60, measuredBy: "Piece", unitPrice: 12, station: "KITCHEN" },
   { name: "ቲማቲም|Timatim|Tomato", category: "Food", amount: 10, measuredBy: "Kilogram", unitPrice: 60, station: "KITCHEN" },
   { name: "ሽንኩርት|Shenkurt|Onion", category: "Food", amount: 10, measuredBy: "Kilogram", unitPrice: 50, station: "KITCHEN" },
-  { name: "ነጭ ሽንኩርት|Nech Shenkurt|Garlic", category: "Food", amount: 3, measuredBy: "Kilogram", unitPrice: 120, station: "KITCHEN" },
+  { name: "ነጭ ሽንኩርት|Nech Shnkurt|Garlic", category: "Food", amount: 3, measuredBy: "Kilogram", unitPrice: 120, station: "KITCHEN" },
   { name: "ዘይት|Zeyt|Oil", category: "Food", amount: 10, measuredBy: "Litre", unitPrice: 220, station: "KITCHEN" },
   { name: "ቅቤ|Kibe|Butter", category: "Food", amount: 5, measuredBy: "Kilogram", unitPrice: 450, station: "KITCHEN" },
   { name: "ንጥር ቅቤ|Niter Kibe|Spiced clarified butter", category: "Food", amount: 3, measuredBy: "Kilogram", unitPrice: 550, station: "KITCHEN" },
@@ -54,7 +54,7 @@ const STOCK = [
   { name: "ነጭ ዱቄት|Nech Duket|White flour", category: "Food", amount: 25, measuredBy: "Kilogram", unitPrice: 80, station: "KITCHEN" },
   { name: "የቲማቲም ፔስት|Ye Timatim Pest|Tomato paste", category: "Food", amount: 5, measuredBy: "Kilogram", unitPrice: 200, station: "KITCHEN" },
   { name: "በርበሬ|Berbere|Red spice blend", category: "Food", amount: 2, measuredBy: "Kilogram", unitPrice: 400, station: "KITCHEN" },
-  { name: "ሽሮ|Shero|Chickpea flour / shiro", category: "Food", amount: 8, measuredBy: "Kilogram", unitPrice: 180, station: "KITCHEN" },
+  { name: "ሽሮ|Shro|Chickpea flour / shiro", category: "Food", amount: 8, measuredBy: "Kilogram", unitPrice: 180, station: "KITCHEN" },
   { name: "ማዮኔዝ|Mayonnaise|Mayonnaise", category: "Food", amount: 3, measuredBy: "Litre", unitPrice: 250, station: "KITCHEN" },
   { name: "ኬጨፕ|Ketchup|Ketchup", category: "Food", amount: 3, measuredBy: "Litre", unitPrice: 180, station: "KITCHEN" },
   { name: "የበሬ ሞርታዴላ|Ye Bere Mortadella|Beef mortadella", category: "Food", amount: 3, measuredBy: "Kilogram", unitPrice: 650, station: "KITCHEN" },
@@ -151,12 +151,12 @@ const RECIPE_BY_MENU = [
   {
     match: (n) => n.includes("bozena") || (n.includes("shro") || n.includes("shiro") || n.includes("shero")),
     recipe: [
-      ing("ሽሮ|Shero|Chickpea flour / shiro", 0.08, "Kilogram", 180),
+      ing("ሽሮ|Shro|Chickpea flour / shiro", 0.08, "Kilogram", 180),
       ing("ስጋ|Sega|Meat", 0.12, "Kilogram", 700),
       ing("ሽንኩርት|Shenkurt|Onion", 0.06, "Kilogram", 50),
       ing("ዘይት|Zeyt|Oil", 0.03, "Litre", 220),
       ing("በርበሬ|Berbere|Red spice blend", 0.01, "Kilogram", 400),
-      ing("ነጭ ሽንኩርት|Nech Shenkurt|Garlic", 0.01, "Kilogram", 120),
+      ing("ነጭ ሽንኩርት|Nech Shnkurt|Garlic", 0.01, "Kilogram", 120),
     ],
   },
   {

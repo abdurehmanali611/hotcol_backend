@@ -49,7 +49,7 @@ const STOCK = [
   { name: "እንቁላል|Enqulal|Egg", category: "Food", amount: 60, measuredBy: "Piece", unitPrice: 12, station: "KITCHEN" },
   { name: "ቲማቲም|Timatim|Tomato", category: "Food", amount: 10, measuredBy: "Kilogram", unitPrice: 60, station: "KITCHEN" },
   { name: "ሽንኩርት|Shenkurt|Onion", category: "Food", amount: 10, measuredBy: "Kilogram", unitPrice: 50, station: "KITCHEN" },
-  { name: "ነጭ ሽንኩርት|Nech Shenkurt|Garlic", category: "Food", amount: 3, measuredBy: "Kilogram", unitPrice: 120, station: "KITCHEN" },
+  { name: "ነጭ ሽንኩርት|Nech Shnkurt|Garlic", category: "Food", amount: 3, measuredBy: "Kilogram", unitPrice: 120, station: "KITCHEN" },
   { name: "ዘይት|Zeyt|Oil", category: "Food", amount: 10, measuredBy: "Litre", unitPrice: 220, station: "KITCHEN" },
   { name: "ቅቤ|Kibe|Butter", category: "Food", amount: 5, measuredBy: "Kilogram", unitPrice: 450, station: "KITCHEN" },
   { name: "ድንች|Dinich|Potato", category: "Food", amount: 20, measuredBy: "Kilogram", unitPrice: 40, station: "KITCHEN" },
