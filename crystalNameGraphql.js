@@ -1,7 +1,12 @@
 /**
- * CrystalName — global catalog of Amharic|Romanized|English product names.
- * Source for inventory / recipe / purchase selector options.
+ * CrystalName + CrystalNameProposal — global catalog and Apex review queue.
  * Wired into BackEnd/index.js (types + Query/Mutation fields + resolvers).
+ *
+ * NON-BLOCKING RULE (product):
+ * Apex proposal status (pending / merged / approved / rejected) must NEVER gate
+ * tenant workflows — item registration, purchase authorize/approve, stock status,
+ * recipe save, orders, etc. Staff save and process rows with the crystal *label
+ * string immediately. Apex only maintains the shared naming catalog.
  */
 
 export const crystalNameTypeDefsBlock = `
@@ -12,6 +17,26 @@ export const crystalNameTypeDefsBlock = `
     english: String!
     """Full crystal display: Amharic|Romanized|English"""
     crystalLabel: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+  }
+
+  type CrystalNameProposal {
+    id: Int!
+    rawText: String!
+    amharic: String!
+    romanized: String!
+    english: String!
+    crystalLabel: String!
+    status: String!
+    source: String!
+    HotelName: String
+    tinNumber: String
+    proposedBy: String
+    mergedIntoId: Int
+    reviewNote: String
+    reviewedBy: String
+    reviewedAt: DateTime
     createdAt: DateTime!
     updatedAt: DateTime!
   }
@@ -27,6 +52,18 @@ export const crystalNameMutationFields = `
     createCrystalName(amharic: String!, romanized: String!, english: String!): CrystalName!
     updateCrystalName(id: Int!, amharic: String, romanized: String, english: String): CrystalName!
     deleteCrystalName(id: Int!): Boolean!
+    """
+    Propose a new crystal for Apex review.
+    Only rawText is required — Amharic/Romanized/English are optional;
+    Apex completes the triple when approving as new.
+    """
+    proposeCrystalName(
+      rawText: String!
+      amharic: String
+      romanized: String
+      english: String
+      source: String
+    ): CrystalNameProposal!
 `;
 
 function trimField(value, label) {
@@ -36,8 +73,29 @@ function trimField(value, label) {
   return s;
 }
 
+/** Optional segment for proposals — empty string allowed. */
+function optionalSegment(value) {
+  const s = String(value ?? "").trim();
+  if (s.length > 255) throw new Error("Each name segment must be at most 255 characters");
+  return s;
+}
+
 function crystalLabel(row) {
-  return `${row.amharic}|${row.romanized}|${row.english}`;
+  const a = String(row.amharic || "").trim();
+  const r = String(row.romanized || "").trim();
+  const e = String(row.english || "").trim();
+  if (a && r && e) return `${a}|${r}|${e}`;
+  const raw = String(row.rawText || "").trim();
+  if (raw) return raw;
+  return [a, r, e].filter(Boolean).join("|");
+}
+
+function mapProposal(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    crystalLabel: crystalLabel(row),
+  };
 }
 
 /**
@@ -45,15 +103,20 @@ function crystalLabel(row) {
  *   prisma: import("./generated/prisma/client.ts").PrismaClient,
  *   assertAuthenticated: (ctx: any) => void,
  *   assertRole: (ctx: any, roles: string[]) => void,
+ *   tenantScopeFromContext?: (ctx: any) => string,
  * }} deps
  */
 export function createCrystalNameResolvers({
   prisma,
   assertAuthenticated,
   assertRole,
+  tenantScopeFromContext,
 }) {
   return {
     CrystalName: {
+      crystalLabel: (row) => crystalLabel(row),
+    },
+    CrystalNameProposal: {
       crystalLabel: (row) => crystalLabel(row),
     },
     Query: {
@@ -159,6 +222,94 @@ export function createCrystalNameResolvers({
 
         await prisma.crystalName.delete({ where: { id: Number(id) } });
         return true;
+      },
+
+      proposeCrystalName: async (_parent, args, context) => {
+        assertAuthenticated(context);
+
+        const rawText = String(args.rawText || "").trim().slice(0, 512);
+        if (!rawText) throw new Error("Typed text is required");
+
+        const amharic = optionalSegment(args.amharic);
+        const romanized = optionalSegment(args.romanized);
+        const english = optionalSegment(args.english);
+        const source = String(args.source || "other")
+          .trim()
+          .toLowerCase()
+          .slice(0, 64) || "other";
+
+        // Only auto-match catalog when a full triple was provided.
+        if (amharic && romanized && english) {
+          const existingCatalog = await prisma.crystalName.findFirst({
+            where: { amharic, romanized, english },
+          });
+          if (existingCatalog) {
+            return mapProposal({
+              id: 0,
+              rawText,
+              amharic: existingCatalog.amharic,
+              romanized: existingCatalog.romanized,
+              english: existingCatalog.english,
+              status: "approved",
+              source,
+              HotelName: null,
+              tinNumber: null,
+              proposedBy: null,
+              mergedIntoId: existingCatalog.id,
+              reviewNote: "Already in catalog",
+              reviewedBy: null,
+              reviewedAt: new Date(),
+              createdAt: existingCatalog.createdAt,
+              updatedAt: existingCatalog.updatedAt,
+            });
+          }
+        }
+
+        const pendingSame = await prisma.crystalNameProposal.findFirst({
+          where: {
+            status: "pending",
+            OR: [
+              ...(amharic && romanized && english
+                ? [{ amharic, romanized, english }]
+                : []),
+              {
+                rawText: {
+                  equals: rawText,
+                },
+              },
+            ],
+          },
+          orderBy: { id: "asc" },
+        });
+        if (pendingSame) {
+          return mapProposal(pendingSame);
+        }
+
+        const tin =
+          typeof tenantScopeFromContext === "function"
+            ? String(tenantScopeFromContext(context) || "").trim() || null
+            : String(context?.user?.tinNumber || "").trim() || null;
+        const hotel =
+          String(context?.user?.HotelName || "").trim() || tin || null;
+        const proposedBy =
+          String(
+            context?.user?.UserName || context?.user?.userName || "",
+          ).trim() || null;
+
+        const created = await prisma.crystalNameProposal.create({
+          data: {
+            rawText,
+            amharic,
+            romanized,
+            english,
+            status: "pending",
+            source,
+            HotelName: hotel,
+            tinNumber: tin,
+            proposedBy,
+          },
+        });
+        return mapProposal(created);
       },
     },
   };

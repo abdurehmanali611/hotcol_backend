@@ -231,6 +231,10 @@ model tenant_account {
   modules          Json?
   /// When true, cashiers may cancel unpaid live orders (Manager opt-in; default off).
   cashierCancelOrdersEnabled Boolean @default(false)
+  /// Apex opt-in: Café and Restaurant properties may use HotCol Waiter ordering.
+  waiterOrderingEnabled Boolean @default(false)
+  /// Manager/Admin opt-in: waiters may send payment-approval requests to cashiers.
+  waiterPaymentApprovalEnabled Boolean @default(false)
   /// digital | analog — café/restaurant order fulfillment
   cafeOrderMode    String   @default("digital")
   /// [{ mode, effectiveFrom, effectiveTo }] approved mode segments
@@ -427,10 +431,16 @@ model Order {
   /// Set when cashier edits table, waiter, or quantity — kitchen/bar highlight.
   orderRevisedAt     DateTime? @map("quantityRevisedAt")
   orderRevisionCount Int       @default(0)
+  /// Waiter who owns the line (HotCol Waiter portal); null for legacy/cashier-only lines.
+  waiterId    Int?
+  /// Pending payment-approval request id (waiter → cashier); null when none.
+  paymentApprovalRequestId Int?
   createdAt   DateTime @default(now())
 
   @@index([HotelName])
   @@index([HotelName, status])
+  @@index([HotelName, waiterId])
+  @@index([paymentApprovalRequestId])
 }
 
 model waiter {
@@ -441,11 +451,46 @@ model waiter {
   age          Int
   experience   Int
   phoneNumber  String
+  /// Globally unique 6-digit PIN for HotCol Waiter portal login (nullable = portal disabled).
+  passkey      String?  @unique
+  /// Manager/Admin activation — deactivated waiters cannot log in or order.
+  isActive     Boolean  @default(true)
   price        Json     @default("[]")
   tablesServed Json     @default("[]")
   payment      Json     @default("[]")
   incomeAt     Json     @default("[]")
   createdAt    DateTime @default(now())
+
+  @@index([HotelName])
+  @@index([HotelName, isActive])
+}
+
+/// Waiter → cashier payment approval request (amount + method); cashier approves/rejects.
+model waiter_payment_approval_request {
+  id              Int       @id @default(autoincrement())
+  HotelName       String
+  waiterId        Int
+  waiterName      String
+  /// Order line ids covered by this request.
+  orderIds        Json
+  tableNo         Int?
+  amountPaid      Float
+  /// Same payment method vocabulary as cashier (Cash, Bank, Credit, …).
+  paymentMethod   String
+  withBank        Boolean   @default(false)
+  /// pending | approved | rejected
+  status          String    @default("pending")
+  requestNote     String?   @db.Text
+  cashierNote     String?   @db.Text
+  resolvedByUserName String?
+  requestedAt     DateTime  @default(now())
+  resolvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([HotelName, status])
+  @@index([HotelName, requestedAt])
+  @@index([waiterId])
 }
 
 model table {
@@ -1480,4 +1525,34 @@ model CrystalName {
   @@index([romanized])
   @@index([english])
   @@map("crystal_name")
+}
+
+/// Tenant-proposed crystal names awaiting Apex review (Phase 1 — no AI yet).
+/// Staff can use the proposed label immediately; Apex merges or approves as new.
+model CrystalNameProposal {
+  id           Int      @id @default(autoincrement())
+  /// Original typed / free text from the property
+  rawText      String   @db.VarChar(512)
+  amharic      String   @db.VarChar(255)
+  romanized    String   @db.VarChar(255)
+  english      String   @db.VarChar(255)
+  /// pending | approved | merged | rejected
+  status       String   @default("pending") @db.VarChar(32)
+  /// registration | purchase | recipe | other
+  source       String   @default("other") @db.VarChar(64)
+  HotelName    String?  @db.VarChar(255)
+  tinNumber    String?  @db.VarChar(64)
+  proposedBy   String?  @db.VarChar(255)
+  /// Set when merged into an existing CrystalName.id
+  mergedIntoId Int?
+  reviewNote   String?  @db.VarChar(512)
+  reviewedBy   String?  @db.VarChar(255)
+  reviewedAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([amharic, romanized, english])
+  @@index([tinNumber])
+  @@map("crystal_name_proposal")
 }

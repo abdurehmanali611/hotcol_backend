@@ -118,6 +118,14 @@ import {
   crystalNameMutationFields,
   createCrystalNameResolvers,
 } from "./crystalNameGraphql.js";
+import {
+  waiterOrderingTypeDefsBlock,
+  waiterOrderingQueryFields,
+  waiterOrderingMutationFields,
+  createWaiterOrderingResolvers,
+  normalizeWaiterPasskey,
+  assertPasskeyAvailable,
+} from "./waiterOrderingGraphql.js";
 
 const prisma = createPrismaClient();
 const JWT_Secret = process.env.JWT_Secret;
@@ -398,6 +406,8 @@ async function resolveTenantSubscription(prismaClient, user) {
           cafeOrderMode: true,
           cafeOrderModeHistory: true,
           cashierCancelOrdersEnabled: true,
+          waiterOrderingEnabled: true,
+          waiterPaymentApprovalEnabled: true,
         },
       })
     : null;
@@ -407,6 +417,10 @@ async function resolveTenantSubscription(prismaClient, user) {
     modules: parseModulesJson(row.modules),
     ...modeSnap,
     cashierCancelOrdersEnabled: Boolean(account?.cashierCancelOrdersEnabled),
+    waiterOrderingEnabled: Boolean(account?.waiterOrderingEnabled),
+    waiterPaymentApprovalEnabled: Boolean(
+      account?.waiterPaymentApprovalEnabled,
+    ),
   };
 }
 
@@ -437,6 +451,10 @@ function graphqlTenantSubscriptionSnapshot(
     ),
     cashierCancelOrdersEnabled: Boolean(
       subscription.cashierCancelOrdersEnabled,
+    ),
+    waiterOrderingEnabled: Boolean(subscription.waiterOrderingEnabled),
+    waiterPaymentApprovalEnabled: Boolean(
+      subscription.waiterPaymentApprovalEnabled,
     ),
   };
 }
@@ -483,6 +501,10 @@ function attachSubscriptionFields(user, subscription, options = {}) {
     cafeOrderMode: subscription.cafeOrderMode ?? "digital",
     cafeOrderModeHistory: subscription.cafeOrderModeHistory ?? [],
     cashierCancelOrdersEnabled: Boolean(subscription.cashierCancelOrdersEnabled),
+    waiterOrderingEnabled: Boolean(subscription.waiterOrderingEnabled),
+    waiterPaymentApprovalEnabled: Boolean(
+      subscription.waiterPaymentApprovalEnabled,
+    ),
     awaitingSelfSignupSetup: selfSignupAwaitingSetup(
       subscription,
       pendingSetupSubmission,
@@ -712,6 +734,8 @@ const typeDefs = gql`
     cafeOrderMode: String
     cafeOrderModeHistory: JSON
     cashierCancelOrdersEnabled: Boolean
+    waiterOrderingEnabled: Boolean
+    waiterPaymentApprovalEnabled: Boolean
   }
 
   type TenantPaymentSubmission {
@@ -795,6 +819,8 @@ const typeDefs = gql`
     cafeOrderMode: String!
     cafeOrderModeHistory: JSON!
     cashierCancelOrdersEnabled: Boolean!
+    waiterOrderingEnabled: Boolean!
+    waiterPaymentApprovalEnabled: Boolean!
   }
 
   type Item {
@@ -848,6 +874,8 @@ const typeDefs = gql`
     cancelledBy: String
     orderRevisedAt: DateTime
     orderRevisionCount: Int
+    waiterId: Int
+    paymentApprovalRequestId: Int
     createdAt: DateTime!
   }
 
@@ -867,6 +895,7 @@ const typeDefs = gql`
     creditAmount: Float
     payment: String
     serviceCaption: String
+    waiterId: Int
   }
 
   """One line in a multi-item purchase request (shared voucher per batch)."""
@@ -919,12 +948,17 @@ const typeDefs = gql`
     age: Int!
     experience: Int!
     phoneNumber: String!
+    """Globally unique 6-digit HotCol Waiter portal PIN (null = portal login disabled)."""
+    passkey: String
+    isActive: Boolean!
     price: JSON
     tablesServed: JSON
     payment: JSON
     incomeAt: JSON
     createdAt: DateTime!
   }
+
+  ${waiterOrderingTypeDefsBlock}
 
   type table {
     id: Int!
@@ -1339,6 +1373,7 @@ const typeDefs = gql`
     ${lodgingQueryFields}
     ${hrQueryFields}
     ${crystalNameQueryFields}
+    ${waiterOrderingQueryFields}
   }
 
   type SignupPricingPreview {
@@ -1432,6 +1467,7 @@ const typeDefs = gql`
     Default off — only managers cancel unless explicitly enabled.
     """
     setCashierCancelOrdersEnabled(enabled: Boolean!): TenantSubscriptionSnapshot!
+    ${waiterOrderingMutationFields}
     CreateCashout(
       items: JSON
       prices: JSON
@@ -1461,6 +1497,7 @@ const typeDefs = gql`
       imageUrl: String!
       tableNo: Int!
       waiterName: String!
+      waiterId: Int
       orderAmount: Int!
       status: String
       payment: String
@@ -1509,6 +1546,8 @@ const typeDefs = gql`
       experience: Int!
       phoneNumber: String!
       HotelName: String!
+      passkey: String
+      isActive: Boolean
     ): waiter!
     CreateTable(
       tableNo: Int!
@@ -1533,6 +1572,8 @@ const typeDefs = gql`
       sex: String!
       experience: Int!
       phoneNumber: String!
+      passkey: String
+      isActive: Boolean
     ): waiter!
     UpdateTable(
       id: Int!
@@ -3107,6 +3148,24 @@ const crystalNameResolvers = createCrystalNameResolvers({
   prisma,
   assertAuthenticated,
   assertRole,
+  tenantScopeFromContext,
+});
+
+const waiterOrderingResolvers = createWaiterOrderingResolvers({
+  prisma,
+  assertAdminOrManager,
+  tenantScopeFromContext,
+  tenantHotelReadMatches,
+  resolveTenantSubscription,
+  parseModulesJson,
+  parseCafeOrderMode,
+  initialCafeOrderModeHistory,
+  loadGraphqlTenantSubscription,
+  loadAuthUserFromDb,
+  enrichContextUser,
+  roleIsOneOf,
+  loadTenantCafeOrderMode,
+  isRoomServiceTableNo,
 });
 
 const resolvers = {
@@ -3121,6 +3180,9 @@ const resolvers = {
   },
   CrystalName: {
     ...(crystalNameResolvers.CrystalName || {}),
+  },
+  CrystalNameProposal: {
+    ...(crystalNameResolvers.CrystalNameProposal || {}),
   },
   DepartmentLeader: {
     departmentLabel: (p) => departmentLabel(p.department),
@@ -3165,6 +3227,7 @@ const resolvers = {
     ...lodgingResolvers.Query,
     ...hrResolvers.Query,
     ...crystalNameResolvers.Query,
+    ...waiterOrderingResolvers.Query,
     users: async (_, __, context) => {
       if (!context.user) throw new Error("Not Authenticated");
       return await prisma.user.findMany({
@@ -4796,6 +4859,10 @@ const resolvers = {
                   imageUrl: orderData.imageUrl,
                   tableNo: orderData.tableNo,
                   waiterName: orderData.waiterName,
+                  waiterId:
+                    orderData.waiterId != null
+                      ? Number(orderData.waiterId)
+                      : null,
                   orderAmount: orderData.orderAmount,
                   HotelName: hotelName,
                   status: orderData.status || null,
@@ -4918,6 +4985,7 @@ const resolvers = {
         imageUrl,
         tableNo,
         waiterName,
+        waiterId,
         status,
         payment,
         category,
@@ -4970,6 +5038,7 @@ const resolvers = {
             imageUrl,
             tableNo,
             waiterName,
+            waiterId: waiterId != null ? Number(waiterId) : null,
             orderAmount,
             status: status,
             HotelName: hotelName,
@@ -5505,10 +5574,12 @@ const resolvers = {
     },
     CreateWaiter: async (
       _,
-      { name, age, sex, experience, phoneNumber },
+      { name, age, sex, experience, phoneNumber, passkey, isActive },
       context,
     ) => {
       if (!context.user) throw new Error("Not Authenticated");
+      const normalizedPasskey = normalizeWaiterPasskey(passkey);
+      await assertPasskeyAvailable(prisma, normalizedPasskey);
       return await prisma.waiter.create({
         data: {
           name,
@@ -5517,6 +5588,8 @@ const resolvers = {
           sex,
           experience,
           phoneNumber,
+          passkey: normalizedPasskey,
+          isActive: isActive == null ? true : Boolean(isActive),
           price: [],
           tablesServed: [],
           payment: [],
@@ -5623,7 +5696,7 @@ const resolvers = {
     },
     UpdateWaiter: async (
       _,
-      { id, name, age, sex, experience, phoneNumber },
+      { id, name, age, sex, experience, phoneNumber, passkey, isActive },
       context,
     ) => {
       if (!context.user) throw new Error("Not authenticated");
@@ -5633,15 +5706,24 @@ const resolvers = {
       if (!waiter || !tenantHotelReadMatches(context, waiter.HotelName)) {
         throw new Error("Waiter not found or not authorized");
       }
+      const data = {
+        name: name,
+        age: age,
+        sex: sex,
+        experience: experience,
+        phoneNumber: phoneNumber,
+      };
+      if (passkey !== undefined) {
+        const normalizedPasskey = normalizeWaiterPasskey(passkey);
+        await assertPasskeyAvailable(prisma, normalizedPasskey, id);
+        data.passkey = normalizedPasskey;
+      }
+      if (isActive !== undefined && isActive !== null) {
+        data.isActive = Boolean(isActive);
+      }
       return await prisma.waiter.update({
         where: { id: id },
-        data: {
-          name: name,
-          age: age,
-          sex: sex,
-          experience: experience,
-          phoneNumber: phoneNumber,
-        },
+        data,
       });
     },
     UpdateTable: async (_, { id, tableNo, capacity, orderCaption }, context) => {
@@ -8727,6 +8809,7 @@ const resolvers = {
     ...lodgingResolvers.Mutation,
     ...hrResolvers.Mutation,
     ...crystalNameResolvers.Mutation,
+    ...waiterOrderingResolvers.Mutation,
   },
 };
 
