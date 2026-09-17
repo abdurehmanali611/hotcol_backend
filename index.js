@@ -5259,10 +5259,34 @@ const resolvers = {
       if (!canPay && !canReceptionRoomService) {
         throw new Error("Not authorized");
       }
+
+      const markingPaid = String(payment || "").toLowerCase() === "paid";
+      if (markingPaid && !isRoomService && canPay) {
+        const subscription = await resolveTenantSubscription(
+          prisma,
+          authCtx.user,
+        );
+        if (
+          subscription.waiterOrderingEnabled &&
+          subscription.waiterPaymentApprovalEnabled &&
+          !(
+            order.paymentApprovalRequestId != null &&
+            Number(order.paymentApprovalRequestId) > 0
+          )
+        ) {
+          throw new Error(
+            "Wait for a waiter payment approval request before marking this order paid",
+          );
+        }
+      }
+
       const data = {
         payment: payment,
         withBank: withBank,
       };
+      if (markingPaid) {
+        data.paymentApprovalRequestId = null;
+      }
       if (withBank === false) {
         data.bankTransferAmount = null;
         data.bankTipCashDeduction = null;
@@ -5277,7 +5301,7 @@ const resolvers = {
       // Room-service settle at checkout should count as completed for café reports.
       // Analog thermal tickets have no kitchen screen — payment approval completes them.
       if (
-        String(payment || "").toLowerCase() === "paid" &&
+        markingPaid &&
         String(order.status || "").toLowerCase() !== "cancelled" &&
         String(order.status || "").toLowerCase() !== "failed"
       ) {
@@ -5288,10 +5312,37 @@ const resolvers = {
           data.status = "Completed";
         }
       }
-      return await prisma.order.update({
+      const updated = await prisma.order.update({
         where: { id: id },
         data,
       });
+
+      if (
+        markingPaid &&
+        order.paymentApprovalRequestId != null &&
+        Number(order.paymentApprovalRequestId) > 0
+      ) {
+        const resolverName =
+          String(authCtx.user.UserName || authCtx.user.userName || "").trim() ||
+          "Cashier";
+        try {
+          await prisma.waiter_payment_approval_request.updateMany({
+            where: {
+              id: Number(order.paymentApprovalRequestId),
+              status: "pending",
+            },
+            data: {
+              status: "approved",
+              resolvedByUserName: resolverName,
+              resolvedAt: new Date(),
+            },
+          });
+        } catch {
+          /* non-fatal — order is already paid */
+        }
+      }
+
+      return updated;
     },
     UpdateCredit: async (_, { id, credittorName, creditAmount }, context) => {
       if (!context.user) {
