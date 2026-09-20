@@ -10,6 +10,34 @@ const ROOM_STATUSES = new Set([
   "occupied",
   "vacant_clean",
   "on_maintenance",
+  "reserved",
+  "inspected",
+  "out_of_order",
+  "out_of_service",
+  "blocked",
+]);
+
+const MANAGER_ONLY_ROOM_STATUSES = new Set([
+  "out_of_order",
+  "out_of_service",
+  "blocked",
+]);
+
+const RESERVATION_STATUSES = new Set([
+  "tentative",
+  "confirmed",
+  "cancelled",
+  "no_show",
+  "checked_in",
+]);
+
+const RESERVATION_SOURCES = new Set([
+  "walk_in",
+  "phone",
+  "website",
+  "agency",
+  "corporate",
+  "other",
 ]);
 const STAY_STATUSES = new Set([
   "reserved",
@@ -19,6 +47,16 @@ const STAY_STATUSES = new Set([
 ]);
 const BILL_STATUSES = new Set(["open", "settled", "void"]);
 const BILL_LINE_KINDS = new Set(["room", "food_drink", "laundry", "other"]);
+const RATE_PLAN_KINDS = new Set([
+  "standard",
+  "corporate",
+  "seasonal",
+  "weekend",
+  "promo",
+  "long_stay",
+  "group",
+  "event",
+]);
 const SERVICE_KINDS = new Set(["food_drink", "laundry"]);
 const CM_WORK_KINDS = new Set(["cleaning", "maintenance"]);
 const CM_STATUSES = new Set(["open", "done", "cancelled"]);
@@ -39,6 +77,7 @@ export const lodgingTypeDefsBlock = `
     pricePerNightETB: Float!
     status: String!
     maintenanceUntil: DateTime
+    statusExpectedEndAt: DateTime
     notes: String!
     createdAt: DateTime!
     updatedAt: DateTime!
@@ -84,11 +123,22 @@ export const lodgingTypeDefsBlock = `
     quantity: Float!
     unitPriceETB: Float!
     amountETB: Float!
+    taxPercent: Float!
+    taxETB: Float!
     roomNumber: String!
     # pending | completed | cancelled
     fulfillmentStatus: String!
     fulfilledAt: DateTime
     fulfilledBy: String!
+    voided: Boolean!
+    voidedAt: DateTime
+    voidedBy: String!
+    voidReason: String!
+    # "" | pending | approved | rejected (discounts)
+    approvalStatus: String!
+    approvedBy: String!
+    approvedAt: DateTime
+    approvalNote: String!
     createdAt: DateTime!
     createdBy: String!
   }
@@ -99,6 +149,9 @@ export const lodgingTypeDefsBlock = `
     stayId: Int!
     status: String!
     totalETB: Float!
+    cashETB: Float!
+    bankETB: Float!
+    telebirrETB: Float!
     settledAt: DateTime
     settledBy: String!
     receiptNumber: String!
@@ -112,13 +165,18 @@ export const lodgingTypeDefsBlock = `
     HotelName: String!
     voucherCode: String!
     guestId: Int!
+    reservationId: Int
     status: String!
     arrivalAt: DateTime!
     departureAt: DateTime!
+    expectedNights: Int!
+    expectedDepartureAt: DateTime
     nights: Int!
     adults: Int!
     children: Int!
     preferredRoomType: String!
+    ratePlanId: Int
+    ratePlanName: String!
     notes: String!
     checkedInBy: String!
     checkedOutBy: String!
@@ -130,6 +188,138 @@ export const lodgingTypeDefsBlock = `
     guest: LodgingGuest!
     rooms: [LodgingStayRoom!]!
     bill: LodgingBill
+  }
+
+  type LodgingReservationRoom {
+    id: Int!
+    reservationId: Int!
+    roomId: Int
+    roomType: String!
+    createdAt: DateTime!
+    room: LodgingRoom
+  }
+
+  type LodgingReservation {
+    id: Int!
+    HotelName: String!
+    reservationCode: String!
+    guestId: Int
+    status: String!
+    source: String!
+    arrivalAt: DateTime!
+    departureAt: DateTime!
+    nights: Int!
+    adults: Int!
+    children: Int!
+    preferredRoomType: String!
+    depositETB: Float!
+    notes: String!
+    createdBy: String!
+    updatedBy: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    guest: LodgingGuest
+    rooms: [LodgingReservationRoom!]!
+  }
+
+  type LodgingTaxConfig {
+    id: Int!
+    HotelName: String!
+    kind: String!
+    taxPercent: Float!
+    updatedBy: String!
+    updatedAt: DateTime!
+    createdAt: DateTime!
+  }
+
+  type LodgingBusinessDay {
+    id: Int!
+    HotelName: String!
+    businessDate: String!
+    status: String!
+    closedAt: DateTime
+    closedBy: String!
+    summaryJson: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+  }
+
+  type LodgingRatePlan {
+    id: Int!
+    HotelName: String!
+    name: String!
+    code: String!
+    kind: String!
+    roomType: String!
+    pricePerNightETB: Float!
+    startDate: String!
+    endDate: String!
+    minNights: Int!
+    priority: Int!
+    isActive: Boolean!
+    notes: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    updatedBy: String!
+  }
+
+  type LodgingPerformanceReport {
+    fromDate: String!
+    toDate: String!
+    roomNightsSold: Int!
+    availableRoomNights: Int!
+    occupancyPercent: Float!
+    roomRevenueETB: Float!
+    adrETB: Float!
+    revparETB: Float!
+    staysCheckedOut: Int!
+    staysInHouse: Int!
+    byRoomType: [LodgingPerformanceByType!]!
+    bySource: [LodgingPerformanceBySource!]!
+  }
+
+  type LodgingPerformanceByType {
+    roomType: String!
+    roomNightsSold: Int!
+    roomRevenueETB: Float!
+    adrETB: Float!
+  }
+
+  type LodgingPerformanceBySource {
+    source: String!
+    stays: Int!
+    roomRevenueETB: Float!
+  }
+
+  type LodgingGuestComplaint {
+    id: Int!
+    HotelName: String!
+    stayId: Int!
+    guestId: Int
+    category: String!
+    message: String!
+    status: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    guestName: String!
+    voucherCode: String!
+    roomNumbers: String!
+  }
+
+  type LodgingGuestRating {
+    id: Int!
+    HotelName: String!
+    stayId: Int!
+    guestId: Int
+    overall: Int!
+    cleanliness: Int
+    service: Int
+    comment: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    guestName: String!
+    voucherCode: String!
+    roomNumbers: String!
   }
 
   type LodgingServiceItem {
@@ -179,8 +369,18 @@ export const lodgingTypeDefsBlock = `
     vacantDirty: Int!
     occupied: Int!
     onMaintenance: Int!
+    reserved: Int!
+    inspected: Int!
+    outOfOrder: Int!
+    outOfService: Int!
+    blocked: Int!
     activeStays: Int!
     openCmAssignments: Int!
+    todayCheckIns: Int!
+    todayCheckOuts: Int!
+    openReservations: Int!
+    occupancyPercent: Float!
+    outstandingBalanceETB: Float!
   }
 
   input LodgingGuestInput {
@@ -204,15 +404,27 @@ export const lodgingQueryFields = `
     lodgingRooms: [LodgingRoom!]!
     lodgingRoomsByStatus(status: String!): [LodgingRoom!]!
     lodgingCmQueue: [LodgingRoom!]!
+    lodgingHoldableRooms(arrivalAt: DateTime!): [LodgingRoom!]!
     lodgingGuests(search: String): [LodgingGuest!]!
     lodgingGuest(id: Int!): LodgingGuest
     lodgingActiveStays: [LodgingStay!]!
     lodgingStay(id: Int!): LodgingStay
     lodgingStaysByDate(from: DateTime!, to: DateTime!): [LodgingStay!]!
+    lodgingSearch(query: String!): [LodgingStay!]!
     lodgingServiceItems(kind: String): [LodgingServiceItem!]!
     lodgingCmAssignments(status: String): [LodgingCmAssignment!]!
     lodgingActionLogs(limit: Int, stayId: Int): [LodgingActionLog!]!
     lodgingDashboardStats: LodgingDashboardStats!
+    lodgingReservations(status: String, from: DateTime, to: DateTime): [LodgingReservation!]!
+    lodgingReservation(id: Int!): LodgingReservation
+    lodgingTaxConfigs: [LodgingTaxConfig!]!
+    pendingLodgingDiscounts: [LodgingBillLine!]!
+    lodgingRatePlans(activeOnly: Boolean): [LodgingRatePlan!]!
+    lodgingPerformanceReport(fromDate: String!, toDate: String!): LodgingPerformanceReport!
+    lodgingBusinessDay(businessDate: String): LodgingBusinessDay
+    lodgingBusinessDays(limit: Int): [LodgingBusinessDay!]!
+    lodgingGuestComplaints(status: String, limit: Int): [LodgingGuestComplaint!]!
+    lodgingGuestRatings(limit: Int): [LodgingGuestRating!]!
 `;
 
 export const lodgingMutationFields = `
@@ -232,6 +444,7 @@ export const lodgingMutationFields = `
       notes: String
       status: String
       maintenanceUntil: DateTime
+      statusExpectedEndAt: DateTime
     ): LodgingRoom!
     deleteLodgingRoom(id: Int!): Boolean!
     upsertLodgingServiceItem(
@@ -271,18 +484,30 @@ export const lodgingMutationFields = `
       roomIds: [Int!]!
       notes: String
       status: String
+      reservationId: Int
+      ratePlanId: Int
     ): LodgingStay!
     updateLodgingStay(
       id: Int!
       arrivalAt: DateTime
       departureAt: DateTime
       nights: Int
+      expectedNights: Int
+      expectedDepartureAt: DateTime
       adults: Int
       children: Int
       preferredRoomType: String
       notes: String
       status: String
       guestId: Int
+    ): LodgingStay!
+    transferLodgingStayRoom(
+      stayId: Int!
+      fromRoomId: Int!
+      toRoomId: Int!
+      reason: String
+      markOldOnMaintenance: Boolean
+      maintenanceUntil: DateTime
     ): LodgingStay!
     addLodgingBillLine(
       stayId: Int!
@@ -294,6 +519,19 @@ export const lodgingMutationFields = `
     ): LodgingBillLine!
     updateLodgingBillLine(lineId: Int!, quantity: Float!): LodgingBillLine!
     deleteLodgingBillLine(lineId: Int!): Boolean!
+    voidLodgingBillLine(lineId: Int!, reason: String!): LodgingBillLine!
+    # Reception requests; Manager/Admin applies immediately as approved.
+    requestLodgingDiscount(
+      stayId: Int!
+      amountETB: Float!
+      reason: String!
+    ): LodgingBillLine!
+    # Manager/Admin: approve or reject a pending discount line.
+    resolveLodgingDiscount(
+      lineId: Int!
+      approve: Boolean!
+      note: String
+    ): LodgingBillLine!
     # Reception/Manager: mark laundry fulfillment. Use completed | cancelled | pending.
     setLodgingBillLineFulfillment(lineId: Int!, status: String!): LodgingBillLine!
     transferLodgingBillLines(lineIds: [Int!]!, toStayId: Int!): LodgingBill!
@@ -302,7 +540,14 @@ export const lodgingMutationFields = `
       quantityToMove: Float!
       toStayId: Int!
     ): LodgingBill!
-    checkoutLodgingStay(stayId: Int!, departureAt: DateTime!): LodgingStay!
+    checkoutLodgingStay(
+      stayId: Int!
+      departureAt: DateTime!
+      nights: Int
+      cashETB: Float
+      bankETB: Float
+      telebirrETB: Float
+    ): LodgingStay!
     # Issue or re-issue guest portal OTP for a checked-in stay (e.g. guest forgot).
     issueLodgingGuestOtp(stayId: Int!): LodgingStay!
     registerLodgingServiceCharge(
@@ -316,6 +561,7 @@ export const lodgingMutationFields = `
       roomId: Int!
       status: String!
       maintenanceUntil: DateTime
+      statusExpectedEndAt: DateTime
       notes: String
     ): LodgingRoom!
     createLodgingCmAssignments(
@@ -323,8 +569,80 @@ export const lodgingMutationFields = `
       workKind: String!
       assigneeNames: [String!]!
       notes: String
+      statusExpectedEndAt: DateTime
     ): [LodgingCmAssignment!]!
     completeLodgingCmAssignment(id: Int!): LodgingCmAssignment!
+
+    createLodgingReservation(
+      guestId: Int
+      guestJson: JSON
+      source: String!
+      status: String
+      arrivalAt: DateTime!
+      nights: Int!
+      adults: Int
+      children: Int
+      preferredRoomType: String
+      roomIds: [Int!]
+      depositETB: Float
+      notes: String
+    ): LodgingReservation!
+    updateLodgingReservation(
+      id: Int!
+      status: String
+      source: String
+      arrivalAt: DateTime
+      nights: Int
+      adults: Int
+      children: Int
+      preferredRoomType: String
+      roomIds: [Int!]
+      depositETB: Float
+      notes: String
+      guestId: Int
+    ): LodgingReservation!
+    cancelLodgingReservation(id: Int!, asNoShow: Boolean): LodgingReservation!
+    checkInLodgingReservation(
+      reservationId: Int!
+      roomIds: [Int!]!
+      arrivalAt: DateTime
+      notes: String
+    ): LodgingStay!
+
+    upsertLodgingTaxConfig(kind: String!, taxPercent: Float!): LodgingTaxConfig!
+    closeLodgingBusinessDay(businessDate: String!): LodgingBusinessDay!
+    createLodgingRatePlan(
+      name: String!
+      code: String
+      kind: String!
+      roomType: String
+      pricePerNightETB: Float!
+      startDate: String
+      endDate: String
+      minNights: Int
+      priority: Int
+      isActive: Boolean
+      notes: String
+    ): LodgingRatePlan!
+    updateLodgingRatePlan(
+      id: Int!
+      name: String
+      code: String
+      kind: String
+      roomType: String
+      pricePerNightETB: Float
+      startDate: String
+      endDate: String
+      minNights: Int
+      priority: Int
+      isActive: Boolean
+      notes: String
+    ): LodgingRatePlan!
+    deleteLodgingRatePlan(id: Int!): Boolean!
+    updateLodgingGuestComplaint(
+      id: Int!
+      status: String!
+    ): LodgingGuestComplaint!
 `;
 
 export async function logLodgingAction(
@@ -596,6 +914,91 @@ async function assertLaundryLinesCompleted(lines) {
   }
 }
 
+function ymdLocal(d) {
+  const x = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(x.getTime())) return "";
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+}
+
+function planMatchesWeekend(kind, arrivalAt) {
+  if (String(kind).toLowerCase() !== "weekend") return true;
+  const d = arrivalAt instanceof Date ? arrivalAt : new Date(arrivalAt);
+  const day = d.getDay(); // 0 Sun … 5 Fri 6 Sat
+  return day === 5 || day === 6 || day === 0;
+}
+
+/**
+ * Pick the best active rate plan for a room type / arrival / nights.
+ * Returns null to fall back to the room's rack pricePerNightETB.
+ */
+async function resolveRatePlan(
+  prisma,
+  HotelName,
+  roomType,
+  arrivalAt,
+  nightsN,
+  forcedPlanId = null,
+) {
+  if (forcedPlanId != null && Number(forcedPlanId) > 0) {
+    const forced = await prisma.lodging_rate_plan.findFirst({
+      where: {
+        id: Number(forcedPlanId),
+        HotelName,
+        isActive: true,
+      },
+    });
+    if (forced) return forced;
+  }
+  const arrivalDay = ymdLocal(arrivalAt);
+  const nights = Math.max(1, Number(nightsN) || 1);
+  const plans = await prisma.lodging_rate_plan.findMany({
+    where: { HotelName, isActive: true },
+    orderBy: [{ priority: "desc" }, { id: "desc" }],
+  });
+  for (const p of plans) {
+    if (Number(p.minNights || 1) > nights) continue;
+    const rt = String(p.roomType || "").trim();
+    if (rt && rt !== String(roomType || "").trim()) continue;
+    const start = String(p.startDate || "").trim();
+    const end = String(p.endDate || "").trim();
+    if (start && arrivalDay && arrivalDay < start) continue;
+    if (end && arrivalDay && arrivalDay > end) continue;
+    if (!planMatchesWeekend(p.kind, arrivalAt)) continue;
+    return p;
+  }
+  return null;
+}
+
+async function unitPriceForRoomNight(
+  prisma,
+  HotelName,
+  room,
+  arrivalAt,
+  nightsN,
+  stayRatePlanId = null,
+) {
+  const plan = await resolveRatePlan(
+    prisma,
+    HotelName,
+    room.roomType,
+    arrivalAt,
+    nightsN,
+    stayRatePlanId,
+  );
+  if (plan) {
+    return {
+      unit: Number(plan.pricePerNightETB) || 0,
+      ratePlanId: plan.id,
+      ratePlanName: plan.name,
+    };
+  }
+  return {
+    unit: Number(room.pricePerNightETB) || 0,
+    ratePlanId: null,
+    ratePlanName: "",
+  };
+}
+
 async function syncRoomNightCharges(db, stay, nightsN, actorName) {
   if (!stay.bill || stay.bill.status !== "open") return;
   const billId = stay.bill.id;
@@ -603,21 +1006,47 @@ async function syncRoomNightCharges(db, stay, nightsN, actorName) {
   await db.lodging_bill_line.deleteMany({
     where: { billId, kind: "room" },
   });
+  let frozenPlanId = stay.ratePlanId ?? null;
+  let frozenPlanName = stay.ratePlanName || "";
   for (const sr of stay.rooms || []) {
     const r = sr.room;
     if (!r) continue;
-    const unit = Number(r.pricePerNightETB) || 0;
+    const priced = await unitPriceForRoomNight(
+      db,
+      stay.HotelName,
+      r,
+      stay.arrivalAt,
+      n,
+      frozenPlanId,
+    );
+    if (!frozenPlanId && priced.ratePlanId) {
+      frozenPlanId = priced.ratePlanId;
+      frozenPlanName = priced.ratePlanName;
+    }
+    const unit = priced.unit;
     const amount = unit * n;
+    const planLabel = priced.ratePlanName
+      ? ` · ${priced.ratePlanName}`
+      : "";
     await db.lodging_bill_line.create({
       data: {
         billId,
         kind: "room",
-        description: `Room ${r.roomNumber} × ${n} night(s)`,
+        description: `Room ${r.roomNumber} × ${n} night(s)${planLabel}`,
         quantity: n,
         unitPriceETB: unit,
         amountETB: amount,
         roomNumber: r.roomNumber,
         createdBy: actorName,
+      },
+    });
+  }
+  if (frozenPlanId && !stay.ratePlanId) {
+    await db.lodging_stay.update({
+      where: { id: stay.id },
+      data: {
+        ratePlanId: frozenPlanId,
+        ratePlanName: frozenPlanName,
       },
     });
   }
@@ -906,21 +1335,128 @@ function guestDataFromInput(input, HotelName) {
   };
 }
 
+function enrichGuestFeedbackRow(row) {
+  const guest = row.guest || row.stay?.guest || null;
+  const guestName = guest
+    ? `${guest.firstName || ""} ${guest.lastName || ""}`.trim() || "Guest"
+    : "Guest";
+  const rooms = (row.stay?.rooms || [])
+    .map((sr) => sr.room?.roomNumber)
+    .filter(Boolean);
+  return {
+    ...row,
+    guestName,
+    voucherCode: row.stay?.voucherCode || "",
+    roomNumbers: rooms.join(", "),
+  };
+}
+
+const GUEST_FEEDBACK_INCLUDE = {
+  guest: true,
+  stay: {
+    include: {
+      guest: true,
+      rooms: { include: { room: true } },
+    },
+  },
+};
+
 async function recalcBillTotal(prisma, billId) {
   const lines = await prisma.lodging_bill_line.findMany({
     where: { billId },
-    select: { amountETB: true, fulfillmentStatus: true },
+    select: {
+      amountETB: true,
+      taxETB: true,
+      fulfillmentStatus: true,
+      voided: true,
+      approvalStatus: true,
+    },
   });
   const totalETB = lines.reduce((s, l) => {
+    if (l.voided) return s;
+    const appr = String(l.approvalStatus || "").toLowerCase();
+    if (appr === "pending" || appr === "rejected") return s;
     if (String(l.fulfillmentStatus || "").toLowerCase() === "cancelled") {
       return s;
     }
-    return s + Number(l.amountETB || 0);
+    return s + Number(l.amountETB || 0) + Number(l.taxETB || 0);
   }, 0);
   return prisma.lodging_bill.update({
     where: { id: billId },
     data: { totalETB },
     include: { lines: { orderBy: { id: "asc" } } },
+  });
+}
+
+async function taxPercentForKind(prisma, HotelName, kind) {
+  const row = await prisma.lodging_tax_config.findUnique({
+    where: {
+      HotelName_kind: { HotelName, kind: String(kind) },
+    },
+  });
+  return row ? Number(row.taxPercent) || 0 : 0;
+}
+
+async function applyTaxToAmounts(prisma, HotelName, kind, amountETB) {
+  const taxPercent = await taxPercentForKind(prisma, HotelName, kind);
+  const taxETB = Math.round(amountETB * taxPercent) / 100;
+  return { taxPercent, taxETB };
+}
+
+const RESERVATION_INCLUDE = {
+  guest: true,
+  rooms: { include: { room: true } },
+};
+
+async function generateReservationCode(prisma, HotelName, arrivalAt) {
+  const day = ymd(arrivalAt instanceof Date ? arrivalAt : new Date(arrivalAt));
+  for (let i = 0; i < 40; i++) {
+    const code = `RSV-${day}-${pad4(Math.floor(Math.random() * 10000))}`;
+    const clash = await prisma.lodging_reservation.findFirst({
+      where: { HotelName, reservationCode: code },
+      select: { id: true },
+    });
+    if (!clash) return code;
+  }
+  return `RSV-${day}-${Date.now().toString().slice(-4)}`;
+}
+
+function startOfLocalDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function endOfLocalDay(d) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+
+/** Rooms that can be held for a future reservation arrival. */
+async function findHoldableRooms(prisma, context, arrivalAt, tenantHotelReadWhere) {
+  const arrival = startOfLocalDay(arrivalAt);
+  const scope = tenantHotelReadWhere(context);
+  const rooms = await prisma.lodging_room.findMany({
+    where: {
+      ...scope,
+      status: {
+        notIn: ["out_of_order", "out_of_service", "blocked", "occupied", "reserved"],
+      },
+    },
+    orderBy: [{ floor: "asc" }, { roomNumber: "asc" }],
+  });
+  return rooms.filter((r) => {
+    if (r.status === "vacant_clean" || r.status === "inspected") return true;
+    if (r.status === "vacant_dirty" || r.status === "on_maintenance") {
+      const end =
+        r.statusExpectedEndAt ||
+        r.maintenanceUntil ||
+        null;
+      if (!end) return false;
+      return startOfLocalDay(end).getTime() < arrival.getTime();
+    }
+    return false;
   });
 }
 
@@ -1042,7 +1578,10 @@ export function createLodgingResolvers({
       "Admin",
     ]);
 
-  return {
+  /** Late-bound Mutation map so checkInLodgingReservation can call createLodgingStay. */
+  const selfMutation = {};
+
+  const resolvers = {
     Query: {
       lodgingRooms: async (_, __, context) => {
         assertLodgingRead(context);
@@ -1067,10 +1606,22 @@ export function createLodgingResolvers({
         return prisma.lodging_room.findMany({
           where: {
             ...tenantHotelReadWhere(context),
-            status: { in: ["vacant_dirty", "on_maintenance"] },
+            status: { in: ["vacant_dirty", "on_maintenance", "inspected"] },
           },
           orderBy: [{ status: "asc" }, { roomNumber: "asc" }],
         });
+      },
+
+      lodgingHoldableRooms: async (_, { arrivalAt }, context) => {
+        assertReceptionOrManager(context);
+        const arrival = new Date(arrivalAt);
+        if (Number.isNaN(arrival.getTime())) throw new Error("Invalid arrivalAt");
+        return findHoldableRooms(
+          prisma,
+          context,
+          arrival,
+          tenantHotelReadWhere,
+        );
       },
 
       lodgingGuests: async (_, { search }, context) => {
@@ -1212,13 +1763,25 @@ export function createLodgingResolvers({
       lodgingDashboardStats: async (_, __, context) => {
         assertLodgingRead(context);
         const scope = tenantHotelReadWhere(context);
+        const todayStart = startOfLocalDay(new Date());
+        const todayEnd = endOfLocalDay(new Date());
         const [
           vacantClean,
           vacantDirty,
           occupied,
           onMaintenance,
+          reserved,
+          inspected,
+          outOfOrder,
+          outOfService,
+          blocked,
           activeStays,
           openCmAssignments,
+          todayCheckIns,
+          todayCheckOuts,
+          openReservations,
+          roomTotal,
+          openBills,
         ] = await Promise.all([
           prisma.lodging_room.count({
             where: { ...scope, status: "vacant_clean" },
@@ -1232,6 +1795,21 @@ export function createLodgingResolvers({
           prisma.lodging_room.count({
             where: { ...scope, status: "on_maintenance" },
           }),
+          prisma.lodging_room.count({
+            where: { ...scope, status: "reserved" },
+          }),
+          prisma.lodging_room.count({
+            where: { ...scope, status: "inspected" },
+          }),
+          prisma.lodging_room.count({
+            where: { ...scope, status: "out_of_order" },
+          }),
+          prisma.lodging_room.count({
+            where: { ...scope, status: "out_of_service" },
+          }),
+          prisma.lodging_room.count({
+            where: { ...scope, status: "blocked" },
+          }),
           prisma.lodging_stay.count({
             where: {
               ...scope,
@@ -1241,15 +1819,340 @@ export function createLodgingResolvers({
           prisma.lodging_cm_assignment.count({
             where: { ...scope, status: "open" },
           }),
+          prisma.lodging_stay.count({
+            where: {
+              ...scope,
+              status: "checked_in",
+              arrivalAt: { gte: todayStart, lte: todayEnd },
+            },
+          }),
+          prisma.lodging_stay.count({
+            where: {
+              ...scope,
+              status: "checked_out",
+              departureAt: { gte: todayStart, lte: todayEnd },
+            },
+          }),
+          prisma.lodging_reservation.count({
+            where: {
+              ...scope,
+              status: { in: ["tentative", "confirmed"] },
+            },
+          }),
+          prisma.lodging_room.count({ where: scope }),
+          prisma.lodging_bill.findMany({
+            where: { ...scope, status: "open" },
+            select: { totalETB: true },
+          }),
         ]);
+        const sellable =
+          vacantClean + vacantDirty + occupied + reserved + inspected;
+        const occupancyPercent =
+          sellable > 0 ? Math.round((occupied / sellable) * 1000) / 10 : 0;
+        const outstandingBalanceETB = openBills.reduce(
+          (s, b) => s + Number(b.totalETB || 0),
+          0,
+        );
         return {
           vacantClean,
           vacantDirty,
           occupied,
           onMaintenance,
+          reserved,
+          inspected,
+          outOfOrder,
+          outOfService,
+          blocked,
           activeStays,
           openCmAssignments,
+          todayCheckIns,
+          todayCheckOuts,
+          openReservations,
+          occupancyPercent,
+          outstandingBalanceETB,
         };
+      },
+
+      lodgingSearch: async (_, { query }, context) => {
+        assertReceptionOrManager(context);
+        const q = String(query ?? "").trim();
+        if (!q) return [];
+        const scope = tenantHotelReadWhere(context);
+        return prisma.lodging_stay.findMany({
+          where: {
+            AND: [
+              scope,
+              {
+                OR: [
+                  { voucherCode: { contains: q } },
+                  { guest: { firstName: { contains: q } } },
+                  { guest: { lastName: { contains: q } } },
+                  { guest: { phone: { contains: q } } },
+                  { guest: { nationalId: { contains: q } } },
+                  { guest: { passportNumber: { contains: q } } },
+                  {
+                    rooms: {
+                      some: { room: { roomNumber: { contains: q } } },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+          include: STAY_INCLUDE,
+          orderBy: { arrivalAt: "desc" },
+          take: 40,
+        });
+      },
+
+      lodgingReservations: async (_, { status, from, to }, context) => {
+        assertReceptionOrManager(context);
+        const where = { ...tenantHotelReadWhere(context) };
+        if (status) {
+          const s = String(status).trim();
+          if (!RESERVATION_STATUSES.has(s)) throw new Error("Invalid status");
+          where.status = s;
+        }
+        if (from || to) {
+          where.arrivalAt = {};
+          if (from) where.arrivalAt.gte = new Date(from);
+          if (to) where.arrivalAt.lte = new Date(to);
+        }
+        return prisma.lodging_reservation.findMany({
+          where,
+          include: RESERVATION_INCLUDE,
+          orderBy: { arrivalAt: "asc" },
+          take: 300,
+        });
+      },
+
+      lodgingReservation: async (_, { id }, context) => {
+        assertReceptionOrManager(context);
+        const row = await prisma.lodging_reservation.findUnique({
+          where: { id: Number(id) },
+          include: RESERVATION_INCLUDE,
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) return null;
+        return row;
+      },
+
+      lodgingTaxConfigs: async (_, __, context) => {
+        assertReceptionOrManager(context);
+        return prisma.lodging_tax_config.findMany({
+          where: tenantHotelReadWhere(context),
+          orderBy: { kind: "asc" },
+        });
+      },
+
+      pendingLodgingDiscounts: async (_, __, context) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        return prisma.lodging_bill_line.findMany({
+          where: {
+            kind: "discount",
+            approvalStatus: "pending",
+            voided: false,
+            bill: { HotelName, status: "open" },
+          },
+          orderBy: { createdAt: "asc" },
+          take: 200,
+        });
+      },
+
+      lodgingRatePlans: async (_, { activeOnly }, context) => {
+        assertReceptionOrManager(context);
+        const where = { ...tenantHotelReadWhere(context) };
+        if (activeOnly) where.isActive = true;
+        return prisma.lodging_rate_plan.findMany({
+          where,
+          orderBy: [{ priority: "desc" }, { name: "asc" }],
+        });
+      },
+
+      lodgingPerformanceReport: async (_, { fromDate, toDate }, context) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const fromStr = String(fromDate || "").trim();
+        const toStr = String(toDate || "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fromStr) || !/^\d{4}-\d{2}-\d{2}$/.test(toStr)) {
+          throw new Error("fromDate and toDate must be YYYY-MM-DD");
+        }
+        if (fromStr > toStr) throw new Error("fromDate must be on or before toDate");
+        const from = new Date(`${fromStr}T00:00:00`);
+        const to = new Date(`${toStr}T23:59:59.999`);
+        const dayMs = 24 * 60 * 60 * 1000;
+        const days =
+          Math.max(
+            1,
+            Math.round(
+              (startOfLocalDay(to).getTime() - startOfLocalDay(from).getTime()) /
+                dayMs,
+            ) + 1,
+          );
+        const roomCount = await prisma.lodging_room.count({
+          where: { HotelName },
+        });
+        const availableRoomNights = roomCount * days;
+
+        const stays = await prisma.lodging_stay.findMany({
+          where: {
+            HotelName,
+            status: { in: ["checked_in", "checked_out"] },
+            arrivalAt: { lte: to },
+            departureAt: { gte: from },
+          },
+          include: {
+            rooms: { include: { room: true } },
+            bill: { include: { lines: true } },
+            reservation: true,
+          },
+        });
+
+        let roomNightsSold = 0;
+        let roomRevenueETB = 0;
+        let staysCheckedOut = 0;
+        let staysInHouse = 0;
+        const byType = new Map();
+        const bySource = new Map();
+
+        for (const stay of stays) {
+          const arr = startOfLocalDay(stay.arrivalAt);
+          const dep = startOfLocalDay(stay.departureAt);
+          const overlapStart = Math.max(arr.getTime(), startOfLocalDay(from).getTime());
+          const overlapEnd = Math.min(
+            dep.getTime(),
+            startOfLocalDay(to).getTime() + dayMs,
+          );
+          const overlapNights = Math.max(
+            0,
+            Math.round((overlapEnd - overlapStart) / dayMs),
+          );
+          const roomQty = Math.max(1, (stay.rooms || []).length);
+          const sold = overlapNights * roomQty;
+          roomNightsSold += sold;
+
+          if (stay.status === "checked_out") staysCheckedOut += 1;
+          if (stay.status === "checked_in") staysInHouse += 1;
+
+          const lines = stay.bill?.lines || [];
+          let stayRoomRev = 0;
+          for (const line of lines) {
+            if (line.voided) continue;
+            if (String(line.kind).toLowerCase() !== "room") continue;
+            if (String(line.approvalStatus || "").toLowerCase() === "pending") {
+              continue;
+            }
+            stayRoomRev += Number(line.amountETB) || 0;
+          }
+          // Attribute revenue by overlap share of stay nights.
+          const stayNights = Math.max(1, Number(stay.nights) || overlapNights || 1);
+          const share = Math.min(1, overlapNights / stayNights);
+          const attributed = stayRoomRev * share;
+          roomRevenueETB += attributed;
+
+          for (const sr of stay.rooms || []) {
+            const rt = sr.roomType || sr.room?.roomType || "Unknown";
+            const row = byType.get(rt) || {
+              roomType: rt,
+              roomNightsSold: 0,
+              roomRevenueETB: 0,
+            };
+            row.roomNightsSold += overlapNights;
+            row.roomRevenueETB += attributed / roomQty;
+            byType.set(rt, row);
+          }
+
+          const source = stay.reservation?.source || "walk_in";
+          const src = bySource.get(source) || {
+            source,
+            stays: 0,
+            roomRevenueETB: 0,
+          };
+          src.stays += 1;
+          src.roomRevenueETB += attributed;
+          bySource.set(source, src);
+        }
+
+        const adrETB =
+          roomNightsSold > 0 ? roomRevenueETB / roomNightsSold : 0;
+        const revparETB =
+          availableRoomNights > 0
+            ? roomRevenueETB / availableRoomNights
+            : 0;
+        const occupancyPercent =
+          availableRoomNights > 0
+            ? (roomNightsSold / availableRoomNights) * 100
+            : 0;
+
+        return {
+          fromDate: fromStr,
+          toDate: toStr,
+          roomNightsSold,
+          availableRoomNights,
+          occupancyPercent: Math.round(occupancyPercent * 100) / 100,
+          roomRevenueETB: Math.round(roomRevenueETB * 100) / 100,
+          adrETB: Math.round(adrETB * 100) / 100,
+          revparETB: Math.round(revparETB * 100) / 100,
+          staysCheckedOut,
+          staysInHouse,
+          byRoomType: [...byType.values()].map((r) => ({
+            ...r,
+            roomRevenueETB: Math.round(r.roomRevenueETB * 100) / 100,
+            adrETB:
+              r.roomNightsSold > 0
+                ? Math.round((r.roomRevenueETB / r.roomNightsSold) * 100) / 100
+                : 0,
+          })),
+          bySource: [...bySource.values()].map((r) => ({
+            ...r,
+            roomRevenueETB: Math.round(r.roomRevenueETB * 100) / 100,
+          })),
+        };
+      },
+
+      lodgingBusinessDay: async (_, { businessDate }, context) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const day =
+          String(businessDate || "").trim() || ymd(new Date());
+        return prisma.lodging_business_day.findUnique({
+          where: {
+            HotelName_businessDate: { HotelName, businessDate: day },
+          },
+        });
+      },
+
+      lodgingBusinessDays: async (_, { limit }, context) => {
+        assertReceptionOrManager(context);
+        return prisma.lodging_business_day.findMany({
+          where: tenantHotelReadWhere(context),
+          orderBy: { businessDate: "desc" },
+          take: Math.min(100, Math.max(1, Number(limit) || 30)),
+        });
+      },
+
+      lodgingGuestComplaints: async (_, { status, limit }, context) => {
+        assertReceptionOrManager(context);
+        const where = { ...tenantHotelReadWhere(context) };
+        if (status) where.status = String(status).trim();
+        const rows = await prisma.lodging_guest_complaint.findMany({
+          where,
+          include: GUEST_FEEDBACK_INCLUDE,
+          orderBy: { createdAt: "desc" },
+          take: Math.min(200, Math.max(1, Number(limit) || 50)),
+        });
+        return rows.map(enrichGuestFeedbackRow);
+      },
+
+      lodgingGuestRatings: async (_, { limit }, context) => {
+        assertReceptionOrManager(context);
+        const rows = await prisma.lodging_guest_rating.findMany({
+          where: tenantHotelReadWhere(context),
+          include: GUEST_FEEDBACK_INCLUDE,
+          orderBy: { createdAt: "desc" },
+          take: Math.min(200, Math.max(1, Number(limit) || 50)),
+        });
+        return rows.map(enrichGuestFeedbackRow);
       },
     },
 
@@ -1526,6 +2429,8 @@ export function createLodgingResolvers({
           roomIds,
           notes,
           status,
+          reservationId,
+          ratePlanId,
         },
         context,
       ) => {
@@ -1533,11 +2438,7 @@ export function createLodgingResolvers({
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const { actorName, actorRole } = actorFromContext(context);
 
-        // Provisional: nights are finalized at checkout from arrival/departure dates.
-        const nightsN = 1;
-        if (nights != null && Number(nights) > 1) {
-          /* ignored — client cannot set final nights at check-in */
-        }
+        const nightsN = Math.max(1, Math.floor(Number(nights) || 1));
         const arrival = new Date(arrivalAt);
         if (Number.isNaN(arrival.getTime())) throw new Error("Invalid arrivalAt");
         const departureAt = addDays(arrival, nightsN);
@@ -1566,6 +2467,27 @@ export function createLodgingResolvers({
           }
         }
 
+        let linkedReservation = null;
+        if (reservationId != null) {
+          linkedReservation = await prisma.lodging_reservation.findUnique({
+            where: { id: Number(reservationId) },
+            include: { rooms: true },
+          });
+          if (
+            !linkedReservation ||
+            !tenantHotelReadMatches(context, linkedReservation.HotelName)
+          ) {
+            throw new Error("Reservation not found");
+          }
+          if (
+            linkedReservation.status === "cancelled" ||
+            linkedReservation.status === "no_show" ||
+            linkedReservation.status === "checked_in"
+          ) {
+            throw new Error("Reservation cannot be checked in");
+          }
+        }
+
         let guest;
         if (guestId != null) {
           guest = await prisma.lodging_guest.findUnique({
@@ -1574,6 +2496,10 @@ export function createLodgingResolvers({
           if (!guest || !tenantHotelReadMatches(context, guest.HotelName)) {
             throw new Error("Guest not found");
           }
+        } else if (linkedReservation?.guestId) {
+          guest = await prisma.lodging_guest.findUnique({
+            where: { id: linkedReservation.guestId },
+          });
         } else {
           const payload = parseGuestPayload(guestJson);
           if (!payload) throw new Error("guestId or guestJson is required");
@@ -1612,18 +2538,39 @@ export function createLodgingResolvers({
         );
 
         const stay = await prisma.$transaction(async (tx) => {
+          let frozenPlanId = null;
+          let frozenPlanName = "";
+          // Resolve rate once from first room (or forced plan) for stay freeze.
+          if (rooms[0]) {
+            const seed = await unitPriceForRoomNight(
+              tx,
+              HotelName,
+              rooms[0],
+              arrival,
+              nightsN,
+              ratePlanId ?? null,
+            );
+            frozenPlanId = seed.ratePlanId;
+            frozenPlanName = seed.ratePlanName;
+          }
+
           const created = await tx.lodging_stay.create({
             data: {
               HotelName,
               voucherCode,
               guestId: guest.id,
+              reservationId: linkedReservation ? linkedReservation.id : null,
               status: stayStatus,
               arrivalAt: arrival,
               departureAt,
+              expectedNights: nightsN,
+              expectedDepartureAt: departureAt,
               nights: nightsN,
               adults: Math.max(1, Number(adults) || 1),
               children: Math.max(0, Number(children) || 0),
               preferredRoomType: String(preferredRoomType ?? "").trim(),
+              ratePlanId: frozenPlanId,
+              ratePlanName: frozenPlanName,
               notes: String(notes ?? "").trim(),
               checkedInBy: stayStatus === "checked_in" ? actorName : "",
             },
@@ -1642,8 +2589,32 @@ export function createLodgingResolvers({
               data: {
                 status: "occupied",
                 maintenanceUntil: null,
+                statusExpectedEndAt: null,
                 updatedBy: actorName,
               },
+            });
+          }
+
+          if (linkedReservation) {
+            for (const rr of linkedReservation.rooms || []) {
+              if (rr.roomId && !ids.includes(rr.roomId)) {
+                const held = await tx.lodging_room.findUnique({
+                  where: { id: rr.roomId },
+                });
+                if (held && held.status === "reserved") {
+                  await tx.lodging_room.update({
+                    where: { id: held.id },
+                    data: {
+                      status: "vacant_clean",
+                      updatedBy: actorName,
+                    },
+                  });
+                }
+              }
+            }
+            await tx.lodging_reservation.update({
+              where: { id: linkedReservation.id },
+              data: { status: "checked_in", updatedBy: actorName },
             });
           }
 
@@ -1658,26 +2629,72 @@ export function createLodgingResolvers({
 
           let total = 0;
           for (const r of rooms) {
-            const unit = Number(r.pricePerNightETB) || 0;
+            const priced = await unitPriceForRoomNight(
+              tx,
+              HotelName,
+              r,
+              arrival,
+              nightsN,
+              frozenPlanId,
+            );
+            const unit = priced.unit;
             const amount = unit * nightsN;
-            total += amount;
+            const { taxPercent, taxETB } = await applyTaxToAmounts(
+              tx,
+              HotelName,
+              "room",
+              amount,
+            );
+            total += amount + taxETB;
+            const planLabel = priced.ratePlanName
+              ? ` · ${priced.ratePlanName}`
+              : "";
             await tx.lodging_bill_line.create({
               data: {
                 billId: bill.id,
                 kind: "room",
-                description: `Room ${r.roomNumber} × ${nightsN} night(s)`,
+                description: `Room ${r.roomNumber} × ${nightsN} night(s)${planLabel}`,
                 quantity: nightsN,
                 unitPriceETB: unit,
                 amountETB: amount,
+                taxPercent,
+                taxETB,
                 roomNumber: r.roomNumber,
                 createdBy: actorName,
               },
             });
           }
 
+          const deposit = Math.max(
+            0,
+            Number(linkedReservation?.depositETB) || 0,
+          );
+          if (deposit > 0) {
+            await tx.lodging_bill_line.create({
+              data: {
+                billId: bill.id,
+                kind: "other",
+                description: "Reservation deposit applied",
+                quantity: 1,
+                unitPriceETB: deposit,
+                amountETB: -deposit,
+                taxPercent: 0,
+                taxETB: 0,
+                roomNumber: rooms[0]?.roomNumber || "",
+                fulfillmentStatus: "completed",
+                approvalStatus: "approved",
+                approvedBy: actorName,
+                approvedAt: new Date(),
+                approvalNote: "Reservation deposit",
+                createdBy: actorName,
+              },
+            });
+            total -= deposit;
+          }
+
           await tx.lodging_bill.update({
             where: { id: bill.id },
-            data: { totalETB: total },
+            data: { totalETB: Math.round(total * 100) / 100 },
           });
 
           return created;
@@ -1696,11 +2713,13 @@ export function createLodgingResolvers({
             roomIds: ids,
             status: stayStatus,
             nights: nightsN,
+            expectedNights: nightsN,
+            reservationId: linkedReservation?.id ?? null,
           },
         });
 
         if (stayStatus === "checked_in") {
-          const otp = await issueUniqueGuestOtp(prisma, stay.id);
+          await issueUniqueGuestOtp(prisma, stay.id);
           await logLodgingAction(prisma, {
             HotelName,
             actorRole,
@@ -2408,7 +3427,11 @@ export function createLodgingResolvers({
         });
       },
 
-      checkoutLodgingStay: async (_, { stayId, departureAt }, context) => {
+      checkoutLodgingStay: async (
+        _,
+        { stayId, departureAt, nights, cashETB, bankETB, telebirrETB },
+        context,
+      ) => {
         assertReceptionOrManager(context);
         const stay = await loadStayOrThrow(
           prisma,
@@ -2427,7 +3450,11 @@ export function createLodgingResolvers({
 
         const { actorName, actorRole } = actorFromContext(context);
         const receiptNumber = `RCP-${ymd(dep)}-${pad4(stay.id % 10000)}`;
-        const nightsN = nightsFromArrivalDeparture(stay.arrivalAt, dep);
+        const computedNights = nightsFromArrivalDeparture(stay.arrivalAt, dep);
+        const nightsN =
+          nights != null && Number(nights) > 0
+            ? Math.max(1, Math.floor(Number(nights)))
+            : computedNights;
 
         // Drop bill lines for cancelled room-service café orders before settle.
         if (stay.bill && stay.bill.status === "open") {
@@ -2460,8 +3487,36 @@ export function createLodgingResolvers({
         );
         await assertLaundryLinesCompleted(stayFresh.bill?.lines ?? []);
 
+        const cash = Math.max(0, Number(cashETB) || 0);
+        const bank = Math.max(0, Number(bankETB) || 0);
+        const telebirr = Math.max(0, Number(telebirrETB) || 0);
+
         await prisma.$transaction(async (tx) => {
           await syncRoomNightCharges(tx, stayFresh, nightsN, actorName);
+
+          // Re-apply tax on room lines after night sync
+          if (stayFresh.bill) {
+            const roomLines = await tx.lodging_bill_line.findMany({
+              where: {
+                billId: stayFresh.bill.id,
+                kind: "room",
+                voided: false,
+              },
+            });
+            for (const line of roomLines) {
+              const { taxPercent, taxETB } = await applyTaxToAmounts(
+                tx,
+                stay.HotelName,
+                "room",
+                Number(line.amountETB) || 0,
+              );
+              await tx.lodging_bill_line.update({
+                where: { id: line.id },
+                data: { taxPercent, taxETB },
+              });
+            }
+            await recalcBillTotal(tx, stayFresh.bill.id);
+          }
 
           if (stayFresh.bill && stayFresh.bill.status === "open") {
             await tx.lodging_bill.update({
@@ -2471,6 +3526,9 @@ export function createLodgingResolvers({
                 settledAt: new Date(),
                 settledBy: actorName,
                 receiptNumber,
+                cashETB: cash,
+                bankETB: bank,
+                telebirrETB: telebirr,
               },
             });
           }
@@ -2492,14 +3550,12 @@ export function createLodgingResolvers({
               where: { id: sr.roomId },
               data: {
                 status: "vacant_dirty",
+                statusExpectedEndAt: null,
                 updatedBy: actorName,
               },
             });
           }
 
-          // Mark café F&B for this stay as Paid:
-          // 1) by #co: markers on current bill lines (covers transferred/split)
-          // 2) leftover unpaid tickets still on this stay's room-service table
           const orderIds = new Set();
           for (const line of stayFresh.bill?.lines ?? []) {
             if (String(line.kind || "").toLowerCase() !== "food_drink") continue;
@@ -2546,6 +3602,9 @@ export function createLodgingResolvers({
             departureAt: dep.toISOString(),
             nights: nightsN,
             receiptNumber,
+            cashETB: cash,
+            bankETB: bank,
+            telebirrETB: telebirr,
             guestOtpCleared: true,
           },
         });
@@ -2629,7 +3688,7 @@ export function createLodgingResolvers({
 
       updateLodgingRoomStatus: async (
         _,
-        { roomId, status, maintenanceUntil, notes },
+        { roomId, status, maintenanceUntil, statusExpectedEndAt, notes },
         context,
       ) => {
         assertCmPortal(context);
@@ -2642,23 +3701,51 @@ export function createLodgingResolvers({
         const s = String(status).trim();
         if (!ROOM_STATUSES.has(s)) throw new Error("Invalid room status");
 
-        // While on maintenance, dirt status must not change — only leave via vacant_clean.
-        if (room.status === "on_maintenance" && s === "vacant_dirty") {
-          throw new Error(
-            "Cannot set vacant dirty while room is on maintenance — release to vacant clean instead",
-          );
-        }
-
         const role = String(
           context.user?.Role ?? context.user?.role ?? "",
         )
           .trim()
           .toLowerCase();
-        const isElevated =
-          role === "manager" || role === "admin" || role === "reception";
+        const isManager = role === "manager" || role === "admin";
+        const isReception = role === "reception";
+        const isCm = role === "cmleader";
 
-        // Dirty → clean: all open cleaner jobs must be finished first.
-        // (Completing the last Clean assignment auto-sets vacant_clean.)
+        if (MANAGER_ONLY_ROOM_STATUSES.has(s) && !isManager) {
+          throw new Error("Only Manager can set out of order / out of service / blocked");
+        }
+
+        // While on maintenance, dirt status must not change — only leave via inspected/clean.
+        if (room.status === "on_maintenance" && s === "vacant_dirty") {
+          throw new Error(
+            "Cannot set vacant dirty while room is on maintenance — release via inspected or vacant clean",
+          );
+        }
+
+        if (isCm && !isManager && !isReception) {
+          // CMLeader: vacant_dirty → inspected → vacant_clean; on_maintenance; set expected end
+          const allowed = new Set([
+            "inspected",
+            "vacant_clean",
+            "on_maintenance",
+            "vacant_dirty",
+          ]);
+          if (!allowed.has(s)) {
+            throw new Error("CMLeader may only set inspected, vacant_clean, vacant_dirty, or on_maintenance");
+          }
+          if (s === "inspected" && room.status !== "vacant_dirty") {
+            throw new Error("Inspected is only allowed from vacant_dirty");
+          }
+          if (
+            s === "vacant_clean" &&
+            room.status !== "inspected" &&
+            room.status !== "on_maintenance"
+          ) {
+            throw new Error(
+              "Vacant clean requires inspected (or release from maintenance)",
+            );
+          }
+        }
+
         if (s === "vacant_clean" && room.status === "vacant_dirty") {
           const openCleaning = await prisma.lodging_cm_assignment.count({
             where: {
@@ -2667,25 +3754,10 @@ export function createLodgingResolvers({
               status: "open",
             },
           });
-          if (openCleaning > 0 && !isElevated) {
+          if (openCleaning > 0 && !isManager && !isReception) {
             throw new Error(
               "Finish all open cleaner assignments before marking vacant clean",
             );
-          }
-        }
-
-        if (!isElevated) {
-          if (s === "vacant_clean") {
-            if (
-              room.status !== "vacant_dirty" &&
-              room.status !== "on_maintenance"
-            ) {
-              throw new Error(
-                "CM may only set vacant_clean from vacant_dirty or on_maintenance",
-              );
-            }
-          } else if (s !== "on_maintenance") {
-            throw new Error("CM may only set vacant_clean or on_maintenance");
           }
         }
 
@@ -2695,13 +3767,28 @@ export function createLodgingResolvers({
           updatedBy: actorName,
         };
         if (notes != null) data.notes = String(notes).trim();
-        if (s === "on_maintenance") {
-          data.maintenanceUntil =
-            maintenanceUntil != null
+
+        const expected =
+          statusExpectedEndAt != null
+            ? new Date(statusExpectedEndAt)
+            : maintenanceUntil != null
               ? new Date(maintenanceUntil)
-              : room.maintenanceUntil;
-        } else {
+              : null;
+
+        if (s === "on_maintenance" || s === "vacant_dirty") {
+          data.statusExpectedEndAt =
+            expected && !Number.isNaN(expected.getTime())
+              ? expected
+              : room.statusExpectedEndAt;
+          data.maintenanceUntil =
+            s === "on_maintenance" ? data.statusExpectedEndAt : null;
+        } else if (s === "inspected" || s === "vacant_clean") {
           data.maintenanceUntil = null;
+          data.statusExpectedEndAt = null;
+        } else if (MANAGER_ONLY_ROOM_STATUSES.has(s)) {
+          data.maintenanceUntil = null;
+          data.statusExpectedEndAt =
+            expected && !Number.isNaN(expected.getTime()) ? expected : null;
         }
 
         const updated = await prisma.lodging_room.update({
@@ -2722,7 +3809,7 @@ export function createLodgingResolvers({
 
       createLodgingCmAssignments: async (
         _,
-        { roomId, workKind, assigneeNames, notes },
+        { roomId, workKind, assigneeNames, notes, statusExpectedEndAt },
         context,
       ) => {
         assertCmPortal(context);
@@ -2773,13 +3860,32 @@ export function createLodgingResolvers({
         }
 
         if (wk === "maintenance") {
+          const endAt =
+            statusExpectedEndAt != null
+              ? new Date(statusExpectedEndAt)
+              : null;
           await prisma.lodging_room.update({
             where: { id: room.id },
             data: {
               status: "on_maintenance",
+              maintenanceUntil:
+                endAt && !Number.isNaN(endAt.getTime()) ? endAt : null,
+              statusExpectedEndAt:
+                endAt && !Number.isNaN(endAt.getTime()) ? endAt : null,
               updatedBy: actorName,
             },
           });
+        } else if (wk === "cleaning" && statusExpectedEndAt != null) {
+          const endAt = new Date(statusExpectedEndAt);
+          if (!Number.isNaN(endAt.getTime())) {
+            await prisma.lodging_room.update({
+              where: { id: room.id },
+              data: {
+                statusExpectedEndAt: endAt,
+                updatedBy: actorName,
+              },
+            });
+          }
         }
 
         await logLodgingAction(prisma, {
@@ -2831,7 +3937,7 @@ export function createLodgingResolvers({
           const workKind = String(row.workKind || "").toLowerCase();
           const roomStatus = String(row.room?.status || "").toLowerCase();
 
-          // Last finished cleaning job on a dirty room → vacant clean.
+          // Last finished cleaning job on a dirty room → inspected (CMLeader then vacant_clean).
           if (workKind === "cleaning" && roomStatus === "vacant_dirty") {
             const remaining = await tx.lodging_cm_assignment.count({
               where: {
@@ -2845,8 +3951,9 @@ export function createLodgingResolvers({
               await tx.lodging_room.update({
                 where: { id: row.roomId },
                 data: {
-                  status: "vacant_clean",
+                  status: "inspected",
                   maintenanceUntil: null,
+                  statusExpectedEndAt: null,
                   updatedBy: actorName,
                 },
               });
@@ -2854,7 +3961,7 @@ export function createLodgingResolvers({
             }
           }
 
-          // Last finished maintenance job on a blocked room → vacant clean.
+          // Last finished maintenance job → vacant_dirty (needs inspect path) unless already clean path.
           if (workKind === "maintenance" && roomStatus === "on_maintenance") {
             const remaining = await tx.lodging_cm_assignment.count({
               where: {
@@ -2868,8 +3975,9 @@ export function createLodgingResolvers({
               await tx.lodging_room.update({
                 where: { id: row.roomId },
                 data: {
-                  status: "vacant_clean",
+                  status: "vacant_dirty",
                   maintenanceUntil: null,
+                  statusExpectedEndAt: null,
                   updatedBy: actorName,
                 },
               });
@@ -2888,7 +3996,7 @@ export function createLodgingResolvers({
           detail: {
             workKind: row.workKind,
             roomId: row.roomId,
-            roomClearedToVacantClean: roomCleared,
+            roomAdvanced: roomCleared,
           },
         });
 
@@ -2897,6 +4005,990 @@ export function createLodgingResolvers({
           include: { room: true },
         });
       },
+
+      transferLodgingStayRoom: async (
+        _,
+        {
+          stayId,
+          fromRoomId,
+          toRoomId,
+          reason,
+          markOldOnMaintenance,
+          maintenanceUntil,
+        },
+        context,
+      ) => {
+        assertReceptionOrManager(context);
+        const stay = await loadStayOrThrow(
+          prisma,
+          context,
+          stayId,
+          tenantHotelReadMatches,
+        );
+        if (stay.status !== "checked_in") {
+          throw new Error("Only in-house stays can transfer rooms");
+        }
+        const fromId = Number(fromRoomId);
+        const toId = Number(toRoomId);
+        if (!(fromId > 0) || !(toId > 0) || fromId === toId) {
+          throw new Error("Invalid room transfer");
+        }
+        const fromLink = (stay.rooms || []).find((r) => r.roomId === fromId);
+        if (!fromLink) throw new Error("Guest is not in the source room");
+        const toRoom = await loadRoomOrThrow(
+          prisma,
+          context,
+          toId,
+          tenantHotelReadMatches,
+        );
+        if (toRoom.HotelName !== stay.HotelName) {
+          throw new Error("Target room is not in this property");
+        }
+        if (toRoom.status !== "vacant_clean") {
+          throw new Error("Target room must be vacant and clean");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const fromRoomNumber = fromLink.room?.roomNumber || "";
+        const toRoomNumber = toRoom.roomNumber;
+
+        await prisma.$transaction(async (tx) => {
+          await tx.lodging_stay_room.delete({
+            where: { id: fromLink.id },
+          });
+          await tx.lodging_stay_room.create({
+            data: {
+              stayId: stay.id,
+              roomId: toRoom.id,
+              roomType: toRoom.roomType,
+            },
+          });
+
+          const oldStatus = markOldOnMaintenance
+            ? "on_maintenance"
+            : "vacant_dirty";
+          const endAt =
+            maintenanceUntil != null ? new Date(maintenanceUntil) : null;
+          await tx.lodging_room.update({
+            where: { id: fromId },
+            data: {
+              status: oldStatus,
+              maintenanceUntil:
+                oldStatus === "on_maintenance" &&
+                endAt &&
+                !Number.isNaN(endAt.getTime())
+                  ? endAt
+                  : null,
+              statusExpectedEndAt:
+                endAt && !Number.isNaN(endAt.getTime()) ? endAt : null,
+              updatedBy: actorName,
+            },
+          });
+          await tx.lodging_room.update({
+            where: { id: toId },
+            data: {
+              status: "occupied",
+              maintenanceUntil: null,
+              statusExpectedEndAt: null,
+              updatedBy: actorName,
+            },
+          });
+
+          if (stay.bill) {
+            const lines = await tx.lodging_bill_line.findMany({
+              where: { billId: stay.bill.id, voided: false },
+            });
+            for (const line of lines) {
+              const kind = String(line.kind || "").toLowerCase();
+              if (kind === "room") {
+                // Repoint room night charge description/number to new room
+                if (
+                  line.roomNumber === fromRoomNumber ||
+                  String(line.description || "").includes(fromRoomNumber)
+                ) {
+                  await tx.lodging_bill_line.update({
+                    where: { id: line.id },
+                    data: {
+                      roomNumber: toRoomNumber,
+                      description: String(line.description || "").split(fromRoomNumber).join(
+                        toRoomNumber,
+                      ),
+                      unitPriceETB: Number(toRoom.pricePerNightETB) || line.unitPriceETB,
+                      amountETB:
+                        (Number(toRoom.pricePerNightETB) || line.unitPriceETB) *
+                        Number(line.quantity || 1),
+                    },
+                  });
+                }
+              } else {
+                // Service lines (café/laundry/other) move with guest to new room number
+                if (
+                  !line.roomNumber ||
+                  line.roomNumber === fromRoomNumber ||
+                  line.roomNumber === ""
+                ) {
+                  await tx.lodging_bill_line.update({
+                    where: { id: line.id },
+                    data: { roomNumber: toRoomNumber },
+                  });
+                }
+              }
+            }
+            await recalcBillTotal(tx, stay.bill.id);
+          }
+
+          // Move open café room-service orders to same stay table (stay id unchanged)
+          // but refresh captions if needed — tableNo is stay-based so orders already follow stay.
+        });
+
+        await logLodgingAction(prisma, {
+          HotelName: stay.HotelName,
+          actorRole,
+          actorName,
+          action: "transfer_stay_room",
+          entityType: "lodging_stay",
+          entityId: stay.id,
+          stayId: stay.id,
+          detail: {
+            fromRoomId: fromId,
+            toRoomId: toId,
+            fromRoomNumber,
+            toRoomNumber,
+            reason: String(reason ?? "").trim(),
+            markOldOnMaintenance: !!markOldOnMaintenance,
+          },
+        });
+
+        return prisma.lodging_stay.findUnique({
+          where: { id: stay.id },
+          include: STAY_INCLUDE,
+        });
+      },
+
+      voidLodgingBillLine: async (_, { lineId, reason }, context) => {
+        assertReceptionOrManager(context);
+        const line = await prisma.lodging_bill_line.findUnique({
+          where: { id: Number(lineId) },
+          include: { bill: true },
+        });
+        if (!line || !tenantHotelReadMatches(context, line.bill.HotelName)) {
+          throw new Error("Bill line not found");
+        }
+        if (line.bill.status !== "open") throw new Error("Bill is not open");
+        if (line.voided) throw new Error("Line already voided");
+        const why = String(reason ?? "").trim();
+        if (!why) throw new Error("Void reason is required");
+        const { actorName, actorRole } = actorFromContext(context);
+        const updated = await prisma.lodging_bill_line.update({
+          where: { id: line.id },
+          data: {
+            voided: true,
+            voidedAt: new Date(),
+            voidedBy: actorName,
+            voidReason: why,
+            fulfillmentStatus:
+              String(line.kind).toLowerCase() === "laundry" ||
+              String(line.kind).toLowerCase() === "food_drink"
+                ? "cancelled"
+                : line.fulfillmentStatus,
+          },
+        });
+        await recalcBillTotal(prisma, line.billId);
+        await logLodgingAction(prisma, {
+          HotelName: line.bill.HotelName,
+          actorRole,
+          actorName,
+          action: "void_bill_line",
+          entityType: "lodging_bill_line",
+          entityId: line.id,
+          stayId: line.bill.stayId,
+          detail: { reason: why },
+        });
+        return updated;
+      },
+
+      requestLodgingDiscount: async (
+        _,
+        { stayId, amountETB, reason },
+        context,
+      ) => {
+        assertReceptionOrManager(context);
+        const stay = await prisma.lodging_stay.findUnique({
+          where: { id: Number(stayId) },
+          include: { bill: true, rooms: { include: { room: true } } },
+        });
+        if (!stay || !tenantHotelReadMatches(context, stay.HotelName)) {
+          throw new Error("Stay not found");
+        }
+        if (stay.status !== "checked_in") {
+          throw new Error("Discount only allowed on checked-in stays");
+        }
+        const amt = Math.round(Number(amountETB) * 100) / 100;
+        if (!Number.isFinite(amt) || amt <= 0) {
+          throw new Error("Discount amount must be greater than zero");
+        }
+        const why = String(reason ?? "").trim();
+        if (!why) throw new Error("Discount reason is required");
+
+        let bill = stay.bill;
+        if (!bill) {
+          bill = await prisma.lodging_bill.create({
+            data: {
+              HotelName: stay.HotelName,
+              stayId: stay.id,
+              status: "open",
+              totalETB: 0,
+            },
+          });
+        }
+        if (bill.status !== "open") throw new Error("Bill is not open");
+
+        const role = String(
+          context.user?.Role ?? context.user?.role ?? "",
+        )
+          .trim()
+          .toLowerCase();
+        const isManager = role === "manager" || role === "admin";
+        const { actorName, actorRole } = actorFromContext(context);
+        const roomNumber = stay.rooms?.[0]?.room?.roomNumber || "";
+
+        const line = await prisma.lodging_bill_line.create({
+          data: {
+            billId: bill.id,
+            kind: "discount",
+            description: why,
+            quantity: 1,
+            unitPriceETB: amt,
+            amountETB: isManager ? -amt : 0,
+            taxPercent: 0,
+            taxETB: 0,
+            roomNumber: String(roomNumber || ""),
+            fulfillmentStatus: "completed",
+            approvalStatus: isManager ? "approved" : "pending",
+            approvedBy: isManager ? actorName : "",
+            approvedAt: isManager ? new Date() : null,
+            approvalNote: isManager ? "Applied by manager" : "",
+            createdBy: actorName,
+          },
+        });
+        await recalcBillTotal(prisma, bill.id);
+        await logLodgingAction(prisma, {
+          HotelName: stay.HotelName,
+          actorRole,
+          actorName,
+          action: isManager ? "apply_discount" : "request_discount",
+          entityType: "lodging_bill_line",
+          entityId: line.id,
+          stayId: stay.id,
+          detail: { amountETB: amt, reason: why, autoApproved: isManager },
+        });
+        return line;
+      },
+
+      resolveLodgingDiscount: async (
+        _,
+        { lineId, approve, note },
+        context,
+      ) => {
+        assertAdminOrManager(context);
+        const line = await prisma.lodging_bill_line.findUnique({
+          where: { id: Number(lineId) },
+          include: { bill: true },
+        });
+        if (!line || !tenantHotelReadMatches(context, line.bill.HotelName)) {
+          throw new Error("Discount line not found");
+        }
+        if (String(line.kind).toLowerCase() !== "discount") {
+          throw new Error("Not a discount line");
+        }
+        if (line.voided) throw new Error("Line already voided");
+        if (String(line.approvalStatus || "").toLowerCase() !== "pending") {
+          throw new Error("Discount is not pending approval");
+        }
+        if (line.bill.status !== "open") throw new Error("Bill is not open");
+
+        const { actorName, actorRole } = actorFromContext(context);
+        const ok = Boolean(approve);
+        const amt = Math.abs(Number(line.unitPriceETB) || 0);
+        const updated = await prisma.lodging_bill_line.update({
+          where: { id: line.id },
+          data: {
+            approvalStatus: ok ? "approved" : "rejected",
+            approvedBy: actorName,
+            approvedAt: new Date(),
+            approvalNote: String(note ?? "").trim(),
+            amountETB: ok ? -amt : 0,
+            taxETB: 0,
+            voided: !ok,
+            voidedAt: !ok ? new Date() : null,
+            voidedBy: !ok ? actorName : "",
+            voidReason: !ok
+              ? String(note ?? "").trim() || "Discount rejected"
+              : "",
+          },
+        });
+        await recalcBillTotal(prisma, line.billId);
+        await logLodgingAction(prisma, {
+          HotelName: line.bill.HotelName,
+          actorRole,
+          actorName,
+          action: ok ? "approve_discount" : "reject_discount",
+          entityType: "lodging_bill_line",
+          entityId: line.id,
+          stayId: line.bill.stayId,
+          detail: { amountETB: amt, note: String(note ?? "").trim() },
+        });
+        return updated;
+      },
+
+      createLodgingReservation: async (
+        _,
+        {
+          guestId,
+          guestJson,
+          source,
+          status,
+          arrivalAt,
+          nights,
+          adults,
+          children,
+          preferredRoomType,
+          roomIds,
+          depositETB,
+          notes,
+        },
+        context,
+      ) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorName, actorRole } = actorFromContext(context);
+        const src = String(source || "phone").trim();
+        if (!RESERVATION_SOURCES.has(src)) throw new Error("Invalid source");
+        let st = String(status || "tentative").trim();
+        if (!RESERVATION_STATUSES.has(st) || st === "checked_in") {
+          st = "tentative";
+        }
+        const nightsN = Math.max(1, Math.floor(Number(nights) || 1));
+        const arrival = new Date(arrivalAt);
+        if (Number.isNaN(arrival.getTime())) throw new Error("Invalid arrivalAt");
+        const departureAt = addDays(arrival, nightsN);
+
+        let guest = null;
+        if (guestId != null) {
+          guest = await prisma.lodging_guest.findUnique({
+            where: { id: Number(guestId) },
+          });
+          if (!guest || !tenantHotelReadMatches(context, guest.HotelName)) {
+            throw new Error("Guest not found");
+          }
+        } else if (guestJson) {
+          const payload = parseGuestPayload(guestJson);
+          if (payload) {
+            const gData = guestDataFromInput(payload, HotelName);
+            const byPhone = await prisma.lodging_guest.findFirst({
+              where: { HotelName, phone: gData.phone },
+            });
+            guest = byPhone
+              ? await prisma.lodging_guest.update({
+                  where: { id: byPhone.id },
+                  data: gData,
+                })
+              : await prisma.lodging_guest.create({ data: gData });
+          }
+        }
+
+        const ids = Array.isArray(roomIds)
+          ? [...new Set(roomIds.map((x) => Number(x)).filter((n) => n > 0))]
+          : [];
+        const holdable = await findHoldableRooms(
+          prisma,
+          context,
+          arrival,
+          tenantHotelReadWhere,
+        );
+        const holdableIds = new Set(holdable.map((r) => r.id));
+        for (const id of ids) {
+          if (!holdableIds.has(id)) {
+            throw new Error(
+              `Room ${id} is not holdable for this arrival date`,
+            );
+          }
+        }
+
+        const reservationCode = await generateReservationCode(
+          prisma,
+          HotelName,
+          arrival,
+        );
+
+        const created = await prisma.$transaction(async (tx) => {
+          const row = await tx.lodging_reservation.create({
+            data: {
+              HotelName,
+              reservationCode,
+              guestId: guest?.id ?? null,
+              status: st,
+              source: src,
+              arrivalAt: arrival,
+              departureAt,
+              nights: nightsN,
+              adults: Math.max(1, Number(adults) || 1),
+              children: Math.max(0, Number(children) || 0),
+              preferredRoomType: String(preferredRoomType ?? "").trim(),
+              depositETB: Math.max(0, Number(depositETB) || 0),
+              notes: String(notes ?? "").trim(),
+              createdBy: actorName,
+              updatedBy: actorName,
+            },
+          });
+          for (const id of ids) {
+            const room = holdable.find((r) => r.id === id);
+            await tx.lodging_reservation_room.create({
+              data: {
+                reservationId: row.id,
+                roomId: id,
+                roomType: room?.roomType || "",
+              },
+            });
+            if (room?.status === "vacant_clean" || room?.status === "inspected") {
+              await tx.lodging_room.update({
+                where: { id },
+                data: { status: "reserved", updatedBy: actorName },
+              });
+            }
+          }
+          if (!ids.length && preferredRoomType) {
+            await tx.lodging_reservation_room.create({
+              data: {
+                reservationId: row.id,
+                roomId: null,
+                roomType: String(preferredRoomType).trim(),
+              },
+            });
+          }
+          return row;
+        });
+
+        await logLodgingAction(prisma, {
+          HotelName,
+          actorRole,
+          actorName,
+          action: "create_reservation",
+          entityType: "lodging_reservation",
+          entityId: created.id,
+          detail: { reservationCode, roomIds: ids, status: st, source: src },
+        });
+
+        return prisma.lodging_reservation.findUnique({
+          where: { id: created.id },
+          include: RESERVATION_INCLUDE,
+        });
+      },
+
+      updateLodgingReservation: async (
+        _,
+        {
+          id,
+          status,
+          source,
+          arrivalAt,
+          nights,
+          adults,
+          children,
+          preferredRoomType,
+          roomIds,
+          depositETB,
+          notes,
+          guestId,
+        },
+        context,
+      ) => {
+        assertReceptionOrManager(context);
+        const row = await prisma.lodging_reservation.findUnique({
+          where: { id: Number(id) },
+          include: { rooms: true },
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("Reservation not found");
+        }
+        if (row.status === "checked_in" || row.status === "cancelled") {
+          throw new Error("Reservation cannot be updated");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const data = { updatedBy: actorName };
+        if (status != null) {
+          const s = String(status).trim();
+          if (!RESERVATION_STATUSES.has(s) || s === "checked_in") {
+            throw new Error("Invalid reservation status");
+          }
+          data.status = s;
+        }
+        if (source != null) {
+          const src = String(source).trim();
+          if (!RESERVATION_SOURCES.has(src)) throw new Error("Invalid source");
+          data.source = src;
+        }
+        if (arrivalAt != null) {
+          const a = new Date(arrivalAt);
+          if (Number.isNaN(a.getTime())) throw new Error("Invalid arrivalAt");
+          data.arrivalAt = a;
+        }
+        if (nights != null) {
+          data.nights = Math.max(1, Math.floor(Number(nights) || 1));
+        }
+        if (data.arrivalAt || data.nights) {
+          const arrival = data.arrivalAt || row.arrivalAt;
+          const n = data.nights != null ? data.nights : row.nights;
+          data.departureAt = addDays(arrival, n);
+        }
+        if (adults != null) data.adults = Math.max(1, Number(adults) || 1);
+        if (children != null) data.children = Math.max(0, Number(children) || 0);
+        if (preferredRoomType != null) {
+          data.preferredRoomType = String(preferredRoomType).trim();
+        }
+        if (depositETB != null) {
+          data.depositETB = Math.max(0, Number(depositETB) || 0);
+        }
+        if (notes != null) data.notes = String(notes).trim();
+        if (guestId != null) data.guestId = Number(guestId);
+
+        await prisma.$transaction(async (tx) => {
+          await tx.lodging_reservation.update({
+            where: { id: row.id },
+            data,
+          });
+          if (Array.isArray(roomIds)) {
+            for (const rr of row.rooms || []) {
+              if (rr.roomId) {
+                const held = await tx.lodging_room.findUnique({
+                  where: { id: rr.roomId },
+                });
+                if (held?.status === "reserved") {
+                  await tx.lodging_room.update({
+                    where: { id: rr.roomId },
+                    data: { status: "vacant_clean", updatedBy: actorName },
+                  });
+                }
+              }
+            }
+            await tx.lodging_reservation_room.deleteMany({
+              where: { reservationId: row.id },
+            });
+            const arrival = data.arrivalAt || row.arrivalAt;
+            const holdable = await findHoldableRooms(
+              prisma,
+              context,
+              arrival,
+              tenantHotelReadWhere,
+            );
+            const holdableIds = new Set(holdable.map((r) => r.id));
+            const ids = [
+              ...new Set(roomIds.map((x) => Number(x)).filter((n) => n > 0)),
+            ];
+            for (const rid of ids) {
+              if (!holdableIds.has(rid)) {
+                throw new Error(`Room ${rid} is not holdable`);
+              }
+              const room = holdable.find((r) => r.id === rid);
+              await tx.lodging_reservation_room.create({
+                data: {
+                  reservationId: row.id,
+                  roomId: rid,
+                  roomType: room?.roomType || "",
+                },
+              });
+              if (
+                room?.status === "vacant_clean" ||
+                room?.status === "inspected"
+              ) {
+                await tx.lodging_room.update({
+                  where: { id: rid },
+                  data: { status: "reserved", updatedBy: actorName },
+                });
+              }
+            }
+          }
+        });
+
+        await logLodgingAction(prisma, {
+          HotelName: row.HotelName,
+          actorRole,
+          actorName,
+          action: "update_reservation",
+          entityType: "lodging_reservation",
+          entityId: row.id,
+          detail: data,
+        });
+
+        return prisma.lodging_reservation.findUnique({
+          where: { id: row.id },
+          include: RESERVATION_INCLUDE,
+        });
+      },
+
+      cancelLodgingReservation: async (_, { id, asNoShow }, context) => {
+        assertReceptionOrManager(context);
+        const row = await prisma.lodging_reservation.findUnique({
+          where: { id: Number(id) },
+          include: { rooms: true },
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("Reservation not found");
+        }
+        if (row.status === "checked_in") {
+          throw new Error("Already checked in");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const next = asNoShow ? "no_show" : "cancelled";
+        await prisma.$transaction(async (tx) => {
+          await tx.lodging_reservation.update({
+            where: { id: row.id },
+            data: { status: next, updatedBy: actorName },
+          });
+          for (const rr of row.rooms || []) {
+            if (!rr.roomId) continue;
+            const held = await tx.lodging_room.findUnique({
+              where: { id: rr.roomId },
+            });
+            if (held?.status === "reserved") {
+              await tx.lodging_room.update({
+                where: { id: rr.roomId },
+                data: { status: "vacant_clean", updatedBy: actorName },
+              });
+            }
+          }
+        });
+        await logLodgingAction(prisma, {
+          HotelName: row.HotelName,
+          actorRole,
+          actorName,
+          action: asNoShow ? "reservation_no_show" : "cancel_reservation",
+          entityType: "lodging_reservation",
+          entityId: row.id,
+          detail: { status: next },
+        });
+        return prisma.lodging_reservation.findUnique({
+          where: { id: row.id },
+          include: RESERVATION_INCLUDE,
+        });
+      },
+
+      checkInLodgingReservation: async (
+        _,
+        { reservationId, roomIds, arrivalAt, notes },
+        context,
+      ) => {
+        assertReceptionOrManager(context);
+        const row = await prisma.lodging_reservation.findUnique({
+          where: { id: Number(reservationId) },
+          include: RESERVATION_INCLUDE,
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("Reservation not found");
+        }
+        if (
+          row.status === "cancelled" ||
+          row.status === "no_show" ||
+          row.status === "checked_in"
+        ) {
+          throw new Error("Reservation cannot be checked in");
+        }
+        const ids = Array.isArray(roomIds)
+          ? [...new Set(roomIds.map((x) => Number(x)).filter((n) => n > 0))]
+          : [];
+        if (!ids.length) {
+          throw new Error("Assign at least one vacant clean room");
+        }
+        const arrival = arrivalAt ? new Date(arrivalAt) : new Date();
+        // Delegates to createLodgingStay (same Mutation map) via late-bound self.
+        return selfMutation.createLodgingStay(
+          _,
+          {
+            guestId: row.guestId,
+            arrivalAt: arrival,
+            nights: row.nights,
+            adults: row.adults,
+            children: row.children,
+            preferredRoomType: row.preferredRoomType,
+            roomIds: ids,
+            notes: notes != null ? String(notes) : row.notes,
+            status: "checked_in",
+            reservationId: row.id,
+          },
+          context,
+        );
+      },
+
+      upsertLodgingTaxConfig: async (_, { kind, taxPercent }, context) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const k = String(kind || "").trim();
+        if (!BILL_LINE_KINDS.has(k)) throw new Error("Invalid tax kind");
+        const pct = Math.max(0, Number(taxPercent) || 0);
+        const { actorName, actorRole } = actorFromContext(context);
+        const row = await prisma.lodging_tax_config.upsert({
+          where: { HotelName_kind: { HotelName, kind: k } },
+          create: {
+            HotelName,
+            kind: k,
+            taxPercent: pct,
+            updatedBy: actorName,
+          },
+          update: { taxPercent: pct, updatedBy: actorName },
+        });
+        await logLodgingAction(prisma, {
+          HotelName,
+          actorRole,
+          actorName,
+          action: "upsert_tax_config",
+          entityType: "lodging_tax_config",
+          entityId: row.id,
+          detail: { kind: k, taxPercent: pct },
+        });
+        return row;
+      },
+
+      closeLodgingBusinessDay: async (_, { businessDate }, context) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const day = String(businessDate || "").trim() || ymd(new Date());
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+          throw new Error("businessDate must be YYYY-MM-DD");
+        }
+        const existing = await prisma.lodging_business_day.findUnique({
+          where: {
+            HotelName_businessDate: { HotelName, businessDate: day },
+          },
+        });
+        if (existing?.status === "closed") {
+          throw new Error("Business day already closed");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const dayStart = new Date(`${day}T00:00:00`);
+        const dayEnd = new Date(`${day}T23:59:59.999`);
+        const [arrivals, departures, inHouse, noShows, openBills] =
+          await Promise.all([
+            prisma.lodging_stay.count({
+              where: {
+                HotelName,
+                arrivalAt: { gte: dayStart, lte: dayEnd },
+              },
+            }),
+            prisma.lodging_stay.count({
+              where: {
+                HotelName,
+                status: "checked_out",
+                departureAt: { gte: dayStart, lte: dayEnd },
+              },
+            }),
+            prisma.lodging_stay.count({
+              where: { HotelName, status: "checked_in" },
+            }),
+            prisma.lodging_reservation.count({
+              where: {
+                HotelName,
+                status: "no_show",
+                arrivalAt: { gte: dayStart, lte: dayEnd },
+              },
+            }),
+            prisma.lodging_bill.aggregate({
+              where: { HotelName, status: "open" },
+              _sum: { totalETB: true },
+            }),
+          ]);
+        const summary = {
+          arrivals,
+          departures,
+          inHouse,
+          noShows,
+          outstandingBalanceETB: Number(openBills._sum.totalETB || 0),
+          closedAt: new Date().toISOString(),
+        };
+        const row = await prisma.lodging_business_day.upsert({
+          where: {
+            HotelName_businessDate: { HotelName, businessDate: day },
+          },
+          create: {
+            HotelName,
+            businessDate: day,
+            status: "closed",
+            closedAt: new Date(),
+            closedBy: actorName,
+            summaryJson: JSON.stringify(summary),
+          },
+          update: {
+            status: "closed",
+            closedAt: new Date(),
+            closedBy: actorName,
+            summaryJson: JSON.stringify(summary),
+          },
+        });
+        await logLodgingAction(prisma, {
+          HotelName,
+          actorRole,
+          actorName,
+          action: "close_business_day",
+          entityType: "lodging_business_day",
+          entityId: row.id,
+          detail: summary,
+        });
+        return row;
+      },
+
+      createLodgingRatePlan: async (
+        _,
+        {
+          name,
+          code,
+          kind,
+          roomType,
+          pricePerNightETB,
+          startDate,
+          endDate,
+          minNights,
+          priority,
+          isActive,
+          notes,
+        },
+        context,
+      ) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const k = String(kind || "standard").trim().toLowerCase();
+        if (!RATE_PLAN_KINDS.has(k)) throw new Error("Invalid rate plan kind");
+        const nm = String(name || "").trim();
+        if (!nm) throw new Error("Name is required");
+        const { actorName, actorRole } = actorFromContext(context);
+        const row = await prisma.lodging_rate_plan.create({
+          data: {
+            HotelName,
+            name: nm,
+            code: String(code ?? "").trim(),
+            kind: k,
+            roomType: String(roomType ?? "").trim(),
+            pricePerNightETB: Math.max(0, Number(pricePerNightETB) || 0),
+            startDate: String(startDate ?? "").trim(),
+            endDate: String(endDate ?? "").trim(),
+            minNights: Math.max(1, Math.floor(Number(minNights) || 1)),
+            priority: Math.floor(Number(priority) || 0),
+            isActive: isActive !== false,
+            notes: String(notes ?? "").trim(),
+            updatedBy: actorName,
+          },
+        });
+        await logLodgingAction(prisma, {
+          HotelName,
+          actorRole,
+          actorName,
+          action: "create_rate_plan",
+          entityType: "lodging_rate_plan",
+          entityId: row.id,
+          detail: { name: nm, kind: k, pricePerNightETB: row.pricePerNightETB },
+        });
+        return row;
+      },
+
+      updateLodgingRatePlan: async (_, args, context) => {
+        assertAdminOrManager(context);
+        const row = await prisma.lodging_rate_plan.findUnique({
+          where: { id: Number(args.id) },
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("Rate plan not found");
+        }
+        const data = { updatedBy: actorFromContext(context).actorName };
+        if (args.name != null) data.name = String(args.name).trim();
+        if (args.code != null) data.code = String(args.code).trim();
+        if (args.kind != null) {
+          const k = String(args.kind).trim().toLowerCase();
+          if (!RATE_PLAN_KINDS.has(k)) throw new Error("Invalid rate plan kind");
+          data.kind = k;
+        }
+        if (args.roomType != null) data.roomType = String(args.roomType).trim();
+        if (args.pricePerNightETB != null) {
+          data.pricePerNightETB = Math.max(0, Number(args.pricePerNightETB) || 0);
+        }
+        if (args.startDate != null) data.startDate = String(args.startDate).trim();
+        if (args.endDate != null) data.endDate = String(args.endDate).trim();
+        if (args.minNights != null) {
+          data.minNights = Math.max(1, Math.floor(Number(args.minNights) || 1));
+        }
+        if (args.priority != null) data.priority = Math.floor(Number(args.priority) || 0);
+        if (args.isActive != null) data.isActive = Boolean(args.isActive);
+        if (args.notes != null) data.notes = String(args.notes).trim();
+        const { actorName, actorRole } = actorFromContext(context);
+        const updated = await prisma.lodging_rate_plan.update({
+          where: { id: row.id },
+          data,
+        });
+        await logLodgingAction(prisma, {
+          HotelName: row.HotelName,
+          actorRole,
+          actorName,
+          action: "update_rate_plan",
+          entityType: "lodging_rate_plan",
+          entityId: row.id,
+          detail: data,
+        });
+        return updated;
+      },
+
+      deleteLodgingRatePlan: async (_, { id }, context) => {
+        assertAdminOrManager(context);
+        const row = await prisma.lodging_rate_plan.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("Rate plan not found");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        await prisma.lodging_rate_plan.delete({ where: { id: row.id } });
+        await logLodgingAction(prisma, {
+          HotelName: row.HotelName,
+          actorRole,
+          actorName,
+          action: "delete_rate_plan",
+          entityType: "lodging_rate_plan",
+          entityId: row.id,
+          detail: { name: row.name },
+        });
+        return true;
+      },
+
+      updateLodgingGuestComplaint: async (_, { id, status }, context) => {
+        assertReceptionOrManager(context);
+        const row = await prisma.lodging_guest_complaint.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("Complaint not found");
+        }
+        const next = String(status || "")
+          .trim()
+          .toLowerCase();
+        if (!["open", "acknowledged", "resolved"].includes(next)) {
+          throw new Error("Status must be open, acknowledged, or resolved");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const updated = await prisma.lodging_guest_complaint.update({
+          where: { id: row.id },
+          data: { status: next },
+          include: GUEST_FEEDBACK_INCLUDE,
+        });
+        await logLodgingAction(prisma, {
+          HotelName: row.HotelName,
+          actorRole,
+          actorName,
+          action: "update_guest_complaint",
+          entityType: "lodging_guest_complaint",
+          entityId: row.id,
+          stayId: row.stayId,
+          detail: { status: next },
+        });
+        return enrichGuestFeedbackRow(updated);
+      },
     },
   };
+
+  Object.assign(selfMutation, resolvers.Mutation);
+  return resolvers;
 }
