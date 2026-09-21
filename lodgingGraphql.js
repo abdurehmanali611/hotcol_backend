@@ -4160,7 +4160,9 @@ export function createLodgingResolvers({
             }
           }
 
-          // Last finished maintenance job → vacant_dirty (needs inspect path) unless already clean path.
+          // Last finished maintenance job → inspected (ready to open vacant clean).
+          // Do not return to vacant_dirty — that reopens Enter maintenance as if
+          // maintenance never finished.
           if (workKind === "maintenance" && roomStatus === "on_maintenance") {
             const remaining = await tx.lodging_cm_assignment.count({
               where: {
@@ -4174,7 +4176,7 @@ export function createLodgingResolvers({
               await tx.lodging_room.update({
                 where: { id: row.roomId },
                 data: {
-                  status: "vacant_dirty",
+                  status: "inspected",
                   maintenanceUntil: null,
                   statusExpectedEndAt: null,
                   updatedBy: actorName,
