@@ -2307,7 +2307,10 @@ export function createLodgingResolvers({
         assertReceptionOrManager(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const day =
-          String(businessDate || "").trim() || ymd(new Date());
+          String(businessDate || "").trim() || ymdLocal(new Date());
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+          throw new Error("businessDate must be YYYY-MM-DD");
+        }
         // Prefer an open shift for the day; else latest closed for that day.
         const open = await prisma.lodging_business_day.findFirst({
           where: { HotelName, businessDate: day, status: "open" },
@@ -5497,7 +5500,7 @@ export function createLodgingResolvers({
           throw new Error("Invalid fromAt or toAt");
         }
         if (to <= from) throw new Error("toAt must be after fromAt");
-        const day = String(businessDate || "").trim() || ymd(from);
+        const day = String(businessDate || "").trim() || ymdLocal(from);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
           throw new Error("businessDate must be YYYY-MM-DD");
         }
@@ -5569,7 +5572,7 @@ export function createLodgingResolvers({
         if (to <= from) throw new Error("toAt must be after fromAt");
 
         const day =
-          String(businessDate || row?.businessDate || "").trim() || ymd(from);
+          String(businessDate || row?.businessDate || "").trim() || ymdLocal(from);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
           throw new Error("businessDate must be YYYY-MM-DD");
         }
