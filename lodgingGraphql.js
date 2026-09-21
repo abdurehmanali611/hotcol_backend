@@ -1706,8 +1706,24 @@ export function createLodgingResolvers({
   const assertReceptionOrManager = (context) =>
     assertRole(context, ["Reception", "Manager", "Admin"]);
 
-  const assertCmPortal = (context) =>
+  const assertCmPortal = async (context) => {
     assertRole(context, ["CMLeader", "Reception", "Manager", "Admin"]);
+    const role = String(context.user?.Role ?? context.user?.role ?? "")
+      .trim()
+      .toLowerCase();
+    if (role !== "reception") return;
+    const tin = tenantScopeFromContext(context);
+    if (!tin) throw new Error("Tenant scope missing");
+    const account = await prisma.tenant_account.findUnique({
+      where: { tinNumber: tin },
+      select: { receptionCmPortalEnabled: true },
+    });
+    if (!account?.receptionCmPortalEnabled) {
+      throw new Error(
+        "Reception CM portal is not enabled. Ask a Manager to allow it.",
+      );
+    }
+  };
 
   const assertLodgingRead = (context) =>
     assertRole(context, [
@@ -1741,7 +1757,7 @@ export function createLodgingResolvers({
       },
 
       lodgingCmQueue: async (_, __, context) => {
-        assertCmPortal(context);
+        await assertCmPortal(context);
         return prisma.lodging_room.findMany({
           where: {
             ...tenantHotelReadWhere(context),
@@ -1868,7 +1884,7 @@ export function createLodgingResolvers({
       },
 
       lodgingCmAssignments: async (_, { status }, context) => {
-        assertCmPortal(context);
+        await assertCmPortal(context);
         const where = { ...tenantHotelReadWhere(context) };
         if (status != null && String(status).trim() !== "") {
           const s = String(status).trim();
@@ -3896,7 +3912,7 @@ export function createLodgingResolvers({
         { roomId, status, maintenanceUntil, statusExpectedEndAt, notes },
         context,
       ) => {
-        assertCmPortal(context);
+        await assertCmPortal(context);
         const room = await loadRoomOrThrow(
           prisma,
           context,
@@ -4017,7 +4033,7 @@ export function createLodgingResolvers({
         { roomId, workKind, assigneeNames, notes, statusExpectedEndAt },
         context,
       ) => {
-        assertCmPortal(context);
+        await assertCmPortal(context);
         const room = await loadRoomOrThrow(
           prisma,
           context,
@@ -4119,7 +4135,7 @@ export function createLodgingResolvers({
         { id, assigneeName, notes, statusExpectedEndAt },
         context,
       ) => {
-        assertCmPortal(context);
+        await assertCmPortal(context);
         const row = await prisma.lodging_cm_assignment.findUnique({
           where: { id: Number(id) },
           include: { room: true },
@@ -4206,7 +4222,7 @@ export function createLodgingResolvers({
       },
 
       completeLodgingCmAssignment: async (_, { id }, context) => {
-        assertCmPortal(context);
+        await assertCmPortal(context);
         const row = await prisma.lodging_cm_assignment.findUnique({
           where: { id: Number(id) },
           include: { room: true },

@@ -406,6 +406,7 @@ async function resolveTenantSubscription(prismaClient, user) {
           cafeOrderMode: true,
           cafeOrderModeHistory: true,
           cashierCancelOrdersEnabled: true,
+          receptionCmPortalEnabled: true,
           waiterOrderingEnabled: true,
           waiterPaymentApprovalEnabled: true,
         },
@@ -417,6 +418,7 @@ async function resolveTenantSubscription(prismaClient, user) {
     modules: parseModulesJson(row.modules),
     ...modeSnap,
     cashierCancelOrdersEnabled: Boolean(account?.cashierCancelOrdersEnabled),
+    receptionCmPortalEnabled: Boolean(account?.receptionCmPortalEnabled),
     waiterOrderingEnabled: Boolean(account?.waiterOrderingEnabled),
     waiterPaymentApprovalEnabled: Boolean(
       account?.waiterPaymentApprovalEnabled,
@@ -452,6 +454,7 @@ function graphqlTenantSubscriptionSnapshot(
     cashierCancelOrdersEnabled: Boolean(
       subscription.cashierCancelOrdersEnabled,
     ),
+    receptionCmPortalEnabled: Boolean(subscription.receptionCmPortalEnabled),
     waiterOrderingEnabled: Boolean(subscription.waiterOrderingEnabled),
     waiterPaymentApprovalEnabled: Boolean(
       subscription.waiterPaymentApprovalEnabled,
@@ -501,6 +504,7 @@ function attachSubscriptionFields(user, subscription, options = {}) {
     cafeOrderMode: subscription.cafeOrderMode ?? "digital",
     cafeOrderModeHistory: subscription.cafeOrderModeHistory ?? [],
     cashierCancelOrdersEnabled: Boolean(subscription.cashierCancelOrdersEnabled),
+    receptionCmPortalEnabled: Boolean(subscription.receptionCmPortalEnabled),
     waiterOrderingEnabled: Boolean(subscription.waiterOrderingEnabled),
     waiterPaymentApprovalEnabled: Boolean(
       subscription.waiterPaymentApprovalEnabled,
@@ -734,6 +738,7 @@ const typeDefs = gql`
     cafeOrderMode: String
     cafeOrderModeHistory: JSON
     cashierCancelOrdersEnabled: Boolean
+    receptionCmPortalEnabled: Boolean
     waiterOrderingEnabled: Boolean
     waiterPaymentApprovalEnabled: Boolean
   }
@@ -819,6 +824,7 @@ const typeDefs = gql`
     cafeOrderMode: String!
     cafeOrderModeHistory: JSON!
     cashierCancelOrdersEnabled: Boolean!
+    receptionCmPortalEnabled: Boolean!
     waiterOrderingEnabled: Boolean!
     waiterPaymentApprovalEnabled: Boolean!
   }
@@ -1467,6 +1473,11 @@ const typeDefs = gql`
     Default off — only managers cancel unless explicitly enabled.
     """
     setCashierCancelOrdersEnabled(enabled: Boolean!): TenantSubscriptionSnapshot!
+    """
+    Manager/Admin: allow Reception to open the Cleaning & Maintenance portal.
+    Default off — only CMLeader (and Manager/Admin) handle CM unless enabled.
+    """
+    setReceptionCmPortalEnabled(enabled: Boolean!): TenantSubscriptionSnapshot!
     ${waiterOrderingMutationFields}
     CreateCashout(
       items: JSON
@@ -4709,6 +4720,47 @@ const resolvers = {
           accountStatus: "active",
         },
         update: { cashierCancelOrdersEnabled: Boolean(enabled) },
+      });
+
+      return loadGraphqlTenantSubscription(prisma, owner);
+    },
+    setReceptionCmPortalEnabled: async (_, { enabled }, context) => {
+      if (!context.user) throw new Error("Not Authenticated");
+      assertAdminOrManager(context);
+      const tin = tenantScopeFromContext(context);
+      if (!tin) throw new Error("Tenant scope missing");
+
+      const owner =
+        (await prisma.user.findFirst({
+          where: { tinNumber: tin, Role: { in: ["Admin", "Manager"] } },
+          orderBy: { id: "asc" },
+        })) ||
+        (await prisma.user.findUnique({
+          where: { id: context.user.userId },
+        }));
+      if (!owner) throw new Error("Tenant owner not found");
+
+      const subscription = await resolveTenantSubscription(prisma, owner);
+      const current = parseModulesJson(subscription.modules);
+      const currentMode = parseCafeOrderMode(subscription.cafeOrderMode);
+
+      await prisma.tenant_account.upsert({
+        where: { tinNumber: tin },
+        create: {
+          tinNumber: tin,
+          hotelDisplayName: String(owner.HotelName || "").trim() || tin,
+          businessType: owner.businessType ?? null,
+          logoUrl: owner.LogoUrl ?? null,
+          modules: current,
+          cafeOrderMode: currentMode,
+          cafeOrderModeHistory: initialCafeOrderModeHistory(
+            currentMode,
+            owner.createdAt,
+          ),
+          receptionCmPortalEnabled: Boolean(enabled),
+          accountStatus: "active",
+        },
+        update: { receptionCmPortalEnabled: Boolean(enabled) },
       });
 
       return loadGraphqlTenantSubscription(prisma, owner);
