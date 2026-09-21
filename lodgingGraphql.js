@@ -598,6 +598,12 @@ export const lodgingMutationFields = `
       notes: String
       statusExpectedEndAt: DateTime
     ): [LodgingCmAssignment!]!
+    updateLodgingCmAssignment(
+      id: Int!
+      assigneeName: String
+      notes: String
+      statusExpectedEndAt: DateTime
+    ): LodgingCmAssignment!
     completeLodgingCmAssignment(id: Int!): LodgingCmAssignment!
 
     createLodgingReservation(
@@ -4104,6 +4110,97 @@ export function createLodgingResolvers({
 
         return prisma.lodging_cm_assignment.findMany({
           where: { id: { in: createdIds } },
+          include: { room: true },
+        });
+      },
+
+      updateLodgingCmAssignment: async (
+        _,
+        { id, assigneeName, notes, statusExpectedEndAt },
+        context,
+      ) => {
+        assertCmPortal(context);
+        const row = await prisma.lodging_cm_assignment.findUnique({
+          where: { id: Number(id) },
+          include: { room: true },
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("CM assignment not found");
+        }
+        if (row.status !== "open") {
+          throw new Error("Only open assignments can be edited");
+        }
+        const roomStatus = String(row.room?.status || "").toLowerCase();
+        const workKind = String(row.workKind || "").toLowerCase();
+        if (workKind === "cleaning" && roomStatus !== "vacant_dirty") {
+          throw new Error(
+            "Cleaning assignments can only be edited while the room is vacant dirty",
+          );
+        }
+        if (workKind === "maintenance" && roomStatus !== "on_maintenance") {
+          throw new Error(
+            "Maintenance assignments can only be edited while the room is on maintenance",
+          );
+        }
+
+        const { actorName, actorRole } = actorFromContext(context);
+        const data = {};
+        if (assigneeName != null) {
+          const name = String(assigneeName).trim();
+          if (!name) throw new Error("Assignee name is required");
+          data.assigneeName = name;
+        }
+        if (notes != null) {
+          data.notes = String(notes).trim();
+        }
+
+        const updated = await prisma.lodging_cm_assignment.update({
+          where: { id: row.id },
+          data,
+        });
+
+        if (statusExpectedEndAt !== undefined) {
+          const endAt =
+            statusExpectedEndAt == null || statusExpectedEndAt === ""
+              ? null
+              : new Date(statusExpectedEndAt);
+          if (endAt && Number.isNaN(endAt.getTime())) {
+            throw new Error("Invalid expected ready date");
+          }
+          await prisma.lodging_room.update({
+            where: { id: row.roomId },
+            data: {
+              statusExpectedEndAt: endAt,
+              ...(workKind === "maintenance"
+                ? { maintenanceUntil: endAt }
+                : {}),
+              updatedBy: actorName,
+            },
+          });
+        }
+
+        await logLodgingAction(prisma, {
+          HotelName: row.HotelName,
+          actorRole,
+          actorName,
+          action: "update_cm_assignment",
+          entityType: "lodging_cm_assignment",
+          entityId: row.id,
+          detail: {
+            roomId: row.roomId,
+            workKind: row.workKind,
+            assigneeName: data.assigneeName ?? row.assigneeName,
+            statusExpectedEndAt:
+              statusExpectedEndAt === undefined
+                ? undefined
+                : statusExpectedEndAt == null || statusExpectedEndAt === ""
+                  ? null
+                  : String(statusExpectedEndAt),
+          },
+        });
+
+        return prisma.lodging_cm_assignment.findUnique({
+          where: { id: updated.id },
           include: { room: true },
         });
       },
