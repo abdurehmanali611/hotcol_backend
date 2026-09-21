@@ -5502,7 +5502,7 @@ export function createLodgingResolvers({
           throw new Error("This shift is already closed");
         }
 
-        const [arrivals, departures, inHouse, noShows, openBills] =
+        const [arrivals, departures, inHouse, noShows, openBills, roomRows, arrivalStays, departureStays, inHouseStays] =
           await Promise.all([
             prisma.lodging_stay.count({
               where: { HotelName, arrivalAt: { gte: from, lte: to } },
@@ -5528,7 +5528,64 @@ export function createLodgingResolvers({
               where: { HotelName, status: "open" },
               _sum: { totalETB: true },
             }),
+            prisma.lodging_room.findMany({
+              where: { HotelName },
+              select: {
+                id: true,
+                roomNumber: true,
+                roomType: true,
+                floor: true,
+                status: true,
+              },
+              orderBy: [{ floor: "asc" }, { roomNumber: "asc" }],
+            }),
+            prisma.lodging_stay.findMany({
+              where: { HotelName, arrivalAt: { gte: from, lte: to } },
+              include: {
+                guest: { select: { firstName: true, lastName: true } },
+                rooms: { include: { room: { select: { roomNumber: true } } } },
+              },
+              orderBy: { arrivalAt: "asc" },
+            }),
+            prisma.lodging_stay.findMany({
+              where: {
+                HotelName,
+                status: "checked_out",
+                departureAt: { gte: from, lte: to },
+              },
+              include: {
+                guest: { select: { firstName: true, lastName: true } },
+                rooms: { include: { room: { select: { roomNumber: true } } } },
+              },
+              orderBy: { departureAt: "asc" },
+            }),
+            prisma.lodging_stay.findMany({
+              where: { HotelName, status: "checked_in" },
+              include: {
+                guest: { select: { firstName: true, lastName: true } },
+                rooms: { include: { room: { select: { roomNumber: true } } } },
+              },
+              orderBy: { arrivalAt: "asc" },
+            }),
           ]);
+
+        const guestName = (s) => {
+          const g = s.guest;
+          if (!g) return "Guest";
+          return `${g.firstName || ""} ${g.lastName || ""}`.trim() || "Guest";
+        };
+        const stayRooms = (s) =>
+          (s.rooms || [])
+            .map((r) => r.room?.roomNumber)
+            .filter(Boolean)
+            .join(", ") || "—";
+
+        const roomsByStatus = {};
+        for (const r of roomRows) {
+          const st = String(r.status || "unknown");
+          roomsByStatus[st] = (roomsByStatus[st] || 0) + 1;
+        }
+
         const summary = {
           arrivals,
           departures,
@@ -5538,6 +5595,31 @@ export function createLodgingResolvers({
           fromAt: from.toISOString(),
           toAt: to.toISOString(),
           closedAt: new Date().toISOString(),
+          roomsByStatus,
+          rooms: roomRows.map((r) => ({
+            roomNumber: r.roomNumber,
+            roomType: r.roomType,
+            floor: r.floor,
+            status: r.status,
+          })),
+          arrivalRooms: arrivalStays.map((s) => ({
+            voucherCode: s.voucherCode,
+            guest: guestName(s),
+            rooms: stayRooms(s),
+            at: s.arrivalAt,
+          })),
+          departureRooms: departureStays.map((s) => ({
+            voucherCode: s.voucherCode,
+            guest: guestName(s),
+            rooms: stayRooms(s),
+            at: s.departureAt,
+          })),
+          inHouseRooms: inHouseStays.map((s) => ({
+            voucherCode: s.voucherCode,
+            guest: guestName(s),
+            rooms: stayRooms(s),
+            arrivalAt: s.arrivalAt,
+          })),
         };
 
         if (row) {
