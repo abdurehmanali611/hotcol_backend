@@ -1770,13 +1770,27 @@ export function createLodgingResolvers({
 
       lodgingCmQueue: async (_, __, context) => {
         await assertCmPortal(context);
-        return prisma.lodging_room.findMany({
+        const scope = tenantHotelReadWhere(context);
+        const rooms = await prisma.lodging_room.findMany({
           where: {
-            ...tenantHotelReadWhere(context),
+            ...scope,
             status: { in: ["vacant_dirty", "on_maintenance", "inspected"] },
           },
           orderBy: [{ status: "asc" }, { roomNumber: "asc" }],
         });
+        if (rooms.length === 0) return [];
+
+        const inProgress = await prisma.lodging_cm_assignment.findMany({
+          where: {
+            status: "open",
+            workKind: { in: ["cleaning", "maintenance"] },
+            roomId: { in: rooms.map((r) => r.id) },
+          },
+          select: { roomId: true },
+        });
+        const busy = new Set(inProgress.map((a) => a.roomId));
+        // Rooms with open cleaning/maintenance stay off the queue until done.
+        return rooms.filter((r) => !busy.has(r.id));
       },
 
       lodgingHoldableRooms: async (_, { arrivalAt }, context) => {
