@@ -3749,104 +3749,116 @@ export function createLodgingResolvers({
         const bank = Math.max(0, Number(bankETB) || 0);
         const telebirr = Math.max(0, Number(telebirrETB) || 0);
 
-        await prisma.$transaction(async (tx) => {
-          await syncRoomNightCharges(tx, stayFresh, nightsN, actorName);
+        await prisma.$transaction(
+          async (tx) => {
+            await syncRoomNightCharges(tx, stayFresh, nightsN, actorName);
 
-          // Re-apply tax on room lines after night sync
-          if (stayFresh.bill) {
-            const roomLines = await tx.lodging_bill_line.findMany({
-              where: {
-                billId: stayFresh.bill.id,
-                kind: "room",
-                voided: false,
-              },
-            });
-            for (const line of roomLines) {
-              const { taxPercent, taxETB } = await applyTaxToAmounts(
+            // Re-apply tax on room lines after night sync
+            if (stayFresh.bill) {
+              const roomTaxPercent = await taxPercentForKind(
                 tx,
                 stay.HotelName,
                 "room",
-                Number(line.amountETB) || 0,
               );
-              await tx.lodging_bill_line.update({
-                where: { id: line.id },
-                data: { taxPercent, taxETB },
+              const roomLines = await tx.lodging_bill_line.findMany({
+                where: {
+                  billId: stayFresh.bill.id,
+                  kind: "room",
+                  voided: false,
+                },
+              });
+              for (const line of roomLines) {
+                const amount = Number(line.amountETB) || 0;
+                const taxETB = Math.round(amount * roomTaxPercent) / 100;
+                await tx.lodging_bill_line.update({
+                  where: { id: line.id },
+                  data: { taxPercent: roomTaxPercent, taxETB },
+                });
+              }
+              await recalcBillTotal(tx, stayFresh.bill.id);
+            }
+
+            if (stayFresh.bill && stayFresh.bill.status === "open") {
+              await tx.lodging_bill.update({
+                where: { id: stayFresh.bill.id },
+                data: {
+                  status: "settled",
+                  settledAt: new Date(),
+                  settledBy: actorName,
+                  receiptNumber,
+                  cashETB: cash,
+                  bankETB: bank,
+                  telebirrETB: telebirr,
+                },
               });
             }
-            await recalcBillTotal(tx, stayFresh.bill.id);
-          }
 
-          if (stayFresh.bill && stayFresh.bill.status === "open") {
-            await tx.lodging_bill.update({
-              where: { id: stayFresh.bill.id },
+            await tx.lodging_stay.update({
+              where: { id: stay.id },
               data: {
-                status: "settled",
-                settledAt: new Date(),
-                settledBy: actorName,
-                receiptNumber,
-                cashETB: cash,
-                bankETB: bank,
-                telebirrETB: telebirr,
+                status: "checked_out",
+                departureAt: dep,
+                nights: nightsN,
+                checkedOutBy: actorName,
+                guestOtp: null,
+                guestOtpIssuedAt: null,
               },
             });
-          }
 
-          await tx.lodging_stay.update({
-            where: { id: stay.id },
-            data: {
-              status: "checked_out",
-              departureAt: dep,
-              nights: nightsN,
-              checkedOutBy: actorName,
-              guestOtp: null,
-              guestOtpIssuedAt: null,
-            },
-          });
+            for (const sr of stayFresh.rooms || []) {
+              await tx.lodging_room.update({
+                where: { id: sr.roomId },
+                data: {
+                  status: "vacant_dirty",
+                  statusExpectedEndAt: null,
+                  updatedBy: actorName,
+                },
+              });
+            }
 
-          for (const sr of stayFresh.rooms || []) {
-            await tx.lodging_room.update({
-              where: { id: sr.roomId },
-              data: {
-                status: "vacant_dirty",
-                statusExpectedEndAt: null,
-                updatedBy: actorName,
+            const orderIds = new Set();
+            for (const line of stayFresh.bill?.lines ?? []) {
+              if (String(line.kind || "").toLowerCase() !== "food_drink") {
+                continue;
+              }
+              const oid = cafeOrderIdFromBillDescription(line.description);
+              if (oid != null) orderIds.add(oid);
+            }
+            const roomServiceTable = ROOM_SERVICE_TABLE_BASE + stay.id;
+            const cafeOrders = await tx.order.findMany({
+              where: {
+                HotelName: stay.HotelName,
+                OR: [
+                  ...(orderIds.size
+                    ? [{ id: { in: [...orderIds] } }]
+                    : []),
+                  { tableNo: roomServiceTable },
+                ],
               },
+              select: { id: true, payment: true, status: true },
             });
-          }
-
-          const orderIds = new Set();
-          for (const line of stayFresh.bill?.lines ?? []) {
-            if (String(line.kind || "").toLowerCase() !== "food_drink") continue;
-            const oid = cafeOrderIdFromBillDescription(line.description);
-            if (oid != null) orderIds.add(oid);
-          }
-          const roomServiceTable = ROOM_SERVICE_TABLE_BASE + stay.id;
-          const byTable = await tx.order.findMany({
-            where: {
-              HotelName: stay.HotelName,
-              tableNo: roomServiceTable,
-            },
-          });
-          for (const order of byTable) orderIds.add(order.id);
-
-          for (const orderId of orderIds) {
-            const order = await tx.order.findUnique({ where: { id: orderId } });
-            if (!order) continue;
-            const payment = String(order.payment || "").toLowerCase();
-            const status = String(order.status || "").toLowerCase();
-            if (payment === "paid" || status === "cancelled") continue;
-            await tx.order.update({
-              where: { id: order.id },
-              data: {
-                payment: "Paid",
-                status: "Completed",
-                withBank: false,
-                bankTransferAmount: null,
-                bankTipCashDeduction: null,
-              },
-            });
-          }
-        });
+            const settleIds = cafeOrders
+              .filter((order) => {
+                const payment = String(order.payment || "").toLowerCase();
+                const status = String(order.status || "").toLowerCase();
+                return payment !== "paid" && status !== "cancelled";
+              })
+              .map((order) => order.id);
+            if (settleIds.length > 0) {
+              await tx.order.updateMany({
+                where: { id: { in: settleIds } },
+                data: {
+                  payment: "Paid",
+                  status: "Completed",
+                  withBank: false,
+                  bankTransferAmount: null,
+                  bankTipCashDeduction: null,
+                },
+              });
+            }
+          },
+          { timeout: 60_000, maxWait: 15_000 },
+        );
 
         await logLodgingAction(prisma, {
           HotelName: stay.HotelName,
