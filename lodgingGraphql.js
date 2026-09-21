@@ -4072,6 +4072,20 @@ export function createLodgingResolvers({
         if (wk === "cleaning" && room.status !== "vacant_dirty") {
           throw new Error("Cleaning can only be assigned on vacant dirty rooms");
         }
+        if (wk === "cleaning") {
+          const existingOpen = await prisma.lodging_cm_assignment.count({
+            where: {
+              roomId: room.id,
+              workKind: "cleaning",
+              status: "open",
+            },
+          });
+          if (existingOpen > 0) {
+            throw new Error(
+              "This room already has open cleaners — edit people instead of assigning again",
+            );
+          }
+        }
 
         const { actorName, actorRole } = actorFromContext(context);
         const note = String(notes ?? "").trim();
