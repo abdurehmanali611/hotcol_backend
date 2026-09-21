@@ -1178,6 +1178,11 @@ export async function removeRoomServiceOrderFromLodgingBill(prisma, order) {
       fulfilledAt: new Date(),
       fulfilledBy: String(order.cancelledBy || "Kitchen/Bar").trim(),
       amountETB: 0,
+      // Keep cancelled café tickets off the open folio / transfer selection.
+      voided: true,
+      voidedAt: new Date(),
+      voidedBy: String(order.cancelledBy || "Kitchen/Bar").trim(),
+      voidReason: "Order cancelled",
     },
   });
   await recalcBillTotal(prisma, stay.bill.id);
@@ -1654,6 +1659,10 @@ export async function syncCafeOrderFulfillmentToBillLine(prisma, order, actorLab
   };
   if (fulfillmentStatus === "cancelled") {
     data.amountETB = 0;
+    data.voided = true;
+    data.voidedAt = new Date();
+    data.voidedBy = String(actorLabel || "").trim() || "Kitchen/Bar";
+    data.voidReason = "Order cancelled";
   }
 
   await prisma.lodging_bill_line.update({
@@ -3426,6 +3435,21 @@ export function createLodgingResolvers({
             fulfilledBy: next === "pending" ? "" : actorName || "Reception",
             amountETB:
               next === "cancelled" ? 0 : Math.max(0, qty) * unit,
+            ...(next === "cancelled"
+              ? {
+                  voided: true,
+                  voidedAt: new Date(),
+                  voidedBy: actorName || "Reception",
+                  voidReason: "Order cancelled",
+                }
+              : next === "pending"
+                ? {
+                    voided: false,
+                    voidedAt: null,
+                    voidedBy: "",
+                    voidReason: "",
+                  }
+                : {}),
           },
         });
         await recalcBillTotal(prisma, line.billId);
@@ -3488,6 +3512,14 @@ export function createLodgingResolvers({
           }
           if (line.bill.status !== "open") {
             throw new Error("Source bill is not open");
+          }
+          if (line.voided) {
+            throw new Error("Cannot transfer a voided line");
+          }
+          if (
+            String(line.fulfillmentStatus || "").toLowerCase() === "cancelled"
+          ) {
+            throw new Error("Cannot transfer a cancelled order");
           }
           if (line.billId === toBill.id) {
             throw new Error("Line already on target bill");
