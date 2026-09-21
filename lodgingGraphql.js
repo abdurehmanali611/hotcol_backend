@@ -902,9 +902,12 @@ async function splitCafeOrderForBillLine(
  * Cancelled café orders are ignored and never block these actions.
  */
 async function assertFoodDrinkLinesCompleted(prisma, lines, HotelName) {
-  const foodLines = (lines || []).filter(
-    (l) => String(l.kind || "").toLowerCase() === "food_drink",
-  );
+  const foodLines = (lines || []).filter((l) => {
+    if (String(l.kind || "").toLowerCase() !== "food_drink") return false;
+    // Voided folio lines (e.g. whole-bill void) must not block checkout.
+    if (l.voided) return false;
+    return true;
+  });
   if (foodLines.length === 0) return;
 
   const orderIds = [
@@ -970,6 +973,7 @@ async function assertFoodDrinkLinesCompleted(prisma, lines, HotelName) {
 async function assertLaundryLinesCompleted(lines) {
   for (const line of lines || []) {
     if (String(line.kind || "").toLowerCase() !== "laundry") continue;
+    if (line.voided) continue;
     const st = String(line.fulfillmentStatus || "pending").toLowerCase();
     if (st === "cancelled" || st === "completed") continue;
     const label = String(line.description || "Laundry").split(" · ")[0].trim();
@@ -4797,6 +4801,8 @@ export function createLodgingResolvers({
         await prisma.$transaction(async (tx) => {
           for (const line of bill.lines) {
             if (line.voided) continue;
+            const kind = String(line.kind || "").toLowerCase();
+            const isService = kind === "laundry" || kind === "food_drink";
             await tx.lodging_bill_line.update({
               where: { id: line.id },
               data: {
@@ -4806,6 +4812,14 @@ export function createLodgingResolvers({
                 voidReason: why,
                 amountETB: 0,
                 taxETB: 0,
+                // Clear fulfillment gates so checkout can free rooms after folio void.
+                ...(isService
+                  ? {
+                      fulfillmentStatus: "cancelled",
+                      fulfilledAt: now,
+                      fulfilledBy: actorName,
+                    }
+                  : {}),
               },
             });
           }
@@ -4814,6 +4828,32 @@ export function createLodgingResolvers({
             data: { status: "void", totalETB: 0 },
           });
         });
+
+        // Cancel unpaid room-service café tickets linked to this stay.
+        const roomServiceTable = ROOM_SERVICE_TABLE_BASE + Number(bill.stayId);
+        const cafeOrders = await prisma.order.findMany({
+          where: {
+            HotelName: bill.HotelName,
+            tableNo: roomServiceTable,
+          },
+          select: { id: true, payment: true, status: true },
+        });
+        const cancelIds = cafeOrders
+          .filter((o) => {
+            const payment = String(o.payment || "").toLowerCase();
+            const status = String(o.status || "").toLowerCase();
+            return payment !== "paid" && status !== "cancelled";
+          })
+          .map((o) => o.id);
+        if (cancelIds.length > 0) {
+          await prisma.order.updateMany({
+            where: { id: { in: cancelIds } },
+            data: {
+              status: "Cancelled",
+              cancelledBy: actorName || "Manager",
+            },
+          });
+        }
         await logLodgingAction(prisma, {
           HotelName: bill.HotelName,
           actorRole,
@@ -4856,6 +4896,8 @@ export function createLodgingResolvers({
         for (const line of stay.bill.lines) {
           if (line.voided) continue;
           if (String(line.roomNumber || "").trim() !== rn) continue;
+          const kind = String(line.kind || "").toLowerCase();
+          const isService = kind === "laundry" || kind === "food_drink";
           await prisma.lodging_bill_line.update({
             where: { id: line.id },
             data: {
@@ -4865,6 +4907,13 @@ export function createLodgingResolvers({
               voidReason: why,
               amountETB: 0,
               taxETB: 0,
+              ...(isService
+                ? {
+                    fulfillmentStatus: "cancelled",
+                    fulfilledAt: now,
+                    fulfilledBy: actorName,
+                  }
+                : {}),
             },
           });
           voided += 1;
