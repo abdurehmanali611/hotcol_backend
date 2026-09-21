@@ -168,6 +168,7 @@ export const lodgingTypeDefsBlock = `
     reservationId: Int
     status: String!
     arrivalAt: DateTime!
+    reservedArrivalAt: DateTime
     departureAt: DateTime!
     expectedNights: Int!
     expectedDepartureAt: DateTime
@@ -177,6 +178,9 @@ export const lodgingTypeDefsBlock = `
     preferredRoomType: String!
     ratePlanId: Int
     ratePlanName: String!
+    isCompany: Boolean!
+    companyName: String!
+    companyTin: String!
     notes: String!
     checkedInBy: String!
     checkedOutBy: String!
@@ -213,6 +217,10 @@ export const lodgingTypeDefsBlock = `
     children: Int!
     preferredRoomType: String!
     depositETB: Float!
+    depositPaymentMethod: String!
+    isCompany: Boolean!
+    companyName: String!
+    companyTin: String!
     notes: String!
     createdBy: String!
     updatedBy: String!
@@ -236,6 +244,9 @@ export const lodgingTypeDefsBlock = `
     id: Int!
     HotelName: String!
     businessDate: String!
+    label: String!
+    fromAt: DateTime!
+    toAt: DateTime!
     status: String!
     closedAt: DateTime
     closedBy: String!
@@ -296,9 +307,12 @@ export const lodgingTypeDefsBlock = `
     HotelName: String!
     stayId: Int!
     guestId: Int
+    roomId: Int
+    roomNumber: String!
     category: String!
     message: String!
     status: String!
+    isCritical: Boolean!
     createdAt: DateTime!
     updatedAt: DateTime!
     guestName: String!
@@ -424,7 +438,9 @@ export const lodgingQueryFields = `
     lodgingBusinessDay(businessDate: String): LodgingBusinessDay
     lodgingBusinessDays(limit: Int): [LodgingBusinessDay!]!
     lodgingGuestComplaints(status: String, limit: Int): [LodgingGuestComplaint!]!
+    lodgingGuestComplaintHistory(guestId: Int!, limit: Int): [LodgingGuestComplaint!]!
     lodgingGuestRatings(limit: Int): [LodgingGuestRating!]!
+    lodgingGuestRatingHistory(guestId: Int!, limit: Int): [LodgingGuestRating!]!
 `;
 
 export const lodgingMutationFields = `
@@ -486,6 +502,9 @@ export const lodgingMutationFields = `
       status: String
       reservationId: Int
       ratePlanId: Int
+      isCompany: Boolean
+      companyName: String
+      companyTin: String
     ): LodgingStay!
     updateLodgingStay(
       id: Int!
@@ -520,6 +539,14 @@ export const lodgingMutationFields = `
     updateLodgingBillLine(lineId: Int!, quantity: Float!): LodgingBillLine!
     deleteLodgingBillLine(lineId: Int!): Boolean!
     voidLodgingBillLine(lineId: Int!, reason: String!): LodgingBillLine!
+    # Manager-only: void entire open bill.
+    voidLodgingBill(billId: Int!, reason: String!): LodgingBill!
+    # Manager-only: void all open charges for a room number on a stay.
+    voidLodgingRoomCharges(
+      stayId: Int!
+      roomNumber: String!
+      reason: String!
+    ): LodgingStay!
     # Reception requests; Manager/Admin applies immediately as approved.
     requestLodgingDiscount(
       stayId: Int!
@@ -585,6 +612,10 @@ export const lodgingMutationFields = `
       preferredRoomType: String
       roomIds: [Int!]
       depositETB: Float
+      depositPaymentMethod: String
+      isCompany: Boolean
+      companyName: String
+      companyTin: String
       notes: String
     ): LodgingReservation!
     updateLodgingReservation(
@@ -598,6 +629,10 @@ export const lodgingMutationFields = `
       preferredRoomType: String
       roomIds: [Int!]
       depositETB: Float
+      depositPaymentMethod: String
+      isCompany: Boolean
+      companyName: String
+      companyTin: String
       notes: String
       guestId: Int
     ): LodgingReservation!
@@ -610,7 +645,19 @@ export const lodgingMutationFields = `
     ): LodgingStay!
 
     upsertLodgingTaxConfig(kind: String!, taxPercent: Float!): LodgingTaxConfig!
-    closeLodgingBusinessDay(businessDate: String!): LodgingBusinessDay!
+    closeLodgingBusinessDay(
+      businessDate: String
+      fromAt: DateTime!
+      toAt: DateTime!
+      label: String
+      id: Int
+    ): LodgingBusinessDay!
+    openLodgingBusinessDay(
+      fromAt: DateTime!
+      toAt: DateTime!
+      label: String
+      businessDate: String
+    ): LodgingBusinessDay!
     createLodgingRatePlan(
       name: String!
       code: String
@@ -1335,7 +1382,7 @@ function guestDataFromInput(input, HotelName) {
   };
 }
 
-function enrichGuestFeedbackRow(row) {
+function enrichGuestFeedbackRow(row, criticalGuestIds = null, criticalRoomKeys = null) {
   const guest = row.guest || row.stay?.guest || null;
   const guestName = guest
     ? `${guest.firstName || ""} ${guest.lastName || ""}`.trim() || "Guest"
@@ -1343,12 +1390,98 @@ function enrichGuestFeedbackRow(row) {
   const rooms = (row.stay?.rooms || [])
     .map((sr) => sr.room?.roomNumber)
     .filter(Boolean);
+  const roomNumber =
+    String(row.roomNumber || "").trim() || rooms[0] || "";
+  let isCritical = false;
+  if (row.guestId != null && criticalGuestIds instanceof Set) {
+    isCritical = criticalGuestIds.has(Number(row.guestId));
+  }
+  if (
+    !isCritical &&
+    row.guestId != null &&
+    roomNumber &&
+    criticalRoomKeys instanceof Set
+  ) {
+    isCritical = criticalRoomKeys.has(`${Number(row.guestId)}::${roomNumber}`);
+  }
   return {
     ...row,
+    roomNumber,
+    roomId: row.roomId ?? null,
     guestName,
     voucherCode: row.stay?.voucherCode || "",
-    roomNumbers: rooms.join(", "),
+    roomNumbers: rooms.join(", ") || roomNumber,
+    isCritical,
   };
+}
+
+async function computeComplaintCriticalSets(prisma, HotelName) {
+  const all = await prisma.lodging_guest_complaint.findMany({
+    where: { HotelName, guestId: { not: null } },
+    select: { guestId: true, roomNumber: true, stayId: true },
+  });
+  // Fill roomNumber from stay when blank
+  const stayIds = [
+    ...new Set(
+      all.filter((r) => !String(r.roomNumber || "").trim()).map((r) => r.stayId),
+    ),
+  ];
+  const stayRooms = stayIds.length
+    ? await prisma.lodging_stay_room.findMany({
+        where: { stayId: { in: stayIds } },
+        include: { room: true },
+      })
+    : [];
+  const stayRoomMap = new Map();
+  for (const sr of stayRooms) {
+    const list = stayRoomMap.get(sr.stayId) || [];
+    if (sr.room?.roomNumber) list.push(sr.room.roomNumber);
+    stayRoomMap.set(sr.stayId, list);
+  }
+  const byGuest = new Map();
+  const byGuestRoom = new Map();
+  for (const row of all) {
+    const gid = Number(row.guestId);
+    if (!gid) continue;
+    byGuest.set(gid, (byGuest.get(gid) || 0) + 1);
+    let rn = String(row.roomNumber || "").trim();
+    if (!rn) {
+      rn = (stayRoomMap.get(row.stayId) || [])[0] || "";
+    }
+    if (!rn) continue;
+    const key = `${gid}::${rn}`;
+    byGuestRoom.set(key, (byGuestRoom.get(key) || 0) + 1);
+  }
+  const criticalGuestIds = new Set(
+    [...byGuest.entries()].filter(([, n]) => n >= 5).map(([id]) => id),
+  );
+  const criticalRoomKeys = new Set(
+    [...byGuestRoom.entries()].filter(([, n]) => n >= 3).map(([k]) => k),
+  );
+  return { criticalGuestIds, criticalRoomKeys };
+}
+
+const PAYMENT_METHODS = new Set(["cash", "bank", "telebirr"]);
+
+function normalizePaymentMethod(raw) {
+  const m = String(raw || "").trim().toLowerCase();
+  if (!m) return "";
+  if (!PAYMENT_METHODS.has(m)) {
+    throw new Error("Payment method must be cash, bank, or telebirr");
+  }
+  return m;
+}
+
+function normalizeCompanyFields(input = {}) {
+  const isCompany = Boolean(input.isCompany);
+  if (!isCompany) {
+    return { isCompany: false, companyName: "", companyTin: "" };
+  }
+  const companyName = String(input.companyName ?? "").trim();
+  const companyTin = String(input.companyTin ?? "").trim();
+  if (!companyName) throw new Error("Company name is required");
+  if (!companyTin) throw new Error("Company TIN is required");
+  return { isCompany: true, companyName, companyTin };
 }
 
 const GUEST_FEEDBACK_INCLUDE = {
@@ -2115,10 +2248,15 @@ export function createLodgingResolvers({
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const day =
           String(businessDate || "").trim() || ymd(new Date());
-        return prisma.lodging_business_day.findUnique({
-          where: {
-            HotelName_businessDate: { HotelName, businessDate: day },
-          },
+        // Prefer an open shift for the day; else latest closed for that day.
+        const open = await prisma.lodging_business_day.findFirst({
+          where: { HotelName, businessDate: day, status: "open" },
+          orderBy: { fromAt: "desc" },
+        });
+        if (open) return open;
+        return prisma.lodging_business_day.findFirst({
+          where: { HotelName, businessDate: day },
+          orderBy: { fromAt: "desc" },
         });
       },
 
@@ -2126,13 +2264,14 @@ export function createLodgingResolvers({
         assertReceptionOrManager(context);
         return prisma.lodging_business_day.findMany({
           where: tenantHotelReadWhere(context),
-          orderBy: { businessDate: "desc" },
+          orderBy: [{ fromAt: "desc" }],
           take: Math.min(100, Math.max(1, Number(limit) || 30)),
         });
       },
 
       lodgingGuestComplaints: async (_, { status, limit }, context) => {
         assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
         const where = { ...tenantHotelReadWhere(context) };
         if (status) where.status = String(status).trim();
         const rows = await prisma.lodging_guest_complaint.findMany({
@@ -2141,7 +2280,29 @@ export function createLodgingResolvers({
           orderBy: { createdAt: "desc" },
           take: Math.min(200, Math.max(1, Number(limit) || 50)),
         });
-        return rows.map(enrichGuestFeedbackRow);
+        const { criticalGuestIds, criticalRoomKeys } =
+          await computeComplaintCriticalSets(prisma, HotelName);
+        return rows.map((r) =>
+          enrichGuestFeedbackRow(r, criticalGuestIds, criticalRoomKeys),
+        );
+      },
+
+      lodgingGuestComplaintHistory: async (_, { guestId, limit }, context) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const gid = Number(guestId);
+        if (!gid) throw new Error("guestId is required");
+        const rows = await prisma.lodging_guest_complaint.findMany({
+          where: { HotelName, guestId: gid },
+          include: GUEST_FEEDBACK_INCLUDE,
+          orderBy: { createdAt: "desc" },
+          take: Math.min(200, Math.max(1, Number(limit) || 50)),
+        });
+        const { criticalGuestIds, criticalRoomKeys } =
+          await computeComplaintCriticalSets(prisma, HotelName);
+        return rows.map((r) =>
+          enrichGuestFeedbackRow(r, criticalGuestIds, criticalRoomKeys),
+        );
       },
 
       lodgingGuestRatings: async (_, { limit }, context) => {
@@ -2152,7 +2313,21 @@ export function createLodgingResolvers({
           orderBy: { createdAt: "desc" },
           take: Math.min(200, Math.max(1, Number(limit) || 50)),
         });
-        return rows.map(enrichGuestFeedbackRow);
+        return rows.map((r) => enrichGuestFeedbackRow(r));
+      },
+
+      lodgingGuestRatingHistory: async (_, { guestId, limit }, context) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const gid = Number(guestId);
+        if (!gid) throw new Error("guestId is required");
+        const rows = await prisma.lodging_guest_rating.findMany({
+          where: { HotelName, guestId: gid },
+          include: GUEST_FEEDBACK_INCLUDE,
+          orderBy: { createdAt: "desc" },
+          take: Math.min(200, Math.max(1, Number(limit) || 50)),
+        });
+        return rows.map((r) => enrichGuestFeedbackRow(r));
       },
     },
 
@@ -2431,6 +2606,9 @@ export function createLodgingResolvers({
           status,
           reservationId,
           ratePlanId,
+          isCompany,
+          companyName,
+          companyTin,
         },
         context,
       ) => {
@@ -2554,6 +2732,21 @@ export function createLodgingResolvers({
             frozenPlanName = seed.ratePlanName;
           }
 
+          const company = normalizeCompanyFields({
+            isCompany:
+              isCompany != null
+                ? isCompany
+                : Boolean(linkedReservation?.isCompany),
+            companyName:
+              companyName != null
+                ? companyName
+                : linkedReservation?.companyName || "",
+            companyTin:
+              companyTin != null
+                ? companyTin
+                : linkedReservation?.companyTin || "",
+          });
+
           const created = await tx.lodging_stay.create({
             data: {
               HotelName,
@@ -2562,6 +2755,9 @@ export function createLodgingResolvers({
               reservationId: linkedReservation ? linkedReservation.id : null,
               status: stayStatus,
               arrivalAt: arrival,
+              reservedArrivalAt: linkedReservation
+                ? linkedReservation.arrivalAt
+                : null,
               departureAt,
               expectedNights: nightsN,
               expectedDepartureAt: departureAt,
@@ -2571,6 +2767,9 @@ export function createLodgingResolvers({
               preferredRoomType: String(preferredRoomType ?? "").trim(),
               ratePlanId: frozenPlanId,
               ratePlanName: frozenPlanName,
+              isCompany: company.isCompany,
+              companyName: company.companyName,
+              companyTin: company.companyTin,
               notes: String(notes ?? "").trim(),
               checkedInBy: stayStatus === "checked_in" ? actorName : "",
             },
@@ -4165,7 +4364,7 @@ export function createLodgingResolvers({
       },
 
       voidLodgingBillLine: async (_, { lineId, reason }, context) => {
-        assertReceptionOrManager(context);
+        assertAdminOrManager(context);
         const line = await prisma.lodging_bill_line.findUnique({
           where: { id: Number(lineId) },
           include: { bill: true },
@@ -4204,6 +4403,118 @@ export function createLodgingResolvers({
           detail: { reason: why },
         });
         return updated;
+      },
+
+      voidLodgingBill: async (_, { billId, reason }, context) => {
+        assertAdminOrManager(context);
+        const bill = await prisma.lodging_bill.findUnique({
+          where: { id: Number(billId) },
+          include: { lines: true },
+        });
+        if (!bill || !tenantHotelReadMatches(context, bill.HotelName)) {
+          throw new Error("Bill not found");
+        }
+        if (bill.status === "void") throw new Error("Bill already voided");
+        if (bill.status === "settled") {
+          throw new Error("Settled bills cannot be voided");
+        }
+        const why = String(reason ?? "").trim();
+        if (!why) throw new Error("Void reason is required");
+        const { actorName, actorRole } = actorFromContext(context);
+        const now = new Date();
+        await prisma.$transaction(async (tx) => {
+          for (const line of bill.lines) {
+            if (line.voided) continue;
+            await tx.lodging_bill_line.update({
+              where: { id: line.id },
+              data: {
+                voided: true,
+                voidedAt: now,
+                voidedBy: actorName,
+                voidReason: why,
+                amountETB: 0,
+                taxETB: 0,
+              },
+            });
+          }
+          await tx.lodging_bill.update({
+            where: { id: bill.id },
+            data: { status: "void", totalETB: 0 },
+          });
+        });
+        await logLodgingAction(prisma, {
+          HotelName: bill.HotelName,
+          actorRole,
+          actorName,
+          action: "void_bill",
+          entityType: "lodging_bill",
+          entityId: bill.id,
+          stayId: bill.stayId,
+          detail: { reason: why },
+        });
+        return prisma.lodging_bill.findUnique({
+          where: { id: bill.id },
+          include: { lines: true },
+        });
+      },
+
+      voidLodgingRoomCharges: async (
+        _,
+        { stayId, roomNumber, reason },
+        context,
+      ) => {
+        assertAdminOrManager(context);
+        const stay = await prisma.lodging_stay.findUnique({
+          where: { id: Number(stayId) },
+          include: { bill: { include: { lines: true } } },
+        });
+        if (!stay || !tenantHotelReadMatches(context, stay.HotelName)) {
+          throw new Error("Stay not found");
+        }
+        const rn = String(roomNumber ?? "").trim();
+        if (!rn) throw new Error("roomNumber is required");
+        const why = String(reason ?? "").trim();
+        if (!why) throw new Error("Void reason is required");
+        if (!stay.bill || stay.bill.status !== "open") {
+          throw new Error("Stay has no open bill");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const now = new Date();
+        let voided = 0;
+        for (const line of stay.bill.lines) {
+          if (line.voided) continue;
+          if (String(line.roomNumber || "").trim() !== rn) continue;
+          await prisma.lodging_bill_line.update({
+            where: { id: line.id },
+            data: {
+              voided: true,
+              voidedAt: now,
+              voidedBy: actorName,
+              voidReason: why,
+              amountETB: 0,
+              taxETB: 0,
+            },
+          });
+          voided += 1;
+        }
+        if (voided === 0) {
+          throw new Error(`No open charges for room ${rn}`);
+        }
+        await recalcBillTotal(prisma, stay.bill.id);
+        await logLodgingAction(prisma, {
+          HotelName: stay.HotelName,
+          actorRole,
+          actorName,
+          action: "void_room_charges",
+          entityType: "lodging_stay",
+          entityId: stay.id,
+          stayId: stay.id,
+          detail: { roomNumber: rn, reason: why, voided },
+        });
+        return prisma.lodging_stay.findUnique({
+          where: { id: stay.id },
+          include: STAY_INCLUDE,
+        });
       },
 
       requestLodgingDiscount: async (
@@ -4318,12 +4629,11 @@ export function createLodgingResolvers({
             approvalNote: String(note ?? "").trim(),
             amountETB: ok ? -amt : 0,
             taxETB: 0,
-            voided: !ok,
-            voidedAt: !ok ? new Date() : null,
-            voidedBy: !ok ? actorName : "",
-            voidReason: !ok
-              ? String(note ?? "").trim() || "Discount rejected"
-              : "",
+            // Keep rejected discounts visible on the folio with the note (do not void).
+            voided: false,
+            voidedAt: null,
+            voidedBy: "",
+            voidReason: "",
           },
         });
         await recalcBillTotal(prisma, line.billId);
@@ -4354,6 +4664,10 @@ export function createLodgingResolvers({
           preferredRoomType,
           roomIds,
           depositETB,
+          depositPaymentMethod,
+          isCompany,
+          companyName,
+          companyTin,
           notes,
         },
         context,
@@ -4420,6 +4734,20 @@ export function createLodgingResolvers({
           arrival,
         );
 
+        const deposit = Math.max(0, Number(depositETB) || 0);
+        const payMethod =
+          deposit > 0
+            ? normalizePaymentMethod(depositPaymentMethod) ||
+              (() => {
+                throw new Error("Deposit payment method is required");
+              })()
+            : normalizePaymentMethod(depositPaymentMethod || "");
+        const company = normalizeCompanyFields({
+          isCompany,
+          companyName,
+          companyTin,
+        });
+
         const created = await prisma.$transaction(async (tx) => {
           const row = await tx.lodging_reservation.create({
             data: {
@@ -4434,7 +4762,11 @@ export function createLodgingResolvers({
               adults: Math.max(1, Number(adults) || 1),
               children: Math.max(0, Number(children) || 0),
               preferredRoomType: String(preferredRoomType ?? "").trim(),
-              depositETB: Math.max(0, Number(depositETB) || 0),
+              depositETB: deposit,
+              depositPaymentMethod: payMethod,
+              isCompany: company.isCompany,
+              companyName: company.companyName,
+              companyTin: company.companyTin,
               notes: String(notes ?? "").trim(),
               createdBy: actorName,
               updatedBy: actorName,
@@ -4497,6 +4829,10 @@ export function createLodgingResolvers({
           preferredRoomType,
           roomIds,
           depositETB,
+          depositPaymentMethod,
+          isCompany,
+          companyName,
+          companyTin,
           notes,
           guestId,
         },
@@ -4547,6 +4883,32 @@ export function createLodgingResolvers({
         }
         if (depositETB != null) {
           data.depositETB = Math.max(0, Number(depositETB) || 0);
+        }
+        if (depositPaymentMethod != null) {
+          const nextDeposit =
+            data.depositETB != null ? data.depositETB : row.depositETB;
+          data.depositPaymentMethod =
+            nextDeposit > 0
+              ? normalizePaymentMethod(depositPaymentMethod) ||
+                (() => {
+                  throw new Error("Deposit payment method is required");
+                })()
+              : normalizePaymentMethod(depositPaymentMethod || "");
+        }
+        if (
+          isCompany != null ||
+          companyName != null ||
+          companyTin != null
+        ) {
+          const company = normalizeCompanyFields({
+            isCompany: isCompany != null ? isCompany : row.isCompany,
+            companyName:
+              companyName != null ? companyName : row.companyName,
+            companyTin: companyTin != null ? companyTin : row.companyTin,
+          });
+          data.isCompany = company.isCompany;
+          data.companyName = company.companyName;
+          data.companyTin = company.companyTin;
         }
         if (notes != null) data.notes = String(notes).trim();
         if (guestId != null) data.guestId = Number(guestId);
@@ -4747,37 +5109,109 @@ export function createLodgingResolvers({
         return row;
       },
 
-      closeLodgingBusinessDay: async (_, { businessDate }, context) => {
+      openLodgingBusinessDay: async (
+        _,
+        { fromAt, toAt, label, businessDate },
+        context,
+      ) => {
         assertReceptionOrManager(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
-        const day = String(businessDate || "").trim() || ymd(new Date());
+        const from = new Date(fromAt);
+        const to = new Date(toAt);
+        if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+          throw new Error("Invalid fromAt or toAt");
+        }
+        if (to <= from) throw new Error("toAt must be after fromAt");
+        const day = String(businessDate || "").trim() || ymd(from);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
           throw new Error("businessDate must be YYYY-MM-DD");
         }
-        const existing = await prisma.lodging_business_day.findUnique({
-          where: {
-            HotelName_businessDate: { HotelName, businessDate: day },
+        const { actorName, actorRole } = actorFromContext(context);
+        const row = await prisma.lodging_business_day.create({
+          data: {
+            HotelName,
+            businessDate: day,
+            label: String(label ?? "").trim(),
+            fromAt: from,
+            toAt: to,
+            status: "open",
+            summaryJson: "",
           },
         });
-        if (existing?.status === "closed") {
-          throw new Error("Business day already closed");
-        }
+        await logLodgingAction(prisma, {
+          HotelName,
+          actorRole,
+          actorName,
+          action: "open_business_day",
+          entityType: "lodging_business_day",
+          entityId: row.id,
+          detail: {
+            businessDate: day,
+            fromAt: from.toISOString(),
+            toAt: to.toISOString(),
+          },
+        });
+        return row;
+      },
+
+      closeLodgingBusinessDay: async (
+        _,
+        { businessDate, fromAt, toAt, label, id },
+        context,
+      ) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
         const { actorName, actorRole } = actorFromContext(context);
-        const dayStart = new Date(`${day}T00:00:00`);
-        const dayEnd = new Date(`${day}T23:59:59.999`);
+
+        let row = null;
+        if (id != null) {
+          row = await prisma.lodging_business_day.findUnique({
+            where: { id: Number(id) },
+          });
+          if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+            throw new Error("Business day / shift not found");
+          }
+        }
+
+        const from = fromAt
+          ? new Date(fromAt)
+          : row?.fromAt
+            ? new Date(row.fromAt)
+            : null;
+        const to = toAt
+          ? new Date(toAt)
+          : row?.toAt
+            ? new Date(row.toAt)
+            : null;
+        if (
+          !from ||
+          !to ||
+          Number.isNaN(from.getTime()) ||
+          Number.isNaN(to.getTime())
+        ) {
+          throw new Error("fromAt and toAt are required");
+        }
+        if (to <= from) throw new Error("toAt must be after fromAt");
+
+        const day =
+          String(businessDate || row?.businessDate || "").trim() || ymd(from);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+          throw new Error("businessDate must be YYYY-MM-DD");
+        }
+        if (row?.status === "closed") {
+          throw new Error("This shift is already closed");
+        }
+
         const [arrivals, departures, inHouse, noShows, openBills] =
           await Promise.all([
             prisma.lodging_stay.count({
-              where: {
-                HotelName,
-                arrivalAt: { gte: dayStart, lte: dayEnd },
-              },
+              where: { HotelName, arrivalAt: { gte: from, lte: to } },
             }),
             prisma.lodging_stay.count({
               where: {
                 HotelName,
                 status: "checked_out",
-                departureAt: { gte: dayStart, lte: dayEnd },
+                departureAt: { gte: from, lte: to },
               },
             }),
             prisma.lodging_stay.count({
@@ -4787,7 +5221,7 @@ export function createLodgingResolvers({
               where: {
                 HotelName,
                 status: "no_show",
-                arrivalAt: { gte: dayStart, lte: dayEnd },
+                arrivalAt: { gte: from, lte: to },
               },
             }),
             prisma.lodging_bill.aggregate({
@@ -4801,27 +5235,40 @@ export function createLodgingResolvers({
           inHouse,
           noShows,
           outstandingBalanceETB: Number(openBills._sum.totalETB || 0),
+          fromAt: from.toISOString(),
+          toAt: to.toISOString(),
           closedAt: new Date().toISOString(),
         };
-        const row = await prisma.lodging_business_day.upsert({
-          where: {
-            HotelName_businessDate: { HotelName, businessDate: day },
-          },
-          create: {
-            HotelName,
-            businessDate: day,
-            status: "closed",
-            closedAt: new Date(),
-            closedBy: actorName,
-            summaryJson: JSON.stringify(summary),
-          },
-          update: {
-            status: "closed",
-            closedAt: new Date(),
-            closedBy: actorName,
-            summaryJson: JSON.stringify(summary),
-          },
-        });
+
+        if (row) {
+          row = await prisma.lodging_business_day.update({
+            where: { id: row.id },
+            data: {
+              businessDate: day,
+              label: label != null ? String(label).trim() : row.label,
+              fromAt: from,
+              toAt: to,
+              status: "closed",
+              closedAt: new Date(),
+              closedBy: actorName,
+              summaryJson: JSON.stringify(summary),
+            },
+          });
+        } else {
+          row = await prisma.lodging_business_day.create({
+            data: {
+              HotelName,
+              businessDate: day,
+              label: String(label ?? "").trim(),
+              fromAt: from,
+              toAt: to,
+              status: "closed",
+              closedAt: new Date(),
+              closedBy: actorName,
+              summaryJson: JSON.stringify(summary),
+            },
+          });
+        }
         await logLodgingAction(prisma, {
           HotelName,
           actorRole,
