@@ -424,6 +424,8 @@ export const lodgingQueryFields = `
     lodgingActiveStays: [LodgingStay!]!
     lodgingStay(id: Int!): LodgingStay
     lodgingStaysByDate(from: DateTime!, to: DateTime!): [LodgingStay!]!
+    """Guests whose stay overlaps [from, to] — for Manager police/security PDF."""
+    lodgingPoliceGuestReport(from: DateTime!, to: DateTime!): [LodgingStay!]!
     lodgingSearch(query: String!): [LodgingStay!]!
     lodgingServiceItems(kind: String): [LodgingServiceItem!]!
     lodgingCmAssignments(status: String): [LodgingCmAssignment!]!
@@ -591,6 +593,14 @@ export const lodgingMutationFields = `
       statusExpectedEndAt: DateTime
       notes: String
     ): LodgingRoom!
+    """Hold a vacant room as complimentary staff housing (not for sale). Manager only."""
+    assignLodgingComplimentRoom(
+      roomId: Int!
+      assigneeName: String!
+      note: String
+    ): LodgingRoom!
+    """Release a complimentary staff room back to inventory."""
+    releaseLodgingComplimentRoom(roomId: Int!): LodgingRoom!
     createLodgingCmAssignments(
       roomId: Int!
       workKind: String!
@@ -1906,6 +1916,37 @@ export function createLodgingResolvers({
           include: STAY_INCLUDE,
           orderBy: { departureAt: "asc" },
         });
+      },
+
+      lodgingPoliceGuestReport: async (_, { from, to }, context) => {
+        assertAdminOrManager(context);
+        const fromDt = new Date(from);
+        const toDt = new Date(to);
+        if (Number.isNaN(fromDt.getTime()) || Number.isNaN(toDt.getTime())) {
+          throw new Error("Invalid date range");
+        }
+        if (toDt < fromDt) throw new Error("to must be on or after from");
+
+        // Guests whose stay overlapped the window (still in-house or checked out).
+        const rows = await prisma.lodging_stay.findMany({
+          where: {
+            ...tenantHotelReadWhere(context),
+            OR: [
+              {
+                status: "checked_in",
+                arrivalAt: { lte: toDt },
+              },
+              {
+                status: "checked_out",
+                arrivalAt: { lte: toDt },
+                departureAt: { gte: fromDt },
+              },
+            ],
+          },
+          include: STAY_INCLUDE,
+          orderBy: [{ arrivalAt: "asc" }, { id: "asc" }],
+        });
+        return rows;
       },
 
       lodgingServiceItems: async (_, { kind }, context) => {
@@ -4112,6 +4153,102 @@ export function createLodgingResolvers({
           entityType: "lodging_room",
           entityId: room.id,
           detail: { from: room.status, to: s },
+        });
+        return updated;
+      },
+
+      assignLodgingComplimentRoom: async (
+        _,
+        { roomId, assigneeName, note },
+        context,
+      ) => {
+        assertAdminOrManager(context);
+        const room = await loadRoomOrThrow(
+          prisma,
+          context,
+          roomId,
+          tenantHotelReadMatches,
+        );
+        const assignee = String(assigneeName ?? "").trim();
+        if (!assignee) throw new Error("Assignee name is required");
+        const st = String(room.status || "").toLowerCase();
+        if (
+          st === "occupied" ||
+          st === "reserved" ||
+          st === "on_maintenance"
+        ) {
+          throw new Error(
+            `Room ${room.roomNumber} is ${st.replace(/_/g, " ")} — pick a vacant room`,
+          );
+        }
+        if (
+          String(room.notes || "").startsWith("COMPLIMENT|") &&
+          st === "blocked"
+        ) {
+          throw new Error(
+            `Room ${room.roomNumber} is already a complimentary staff room`,
+          );
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const now = new Date();
+        const noteText = String(note ?? "").trim().replace(/\|/g, "/");
+        const notes = `COMPLIMENT|${assignee}|${actorName || "Manager"}|${now.toISOString()}|${noteText}`;
+        const updated = await prisma.lodging_room.update({
+          where: { id: room.id },
+          data: {
+            status: "blocked",
+            notes,
+            maintenanceUntil: null,
+            statusExpectedEndAt: null,
+            updatedBy: actorName,
+          },
+        });
+        await logLodgingAction(prisma, {
+          HotelName: room.HotelName,
+          actorRole,
+          actorName,
+          action: "assign_compliment_room",
+          entityType: "lodging_room",
+          entityId: room.id,
+          detail: {
+            roomNumber: room.roomNumber,
+            assignee,
+            note: noteText,
+          },
+        });
+        return updated;
+      },
+
+      releaseLodgingComplimentRoom: async (_, { roomId }, context) => {
+        assertAdminOrManager(context);
+        const room = await loadRoomOrThrow(
+          prisma,
+          context,
+          roomId,
+          tenantHotelReadMatches,
+        );
+        if (!String(room.notes || "").startsWith("COMPLIMENT|")) {
+          throw new Error("This room is not a complimentary staff assignment");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        const updated = await prisma.lodging_room.update({
+          where: { id: room.id },
+          data: {
+            status: "vacant_clean",
+            notes: "",
+            maintenanceUntil: null,
+            statusExpectedEndAt: null,
+            updatedBy: actorName,
+          },
+        });
+        await logLodgingAction(prisma, {
+          HotelName: room.HotelName,
+          actorRole,
+          actorName,
+          action: "release_compliment_room",
+          entityType: "lodging_room",
+          entityId: room.id,
+          detail: { roomNumber: room.roomNumber },
         });
         return updated;
       },
