@@ -604,6 +604,18 @@ export const lodgingMutationFields = `
       notes: String
       statusExpectedEndAt: DateTime
     ): LodgingCmAssignment!
+    """
+    Sync open assignees for a room's in-progress cleaning or maintenance job:
+    add missing names, cancel removed ones, update notes / expected ready.
+    At least one assignee must remain.
+    """
+    syncLodgingCmOpenAssignees(
+      roomId: Int!
+      workKind: String!
+      assigneeNames: [String!]!
+      notes: String
+      statusExpectedEndAt: DateTime
+    ): [LodgingCmAssignment!]!
     completeLodgingCmAssignment(id: Int!): LodgingCmAssignment!
 
     createLodgingReservation(
@@ -4218,6 +4230,165 @@ export function createLodgingResolvers({
         return prisma.lodging_cm_assignment.findUnique({
           where: { id: updated.id },
           include: { room: true },
+        });
+      },
+
+      syncLodgingCmOpenAssignees: async (
+        _,
+        { roomId, workKind, assigneeNames, notes, statusExpectedEndAt },
+        context,
+      ) => {
+        await assertCmPortal(context);
+        const room = await loadRoomOrThrow(
+          prisma,
+          context,
+          roomId,
+          tenantHotelReadMatches,
+        );
+        const wk = String(workKind || "").trim().toLowerCase();
+        if (!CM_WORK_KINDS.has(wk)) throw new Error("Invalid workKind");
+        const roomStatus = String(room.status || "").toLowerCase();
+        if (wk === "cleaning" && roomStatus !== "vacant_dirty") {
+          throw new Error(
+            "Cleaning assignees can only be edited while the room is vacant dirty",
+          );
+        }
+        if (wk === "maintenance" && roomStatus !== "on_maintenance") {
+          throw new Error(
+            "Maintenance assignees can only be edited while the room is on maintenance",
+          );
+        }
+
+        const desired = Array.isArray(assigneeNames)
+          ? [
+              ...new Set(
+                assigneeNames
+                  .map((n) => String(n ?? "").trim())
+                  .filter(Boolean),
+              ),
+            ]
+          : [];
+        if (desired.length === 0) {
+          throw new Error("At least one assignee is required");
+        }
+
+        const openRows = await prisma.lodging_cm_assignment.findMany({
+          where: {
+            roomId: room.id,
+            workKind: wk,
+            status: "open",
+            HotelName: room.HotelName,
+          },
+          orderBy: { id: "asc" },
+        });
+        if (openRows.length === 0) {
+          throw new Error("No open assignments to edit for this room");
+        }
+
+        const { actorName, actorRole } = actorFromContext(context);
+        const note =
+          notes != null ? String(notes).trim() : openRows[0]?.notes || "";
+        const desiredKey = new Map(
+          desired.map((n) => [n.toLowerCase(), n]),
+        );
+        const keptIds = [];
+        const cancelledNames = [];
+        const addedNames = [];
+
+        for (const row of openRows) {
+          const key = String(row.assigneeName || "")
+            .trim()
+            .toLowerCase();
+          if (desiredKey.has(key)) {
+            const canonical = desiredKey.get(key);
+            const data = {};
+            if (canonical && canonical !== row.assigneeName) {
+              data.assigneeName = canonical;
+            }
+            if (notes != null && note !== row.notes) {
+              data.notes = note;
+            }
+            if (Object.keys(data).length > 0) {
+              await prisma.lodging_cm_assignment.update({
+                where: { id: row.id },
+                data,
+              });
+            }
+            keptIds.push(row.id);
+            desiredKey.delete(key);
+          } else {
+            await prisma.lodging_cm_assignment.update({
+              where: { id: row.id },
+              data: {
+                status: "cancelled",
+                completedBy: actorName,
+                completedAt: new Date(),
+              },
+            });
+            cancelledNames.push(row.assigneeName);
+          }
+        }
+
+        for (const name of desiredKey.values()) {
+          const created = await prisma.lodging_cm_assignment.create({
+            data: {
+              HotelName: room.HotelName,
+              roomId: room.id,
+              workKind: wk,
+              assigneeName: name,
+              notes: note,
+              status: "open",
+              assignedBy: actorName,
+            },
+          });
+          keptIds.push(created.id);
+          addedNames.push(name);
+        }
+
+        if (statusExpectedEndAt !== undefined) {
+          const endAt =
+            statusExpectedEndAt == null || statusExpectedEndAt === ""
+              ? null
+              : new Date(statusExpectedEndAt);
+          if (endAt && Number.isNaN(endAt.getTime())) {
+            throw new Error("Invalid expected ready date");
+          }
+          await prisma.lodging_room.update({
+            where: { id: room.id },
+            data: {
+              statusExpectedEndAt: endAt,
+              ...(wk === "maintenance" ? { maintenanceUntil: endAt } : {}),
+              updatedBy: actorName,
+            },
+          });
+        }
+
+        await logLodgingAction(prisma, {
+          HotelName: room.HotelName,
+          actorRole,
+          actorName,
+          action: "sync_cm_open_assignees",
+          entityType: "lodging_room",
+          entityId: room.id,
+          detail: {
+            roomId: room.id,
+            workKind: wk,
+            assigneeNames: desired,
+            addedNames,
+            cancelledNames,
+            statusExpectedEndAt:
+              statusExpectedEndAt === undefined
+                ? undefined
+                : statusExpectedEndAt == null || statusExpectedEndAt === ""
+                  ? null
+                  : String(statusExpectedEndAt),
+          },
+        });
+
+        return prisma.lodging_cm_assignment.findMany({
+          where: { id: { in: keptIds }, status: "open" },
+          include: { room: true },
+          orderBy: { id: "asc" },
         });
       },
 
