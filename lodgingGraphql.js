@@ -2682,20 +2682,6 @@ export function createLodgingResolvers({
           : [];
         if (ids.length === 0) throw new Error("At least one room is required");
 
-        const rooms = await prisma.lodging_room.findMany({
-          where: { id: { in: ids }, ...tenantHotelReadWhere(context) },
-        });
-        if (rooms.length !== ids.length) {
-          throw new Error("One or more rooms not found");
-        }
-        for (const r of rooms) {
-          if (r.status !== "vacant_clean") {
-            throw new Error(
-              `Room ${r.roomNumber} must be vacant and clean to assign (current: ${r.status})`,
-            );
-          }
-        }
-
         let linkedReservation = null;
         if (reservationId != null) {
           linkedReservation = await prisma.lodging_reservation.findUnique({
@@ -2715,6 +2701,28 @@ export function createLodgingResolvers({
           ) {
             throw new Error("Reservation cannot be checked in");
           }
+        }
+
+        const heldRoomIds = new Set(
+          (linkedReservation?.rooms || [])
+            .map((rr) => Number(rr.roomId))
+            .filter((n) => n > 0),
+        );
+
+        const rooms = await prisma.lodging_room.findMany({
+          where: { id: { in: ids }, ...tenantHotelReadWhere(context) },
+        });
+        if (rooms.length !== ids.length) {
+          throw new Error("One or more rooms not found");
+        }
+        for (const r of rooms) {
+          const st = String(r.status || "");
+          if (st === "vacant_clean") continue;
+          // This reservation's own holds may still be "reserved" until check-in.
+          if (st === "reserved" && heldRoomIds.has(r.id)) continue;
+          throw new Error(
+            `Room ${r.roomNumber} is not available for check-in (current: ${r.status}). Reserved rooms stay held for their booking until cancelled or checked in.`,
+          );
         }
 
         let guest;
@@ -5323,6 +5331,7 @@ export function createLodgingResolvers({
             where: { id: row.id },
             data: { status: next, updatedBy: actorName },
           });
+          // Release held inventory so rooms can be reserved or checked in again.
           for (const rr of row.rooms || []) {
             if (!rr.roomId) continue;
             const held = await tx.lodging_room.findUnique({
@@ -5343,7 +5352,12 @@ export function createLodgingResolvers({
           action: asNoShow ? "reservation_no_show" : "cancel_reservation",
           entityType: "lodging_reservation",
           entityId: row.id,
-          detail: { status: next },
+          detail: {
+            status: next,
+            releasedRoomIds: (row.rooms || [])
+              .map((rr) => rr.roomId)
+              .filter(Boolean),
+          },
         });
         return prisma.lodging_reservation.findUnique({
           where: { id: row.id },
