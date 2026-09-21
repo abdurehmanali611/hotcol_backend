@@ -2093,6 +2093,9 @@ export function createLodgingResolvers({
           const s = String(status).trim();
           if (!RESERVATION_STATUSES.has(s)) throw new Error("Invalid status");
           where.status = s;
+        } else {
+          // Active board: cancelled bookings are removed from the list.
+          where.status = { not: "cancelled" };
         }
         if (from || to) {
           where.arrivalAt = {};
