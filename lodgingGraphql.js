@@ -85,6 +85,12 @@ export const lodgingTypeDefsBlock = `
     updatedBy: String!
   }
 
+  type LodgingDateFit {
+    ok: Boolean!
+    message: String!
+    maxNights: Int
+  }
+
   type LodgingGuest {
     id: Int!
     HotelName: String!
@@ -418,7 +424,18 @@ export const lodgingQueryFields = `
     lodgingRooms: [LodgingRoom!]!
     lodgingRoomsByStatus(status: String!): [LodgingRoom!]!
     lodgingCmQueue: [LodgingRoom!]!
-    lodgingHoldableRooms(arrivalAt: DateTime!): [LodgingRoom!]!
+    lodgingHoldableRooms(
+      arrivalAt: DateTime!
+      nights: Int
+      excludeReservationId: Int
+    ): [LodgingRoom!]!
+    """Explain whether a room fits arrival+nights with the one-day cleaning gap rule."""
+    lodgingRoomDateFit(
+      roomId: Int!
+      arrivalAt: DateTime!
+      nights: Int!
+      excludeReservationId: Int
+    ): LodgingDateFit!
     lodgingGuests(search: String): [LodgingGuest!]!
     lodgingGuest(id: Int!): LodgingGuest
     lodgingActiveStays: [LodgingStay!]!
@@ -1609,31 +1626,398 @@ function endOfLocalDay(d) {
   return x;
 }
 
-/** Rooms that can be held for a future reservation arrival. */
-async function findHoldableRooms(prisma, context, arrivalAt, tenantHotelReadWhere) {
+const MS_DAY = 24 * 60 * 60 * 1000;
+
+function dayTime(d) {
+  return startOfLocalDay(d).getTime();
+}
+
+function formatDayLabel(d) {
+  const x = startOfLocalDay(d);
+  const dd = String(x.getDate()).padStart(2, "0");
+  const mm = String(x.getMonth() + 1).padStart(2, "0");
+  const yyyy = x.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+/**
+ * One-day cleaning gap between stays.
+ * Checkout morning of earlier stay + 1 calendar day ≤ later arrival
+ * (e.g. last night 21/09 → checkout 22/09 → next arrival 23/09).
+ */
+function staysHaveOneDayGap(arrA, depA, arrB, depB) {
+  const a0 = dayTime(arrA);
+  const a1 = dayTime(depA);
+  const b0 = dayTime(arrB);
+  const b1 = dayTime(depB);
+  if (a1 + MS_DAY <= b0) return true;
+  if (b1 + MS_DAY <= a0) return true;
+  return false;
+}
+
+function staysConflictWithGap(arrA, depA, arrB, depB) {
+  return !staysHaveOneDayGap(arrA, depA, arrB, depB);
+}
+
+const OPEN_RESERVATION_STATUSES = ["tentative", "confirmed"];
+
+/**
+ * Blocking intervals for rooms: in-house stays + open reservation holds.
+ * @returns Map<roomId, Array<{ kind, label, arrival, departure, roomNumber }>>
+ */
+async function loadRoomBlockingIntervals(
+  prisma,
+  context,
+  roomIds,
+  tenantHotelReadWhere,
+  opts = {},
+) {
+  const ids = [...new Set((roomIds || []).map((n) => Number(n)).filter((n) => n > 0))];
+  const map = new Map();
+  for (const id of ids) map.set(id, []);
+  if (!ids.length) return map;
+
+  const scope = tenantHotelReadWhere(context);
+  const excludeReservationId =
+    opts.excludeReservationId != null
+      ? Number(opts.excludeReservationId)
+      : null;
+  const excludeStayId =
+    opts.excludeStayId != null ? Number(opts.excludeStayId) : null;
+
+  const stayLinks = await prisma.lodging_stay_room.findMany({
+    where: {
+      roomId: { in: ids },
+      stay: {
+        ...scope,
+        status: "checked_in",
+        ...(excludeStayId ? { id: { not: excludeStayId } } : {}),
+      },
+    },
+    include: {
+      stay: true,
+      room: { select: { roomNumber: true } },
+    },
+  });
+
+  for (const link of stayLinks) {
+    const stay = link.stay;
+    if (!stay) continue;
+    const arrival = stay.arrivalAt || stay.reservedArrivalAt;
+    const departure =
+      stay.expectedDepartureAt || stay.departureAt || addDays(arrival, 1);
+    if (!arrival || !departure) continue;
+    const list = map.get(link.roomId) || [];
+    list.push({
+      kind: "checked_in",
+      label: "in-house guest",
+      arrival: new Date(arrival),
+      departure: new Date(departure),
+      roomNumber: link.room?.roomNumber || String(link.roomId),
+    });
+    map.set(link.roomId, list);
+  }
+
+  const resLinks = await prisma.lodging_reservation_room.findMany({
+    where: {
+      roomId: { in: ids },
+      reservation: {
+        ...scope,
+        status: { in: OPEN_RESERVATION_STATUSES },
+        ...(excludeReservationId
+          ? { id: { not: excludeReservationId } }
+          : {}),
+      },
+    },
+    include: {
+      reservation: true,
+      room: { select: { roomNumber: true } },
+    },
+  });
+
+  for (const link of resLinks) {
+    const res = link.reservation;
+    if (!res) continue;
+    const arrival = res.arrivalAt;
+    const departure =
+      res.departureAt || addDays(arrival, Math.max(1, Number(res.nights) || 1));
+    if (!arrival || !departure) continue;
+    const list = map.get(link.roomId) || [];
+    list.push({
+      kind: "reservation",
+      label: `reservation ${res.reservationCode || res.id}`,
+      arrival: new Date(arrival),
+      departure: new Date(departure),
+      roomNumber: link.room?.roomNumber || String(link.roomId),
+    });
+    map.set(link.roomId, list);
+  }
+
+  return map;
+}
+
+function maxNightsBeforeBlock(arrival, blockArrival) {
+  // Last allowed checkout = blockArrival - 1 day (gap day before block).
+  const maxDep = startOfLocalDay(blockArrival);
+  maxDep.setDate(maxDep.getDate() - 1);
+  const nights = nightsFromArrivalDeparture(arrival, maxDep);
+  // nightsFromArrivalDeparture returns min 1 even if invalid — check dates.
+  if (dayTime(maxDep) <= dayTime(arrival)) {
+    // checkout must be after arrival; if maxDep <= arrival, zero nights fit
+    if (dayTime(maxDep) < dayTime(arrival)) return 0;
+    // maxDep === arrival means 0-length — not a valid stay
+    return 0;
+  }
+  return nights;
+}
+
+function maxNightsAfterBlock(arrival, blockDeparture) {
+  // Earliest arrival after block = blockDeparture + 1 day.
+  // If our arrival is already after that, nights unlimited by this block alone
+  // (other blocks may still apply). This helper is for messaging when arrival
+  // is too early.
+  const earliest = startOfLocalDay(blockDeparture);
+  earliest.setDate(earliest.getDate() + 1);
+  if (dayTime(arrival) < dayTime(earliest)) return null; // arrival too early
+  return null;
+}
+
+function describeRoomDateConflict(roomNumber, arrival, departure, blocks) {
+  const arr = startOfLocalDay(arrival);
+  const dep = startOfLocalDay(departure);
+  for (const b of blocks) {
+    if (!staysConflictWithGap(arr, dep, b.arrival, b.departure)) continue;
+    const bArr = startOfLocalDay(b.arrival);
+    const bDep = startOfLocalDay(b.departure);
+
+    if (dayTime(dep) <= dayTime(bArr) || dayTime(arr) < dayTime(bArr)) {
+      // Proposed stay is before or overlapping the block from the front
+      const maxN = maxNightsBeforeBlock(arr, bArr);
+      const lastCheckout = startOfLocalDay(bArr);
+      lastCheckout.setDate(lastCheckout.getDate() - 1);
+      if (maxN < 1) {
+        return {
+          ok: false,
+          maxNights: 0,
+          message: `Room ${roomNumber} is held by an ${b.label} arriving ${formatDayLabel(bArr)}. Leave a one-day cleaning gap — this arrival is too close (need arrival on or after ${formatDayLabel(addDays(bDep, 1))} or a stay that checks out by ${formatDayLabel(lastCheckout)}).`,
+        };
+      }
+      return {
+        ok: false,
+        maxNights: maxN,
+        message: `Room ${roomNumber} has an ${b.label} arriving ${formatDayLabel(bArr)}. Leave a one-day cleaning gap — use at most ${maxN} night(s) (checkout by ${formatDayLabel(lastCheckout)}).`,
+      };
+    }
+
+    // Proposed stay is after the block but too close / overlapping
+    const earliestNext = startOfLocalDay(bDep);
+    earliestNext.setDate(earliestNext.getDate() + 1);
+    return {
+      ok: false,
+      maxNights: null,
+      message: `Room ${roomNumber} has an ${b.label} until ${formatDayLabel(bDep)}. Leave a one-day cleaning gap — earliest arrival is ${formatDayLabel(earliestNext)}.`,
+    };
+  }
+  return { ok: true, message: "", maxNights: null };
+}
+
+function evaluateRoomDateFit(room, arrivalAt, nights, blocks) {
+  const st = String(room.status || "");
+  if (
+    st === "out_of_order" ||
+    st === "out_of_service" ||
+    st === "blocked"
+  ) {
+    return {
+      ok: false,
+      message: `Room ${room.roomNumber} is ${st.replace(/_/g, " ")}`,
+      maxNights: 0,
+    };
+  }
+  const nightsN = Math.max(1, Math.floor(Number(nights) || 1));
+  const arrival = startOfLocalDay(arrivalAt);
+  const departure = addDays(arrival, nightsN);
+
+  if (st === "vacant_dirty" || st === "on_maintenance") {
+    const end = room.statusExpectedEndAt || room.maintenanceUntil || null;
+    if (!end) {
+      return {
+        ok: false,
+        message: `Room ${room.roomNumber} is ${st.replace(/_/g, " ")} with no expected end date`,
+        maxNights: 0,
+      };
+    }
+    if (dayTime(end) >= dayTime(arrival)) {
+      return {
+        ok: false,
+        message: `Room ${room.roomNumber} remains ${st.replace(/_/g, " ")} until ${formatDayLabel(end)}`,
+        maxNights: 0,
+      };
+    }
+  }
+
+  // Occupied: never allow check-in now; reservations only after departure + gap
+  // (handled by blocking intervals from the in-house stay).
+
+  return describeRoomDateConflict(
+    room.roomNumber,
+    arrival,
+    departure,
+    blocks || [],
+  );
+}
+
+/**
+ * Rooms that can be held / used for arrival + nights with a one-day cleaning gap
+ * vs in-house stays and other open reservations.
+ */
+async function findHoldableRooms(
+  prisma,
+  context,
+  arrivalAt,
+  tenantHotelReadWhere,
+  opts = {},
+) {
+  const nightsN = Math.max(1, Math.floor(Number(opts.nights) || 1));
   const arrival = startOfLocalDay(arrivalAt);
   const scope = tenantHotelReadWhere(context);
   const rooms = await prisma.lodging_room.findMany({
     where: {
       ...scope,
       status: {
-        notIn: ["out_of_order", "out_of_service", "blocked", "occupied", "reserved"],
+        notIn: ["out_of_order", "out_of_service", "blocked"],
       },
     },
     orderBy: [{ floor: "asc" }, { roomNumber: "asc" }],
   });
-  return rooms.filter((r) => {
+
+  const candidates = rooms.filter((r) => {
     if (r.status === "vacant_clean" || r.status === "inspected") return true;
+    if (r.status === "reserved" || r.status === "occupied") return true;
     if (r.status === "vacant_dirty" || r.status === "on_maintenance") {
-      const end =
-        r.statusExpectedEndAt ||
-        r.maintenanceUntil ||
-        null;
+      const end = r.statusExpectedEndAt || r.maintenanceUntil || null;
       if (!end) return false;
-      return startOfLocalDay(end).getTime() < arrival.getTime();
+      return dayTime(end) < dayTime(arrival);
     }
     return false;
   });
+
+  const blocksByRoom = await loadRoomBlockingIntervals(
+    prisma,
+    context,
+    candidates.map((r) => r.id),
+    tenantHotelReadWhere,
+    {
+      excludeReservationId: opts.excludeReservationId,
+      excludeStayId: opts.excludeStayId,
+    },
+  );
+
+  return candidates.filter((r) => {
+    const fit = evaluateRoomDateFit(
+      r,
+      arrival,
+      nightsN,
+      blocksByRoom.get(r.id) || [],
+    );
+    return fit.ok;
+  });
+}
+
+async function assertRoomsFitDates(
+  prisma,
+  context,
+  rooms,
+  arrivalAt,
+  nights,
+  tenantHotelReadWhere,
+  opts = {},
+) {
+  const ids = rooms.map((r) => r.id);
+  const blocksByRoom = await loadRoomBlockingIntervals(
+    prisma,
+    context,
+    ids,
+    tenantHotelReadWhere,
+    opts,
+  );
+  for (const r of rooms) {
+    if (opts.forCheckIn && String(r.status || "") === "occupied") {
+      throw new Error(
+        `Room ${r.roomNumber} is occupied — priority stays with the in-house guest`,
+      );
+    }
+    const fit = evaluateRoomDateFit(
+      r,
+      arrivalAt,
+      nights,
+      blocksByRoom.get(r.id) || [],
+    );
+    if (!fit.ok) {
+      throw new Error(fit.message || `Room ${r.roomNumber} is not available`);
+    }
+  }
+}
+
+/** After hold/release/check-in, set reserved vs vacant_clean vs occupied correctly. */
+async function reconcileRoomHoldStatus(tx, roomId, actorName) {
+  const room = await tx.lodging_room.findUnique({ where: { id: roomId } });
+  if (!room) return;
+  const st = String(room.status || "");
+  if (
+    st === "out_of_order" ||
+    st === "out_of_service" ||
+    st === "blocked" ||
+    st === "on_maintenance" ||
+    st === "vacant_dirty"
+  ) {
+    return;
+  }
+
+  const activeStay = await tx.lodging_stay_room.findFirst({
+    where: { roomId, stay: { status: "checked_in" } },
+    select: { id: true },
+  });
+  if (activeStay) {
+    if (st !== "occupied") {
+      await tx.lodging_room.update({
+        where: { id: roomId },
+        data: {
+          status: "occupied",
+          maintenanceUntil: null,
+          statusExpectedEndAt: null,
+          updatedBy: actorName,
+        },
+      });
+    }
+    return;
+  }
+
+  const activeHold = await tx.lodging_reservation_room.findFirst({
+    where: {
+      roomId,
+      reservation: { status: { in: OPEN_RESERVATION_STATUSES } },
+    },
+    select: { id: true },
+  });
+  if (activeHold) {
+    if (st === "vacant_clean" || st === "inspected" || st === "reserved") {
+      if (st !== "reserved") {
+        await tx.lodging_room.update({
+          where: { id: roomId },
+          data: { status: "reserved", updatedBy: actorName },
+        });
+      }
+    }
+    return;
+  }
+
+  if (st === "reserved") {
+    await tx.lodging_room.update({
+      where: { id: roomId },
+      data: { status: "vacant_clean", updatedBy: actorName },
+    });
+  }
 }
 
 function normalizeFulfillmentStatus(raw) {
@@ -1822,7 +2206,11 @@ export function createLodgingResolvers({
         return rooms.filter((r) => !busy.has(r.id));
       },
 
-      lodgingHoldableRooms: async (_, { arrivalAt }, context) => {
+      lodgingHoldableRooms: async (
+        _,
+        { arrivalAt, nights, excludeReservationId },
+        context,
+      ) => {
         assertReceptionOrManager(context);
         const arrival = new Date(arrivalAt);
         if (Number.isNaN(arrival.getTime())) throw new Error("Invalid arrivalAt");
@@ -1831,6 +2219,47 @@ export function createLodgingResolvers({
           context,
           arrival,
           tenantHotelReadWhere,
+          {
+            nights: nights != null ? Number(nights) : 1,
+            excludeReservationId:
+              excludeReservationId != null
+                ? Number(excludeReservationId)
+                : null,
+          },
+        );
+      },
+
+      lodgingRoomDateFit: async (
+        _,
+        { roomId, arrivalAt, nights, excludeReservationId },
+        context,
+      ) => {
+        assertReceptionOrManager(context);
+        const arrival = new Date(arrivalAt);
+        if (Number.isNaN(arrival.getTime())) throw new Error("Invalid arrivalAt");
+        const nightsN = Math.max(1, Math.floor(Number(nights) || 1));
+        const room = await prisma.lodging_room.findUnique({
+          where: { id: Number(roomId) },
+        });
+        if (!room || !tenantHotelReadMatches(context, room.HotelName)) {
+          return {
+            ok: false,
+            message: "Room not found",
+            maxNights: 0,
+          };
+        }
+        const blocksByRoom = await loadRoomBlockingIntervals(
+          prisma,
+          context,
+          [room.id],
+          tenantHotelReadWhere,
+          { excludeReservationId },
+        );
+        return evaluateRoomDateFit(
+          room,
+          arrival,
+          nightsN,
+          blocksByRoom.get(room.id) || [],
         );
       },
 
@@ -2780,13 +3209,34 @@ export function createLodgingResolvers({
         }
         for (const r of rooms) {
           const st = String(r.status || "");
-          if (st === "vacant_clean") continue;
-          // This reservation's own holds may still be "reserved" until check-in.
-          if (st === "reserved" && heldRoomIds.has(r.id)) continue;
-          throw new Error(
-            `Room ${r.roomNumber} is not available for check-in (current: ${r.status}). Reserved rooms stay held for their booking until cancelled or checked in.`,
-          );
+          if (st === "occupied") {
+            throw new Error(
+              `Room ${r.roomNumber} is occupied — priority stays with the in-house guest`,
+            );
+          }
+          if (
+            st === "out_of_order" ||
+            st === "out_of_service" ||
+            st === "blocked"
+          ) {
+            throw new Error(
+              `Room ${r.roomNumber} is not available for check-in (current: ${st})`,
+            );
+          }
         }
+        await assertRoomsFitDates(
+          prisma,
+          context,
+          rooms,
+          arrival,
+          nightsN,
+          tenantHotelReadWhere,
+          {
+            forCheckIn: true,
+            excludeReservationId: linkedReservation?.id ?? null,
+            heldRoomIds,
+          },
+        );
 
         let guest;
         if (guestId != null) {
@@ -2917,26 +3367,15 @@ export function createLodgingResolvers({
           }
 
           if (linkedReservation) {
-            for (const rr of linkedReservation.rooms || []) {
-              if (rr.roomId && !ids.includes(rr.roomId)) {
-                const held = await tx.lodging_room.findUnique({
-                  where: { id: rr.roomId },
-                });
-                if (held && held.status === "reserved") {
-                  await tx.lodging_room.update({
-                    where: { id: held.id },
-                    data: {
-                      status: "vacant_clean",
-                      updatedBy: actorName,
-                    },
-                  });
-                }
-              }
-            }
             await tx.lodging_reservation.update({
               where: { id: linkedReservation.id },
               data: { status: "checked_in", updatedBy: actorName },
             });
+            for (const rr of linkedReservation.rooms || []) {
+              if (rr.roomId && !ids.includes(rr.roomId)) {
+                await reconcileRoomHoldStatus(tx, rr.roomId, actorName);
+              }
+            }
           }
 
           const bill = await tx.lodging_bill.create({
@@ -5334,12 +5773,33 @@ export function createLodgingResolvers({
           context,
           arrival,
           tenantHotelReadWhere,
+          { nights: nightsN },
         );
         const holdableIds = new Set(holdable.map((r) => r.id));
         for (const id of ids) {
           if (!holdableIds.has(id)) {
+            const room = await prisma.lodging_room.findUnique({
+              where: { id },
+            });
+            if (!room || !tenantHotelReadMatches(context, room.HotelName)) {
+              throw new Error(`Room ${id} is not holdable for this arrival date`);
+            }
+            const blocksByRoom = await loadRoomBlockingIntervals(
+              prisma,
+              context,
+              [id],
+              tenantHotelReadWhere,
+              {},
+            );
+            const fit = evaluateRoomDateFit(
+              room,
+              arrival,
+              nightsN,
+              blocksByRoom.get(id) || [],
+            );
             throw new Error(
-              `Room ${id} is not holdable for this arrival date`,
+              fit.message ||
+                `Room ${room.roomNumber} is not holdable for this arrival and nights`,
             );
           }
         }
@@ -5397,11 +5857,14 @@ export function createLodgingResolvers({
                 roomType: room?.roomType || "",
               },
             });
+            // Mark reserved only when vacant; leave occupied/dirty as-is.
             if (room?.status === "vacant_clean" || room?.status === "inspected") {
               await tx.lodging_room.update({
                 where: { id },
                 data: { status: "reserved", updatedBy: actorName },
               });
+            } else if (room?.status === "reserved") {
+              // Already held by another date-range booking — keep reserved.
             }
           }
           if (!ids.length && preferredRoomType) {
@@ -5535,28 +5998,31 @@ export function createLodgingResolvers({
             data,
           });
           if (Array.isArray(roomIds)) {
-            for (const rr of row.rooms || []) {
-              if (rr.roomId) {
-                const held = await tx.lodging_room.findUnique({
-                  where: { id: rr.roomId },
-                });
-                if (held?.status === "reserved") {
-                  await tx.lodging_room.update({
-                    where: { id: rr.roomId },
-                    data: { status: "vacant_clean", updatedBy: actorName },
-                  });
-                }
-              }
-            }
+            const previousRoomIds = (row.rooms || [])
+              .map((rr) => rr.roomId)
+              .filter((id) => id != null && Number(id) > 0)
+              .map(Number);
             await tx.lodging_reservation_room.deleteMany({
               where: { reservationId: row.id },
             });
+            for (const rid of previousRoomIds) {
+              await reconcileRoomHoldStatus(tx, rid, actorName);
+            }
             const arrival = data.arrivalAt || row.arrivalAt;
+            const nightsForHold = Math.max(
+              1,
+              Math.floor(
+                Number(
+                  data.nights != null ? data.nights : row.nights,
+                ) || 1,
+              ),
+            );
             const holdable = await findHoldableRooms(
               prisma,
               context,
               arrival,
               tenantHotelReadWhere,
+              { nights: nightsForHold, excludeReservationId: row.id },
             );
             const holdableIds = new Set(holdable.map((r) => r.id));
             const ids = [
@@ -5564,7 +6030,24 @@ export function createLodgingResolvers({
             ];
             for (const rid of ids) {
               if (!holdableIds.has(rid)) {
-                throw new Error(`Room ${rid} is not holdable`);
+                const room = await prisma.lodging_room.findUnique({
+                  where: { id: rid },
+                });
+                if (!room) throw new Error(`Room ${rid} is not holdable`);
+                const blocksByRoom = await loadRoomBlockingIntervals(
+                  prisma,
+                  context,
+                  [rid],
+                  tenantHotelReadWhere,
+                  { excludeReservationId: row.id },
+                );
+                const fit = evaluateRoomDateFit(
+                  room,
+                  arrival,
+                  nightsForHold,
+                  blocksByRoom.get(rid) || [],
+                );
+                throw new Error(fit.message || `Room ${rid} is not holdable`);
               }
               const room = holdable.find((r) => r.id === rid);
               await tx.lodging_reservation_room.create({
@@ -5625,15 +6108,7 @@ export function createLodgingResolvers({
           // Release held inventory so rooms can be reserved or checked in again.
           for (const rr of row.rooms || []) {
             if (!rr.roomId) continue;
-            const held = await tx.lodging_room.findUnique({
-              where: { id: rr.roomId },
-            });
-            if (held?.status === "reserved") {
-              await tx.lodging_room.update({
-                where: { id: rr.roomId },
-                data: { status: "vacant_clean", updatedBy: actorName },
-              });
-            }
+            await reconcileRoomHoldStatus(tx, rr.roomId, actorName);
           }
         });
         await logLodgingAction(prisma, {
