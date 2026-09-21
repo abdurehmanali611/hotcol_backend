@@ -599,6 +599,12 @@ export const lodgingMutationFields = `
       assigneeName: String!
       note: String
     ): LodgingRoom!
+    """Update assignee / note on an existing complimentary staff room."""
+    updateLodgingComplimentRoom(
+      roomId: Int!
+      assigneeName: String!
+      note: String
+    ): LodgingRoom!
     """Release a complimentary staff room back to inventory."""
     releaseLodgingComplimentRoom(roomId: Int!): LodgingRoom!
     createLodgingCmAssignments(
@@ -4208,6 +4214,58 @@ export function createLodgingResolvers({
           actorRole,
           actorName,
           action: "assign_compliment_room",
+          entityType: "lodging_room",
+          entityId: room.id,
+          detail: {
+            roomNumber: room.roomNumber,
+            assignee,
+            note: noteText,
+          },
+        });
+        return updated;
+      },
+
+      updateLodgingComplimentRoom: async (
+        _,
+        { roomId, assigneeName, note },
+        context,
+      ) => {
+        assertAdminOrManager(context);
+        const room = await loadRoomOrThrow(
+          prisma,
+          context,
+          roomId,
+          tenantHotelReadMatches,
+        );
+        const rawNotes = String(room.notes || "");
+        if (!rawNotes.startsWith("COMPLIMENT|")) {
+          throw new Error("This room is not a complimentary staff assignment");
+        }
+        const assignee = String(assigneeName ?? "").trim();
+        if (!assignee) throw new Error("Assignee name is required");
+        const rest = rawNotes.slice("COMPLIMENT|".length);
+        const parts = rest.split("|");
+        const prevAssignedBy = String(parts[1] || "").trim() || "Manager";
+        const prevAssignedAt =
+          String(parts[2] || "").trim() || new Date().toISOString();
+        const { actorName, actorRole } = actorFromContext(context);
+        const noteText = String(note ?? "").trim().replace(/\|/g, "/");
+        const notes = `COMPLIMENT|${assignee}|${prevAssignedBy}|${prevAssignedAt}|${noteText}`;
+        const updated = await prisma.lodging_room.update({
+          where: { id: room.id },
+          data: {
+            status: "blocked",
+            notes,
+            maintenanceUntil: null,
+            statusExpectedEndAt: null,
+            updatedBy: actorName,
+          },
+        });
+        await logLodgingAction(prisma, {
+          HotelName: room.HotelName,
+          actorRole,
+          actorName,
+          action: "update_compliment_room",
           entityType: "lodging_room",
           entityId: room.id,
           detail: {
