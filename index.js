@@ -3975,8 +3975,42 @@ const resolvers = {
         where: { UserName: String(UserName).trim() },
       });
       if (!user) throw new Error("No user found in this account");
-      const valid = await bcrypt.compare(Password, user.Password);
-      if (!valid) throw new Error("Invalid Password");
+
+      let receptionistId = null;
+      let receptionistName = "";
+      const deskPasswordOk = await bcrypt.compare(Password, user.Password);
+
+      if (String(user.Role || "") === "Reception") {
+        const receptionists = await prisma.lodging_receptionist.findMany({
+          where: { HotelName: user.HotelName, isActive: true },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            passwordHash: true,
+          },
+        });
+        let matched = null;
+        for (const r of receptionists) {
+          // eslint-disable-next-line no-await-in-loop
+          if (await bcrypt.compare(Password, r.passwordHash)) {
+            matched = r;
+            break;
+          }
+        }
+        if (matched) {
+          receptionistId = matched.id;
+          receptionistName =
+            `${matched.firstName || ""} ${matched.lastName || ""}`.trim();
+        } else if (!deskPasswordOk) {
+          throw new Error("Invalid Password");
+        } else if (receptionists.length > 0) {
+          // Desk password still works for bootstrap, but prefer receptionist passwords.
+          // Allow desk login when no receptionist password matched.
+        }
+      } else if (!deskPasswordOk) {
+        throw new Error("Invalid Password");
+      }
 
       if (user.loginDisabled) {
         throw new Error(
@@ -4063,6 +4097,9 @@ const resolvers = {
           tenantId,
           businessType: user.businessType ?? null,
           accessMode: loginAccess.accessMode,
+          ...(receptionistId != null
+            ? { receptionistId, receptionistName }
+            : {}),
         },
         JWT_Secret,
         { expiresIn: JWT_EXPIRES_IN },

@@ -4,6 +4,7 @@
  */
 
 import { issueUniqueGuestOtp, clearGuestOtp } from "./lib/guestOtp.js";
+import bcrypt from "bcryptjs";
 
 const ROOM_STATUSES = new Set([
   "vacant_dirty",
@@ -268,9 +269,22 @@ export const lodgingTypeDefsBlock = `
     status: String!
     closedAt: DateTime
     closedBy: String!
+    receptionistId: Int
+    receptionistName: String!
     summaryJson: String!
     createdAt: DateTime!
     updatedAt: DateTime!
+  }
+
+  type LodgingReceptionist {
+    id: Int!
+    HotelName: String!
+    firstName: String!
+    lastName: String!
+    isActive: Boolean!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    updatedBy: String!
   }
 
   type LodgingRatePlan {
@@ -468,6 +482,7 @@ export const lodgingQueryFields = `
     lodgingPerformanceReport(fromDate: String!, toDate: String!): LodgingPerformanceReport!
     lodgingBusinessDay(businessDate: String): LodgingBusinessDay
     lodgingBusinessDays(limit: Int): [LodgingBusinessDay!]!
+    lodgingReceptionists(includeInactive: Boolean): [LodgingReceptionist!]!
     lodgingGuestComplaints(status: String, limit: Int): [LodgingGuestComplaint!]!
     lodgingGuestComplaintHistory(guestId: Int!, limit: Int): [LodgingGuestComplaint!]!
     lodgingGuestRatings(limit: Int): [LodgingGuestRating!]!
@@ -734,6 +749,7 @@ export const lodgingMutationFields = `
       toAt: DateTime!
       label: String
       id: Int
+      receptionistId: Int
     ): LodgingBusinessDay!
     openLodgingBusinessDay(
       fromAt: DateTime!
@@ -741,6 +757,16 @@ export const lodgingMutationFields = `
       label: String
       businessDate: String
     ): LodgingBusinessDay!
+    """Batch-create named receptionists (shared Reception username, unique passwords)."""
+    createLodgingReceptionists(linesJson: String!): [LodgingReceptionist!]!
+    updateLodgingReceptionist(
+      id: Int!
+      firstName: String
+      lastName: String
+      password: String
+      isActive: Boolean
+    ): LodgingReceptionist!
+    deleteLodgingReceptionist(id: Int!): Boolean!
     createLodgingRatePlan(
       name: String!
       code: String
@@ -809,10 +835,23 @@ export async function logLodgingAction(
 
 function actorFromContext(context) {
   const u = context?.user;
+  const receptionistName = String(u?.receptionistName ?? "").trim();
+  const receptionistIdRaw = u?.receptionistId;
+  const receptionistId =
+    receptionistIdRaw != null && Number.isFinite(Number(receptionistIdRaw))
+      ? Number(receptionistIdRaw)
+      : null;
   return {
     actorRole: String(u?.Role ?? u?.role ?? ""),
-    actorName: String(u?.UserName ?? u?.userName ?? ""),
+    actorName:
+      receptionistName || String(u?.UserName ?? u?.userName ?? ""),
+    receptionistId,
+    receptionistName,
   };
+}
+
+function receptionistDisplayName(row) {
+  return `${row.firstName || ""} ${row.lastName || ""}`.trim();
 }
 
 function requireTenant(context, tenantScopeFromContext) {
@@ -2862,6 +2901,18 @@ export function createLodgingResolvers({
           where: tenantHotelReadWhere(context),
           orderBy: [{ fromAt: "desc" }],
           take: Math.min(100, Math.max(1, Number(limit) || 30)),
+        });
+      },
+
+      lodgingReceptionists: async (_, { includeInactive }, context) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        return prisma.lodging_receptionist.findMany({
+          where: {
+            HotelName,
+            ...(includeInactive ? {} : { isActive: true }),
+          },
+          orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
         });
       },
 
@@ -6481,7 +6532,7 @@ export function createLodgingResolvers({
 
       closeLodgingBusinessDay: async (
         _,
-        { businessDate, fromAt, toAt, label, id },
+        { businessDate, fromAt, toAt, label, id, receptionistId },
         context,
       ) => {
         assertReceptionOrManager(context);
@@ -6527,20 +6578,51 @@ export function createLodgingResolvers({
           throw new Error("This shift is already closed");
         }
 
+        if (receptionistId == null) {
+          throw new Error("Select a receptionist for this night audit close");
+        }
+        const receptionist = await prisma.lodging_receptionist.findFirst({
+          where: {
+            id: Number(receptionistId),
+            HotelName,
+            isActive: true,
+          },
+        });
+        if (!receptionist) {
+          throw new Error("Receptionist not found or inactive");
+        }
+        const scopedReceptionistId = receptionist.id;
+        const receptionistName = receptionistDisplayName(receptionist);
+
         const [arrivals, departures, inHouse, noShows, openBills, roomRows, arrivalStays, departureStays, inHouseStays] =
           await Promise.all([
             prisma.lodging_stay.count({
-              where: { HotelName, arrivalAt: { gte: from, lte: to } },
+              where: {
+                HotelName,
+                arrivalAt: { gte: from, lte: to },
+                ...(receptionistName
+                  ? { checkedInBy: receptionistName }
+                  : {}),
+              },
             }),
             prisma.lodging_stay.count({
               where: {
                 HotelName,
                 status: "checked_out",
                 departureAt: { gte: from, lte: to },
+                ...(receptionistName
+                  ? { checkedOutBy: receptionistName }
+                  : {}),
               },
             }),
             prisma.lodging_stay.count({
-              where: { HotelName, status: "checked_in" },
+              where: {
+                HotelName,
+                status: "checked_in",
+                ...(receptionistName
+                  ? { checkedInBy: receptionistName }
+                  : {}),
+              },
             }),
             prisma.lodging_reservation.count({
               where: {
@@ -6565,7 +6647,13 @@ export function createLodgingResolvers({
               orderBy: [{ floor: "asc" }, { roomNumber: "asc" }],
             }),
             prisma.lodging_stay.findMany({
-              where: { HotelName, arrivalAt: { gte: from, lte: to } },
+              where: {
+                HotelName,
+                arrivalAt: { gte: from, lte: to },
+                ...(receptionistName
+                  ? { checkedInBy: receptionistName }
+                  : {}),
+              },
               include: {
                 guest: { select: { firstName: true, lastName: true } },
                 rooms: { include: { room: { select: { roomNumber: true } } } },
@@ -6577,6 +6665,9 @@ export function createLodgingResolvers({
                 HotelName,
                 status: "checked_out",
                 departureAt: { gte: from, lte: to },
+                ...(receptionistName
+                  ? { checkedOutBy: receptionistName }
+                  : {}),
               },
               include: {
                 guest: { select: { firstName: true, lastName: true } },
@@ -6585,7 +6676,13 @@ export function createLodgingResolvers({
               orderBy: { departureAt: "asc" },
             }),
             prisma.lodging_stay.findMany({
-              where: { HotelName, status: "checked_in" },
+              where: {
+                HotelName,
+                status: "checked_in",
+                ...(receptionistName
+                  ? { checkedInBy: receptionistName }
+                  : {}),
+              },
               include: {
                 guest: { select: { firstName: true, lastName: true } },
                 rooms: { include: { room: { select: { roomNumber: true } } } },
@@ -6620,6 +6717,8 @@ export function createLodgingResolvers({
           fromAt: from.toISOString(),
           toAt: to.toISOString(),
           closedAt: new Date().toISOString(),
+          receptionistId: scopedReceptionistId,
+          receptionistName,
           roomsByStatus,
           rooms: roomRows.map((r) => ({
             roomNumber: r.roomNumber,
@@ -6632,18 +6731,21 @@ export function createLodgingResolvers({
             guest: guestName(s),
             rooms: stayRooms(s),
             at: s.arrivalAt,
+            by: s.checkedInBy || "",
           })),
           departureRooms: departureStays.map((s) => ({
             voucherCode: s.voucherCode,
             guest: guestName(s),
             rooms: stayRooms(s),
             at: s.departureAt,
+            by: s.checkedOutBy || "",
           })),
           inHouseRooms: inHouseStays.map((s) => ({
             voucherCode: s.voucherCode,
             guest: guestName(s),
             rooms: stayRooms(s),
             arrivalAt: s.arrivalAt,
+            by: s.checkedInBy || "",
           })),
         };
 
@@ -6658,6 +6760,8 @@ export function createLodgingResolvers({
               status: "closed",
               closedAt: new Date(),
               closedBy: actorName,
+              receptionistId: scopedReceptionistId,
+              receptionistName,
               summaryJson: JSON.stringify(summary),
             },
           });
@@ -6672,6 +6776,8 @@ export function createLodgingResolvers({
               status: "closed",
               closedAt: new Date(),
               closedBy: actorName,
+              receptionistId: scopedReceptionistId,
+              receptionistName,
               summaryJson: JSON.stringify(summary),
             },
           });
@@ -6686,6 +6792,94 @@ export function createLodgingResolvers({
           detail: summary,
         });
         return row;
+      },
+
+      createLodgingReceptionists: async (_, { linesJson }, context) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorName } = actorFromContext(context);
+        let lines;
+        try {
+          lines = JSON.parse(String(linesJson || "[]"));
+        } catch {
+          throw new Error("Invalid receptionist lines");
+        }
+        if (!Array.isArray(lines) || lines.length === 0) {
+          throw new Error("Add at least one receptionist line");
+        }
+        const created = [];
+        for (const line of lines) {
+          const firstName = String(line?.firstName ?? "").trim();
+          const lastName = String(line?.lastName ?? "").trim();
+          const password = String(line?.password ?? "");
+          if (!firstName || !lastName) {
+            throw new Error("First and last name are required");
+          }
+          if (password.length < 4) {
+            throw new Error(
+              `Password for ${firstName} ${lastName} must be at least 4 characters`,
+            );
+          }
+          const passwordHash = await bcrypt.hash(password, 10);
+          const row = await prisma.lodging_receptionist.create({
+            data: {
+              HotelName,
+              firstName,
+              lastName,
+              passwordHash,
+              isActive: true,
+              updatedBy: actorName,
+            },
+          });
+          created.push(row);
+        }
+        return created;
+      },
+
+      updateLodgingReceptionist: async (
+        _,
+        { id, firstName, lastName, password, isActive },
+        context,
+      ) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorName } = actorFromContext(context);
+        const existing = await prisma.lodging_receptionist.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!existing || existing.HotelName !== HotelName) {
+          throw new Error("Receptionist not found");
+        }
+        const data = { updatedBy: actorName };
+        if (firstName != null) data.firstName = String(firstName).trim();
+        if (lastName != null) data.lastName = String(lastName).trim();
+        if (isActive != null) data.isActive = Boolean(isActive);
+        if (password != null && String(password).length > 0) {
+          if (String(password).length < 4) {
+            throw new Error("Password must be at least 4 characters");
+          }
+          data.passwordHash = await bcrypt.hash(String(password), 10);
+        }
+        if (!data.firstName && existing.firstName) {
+          /* keep */
+        }
+        return prisma.lodging_receptionist.update({
+          where: { id: existing.id },
+          data,
+        });
+      },
+
+      deleteLodgingReceptionist: async (_, { id }, context) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const existing = await prisma.lodging_receptionist.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!existing || existing.HotelName !== HotelName) {
+          throw new Error("Receptionist not found");
+        }
+        await prisma.lodging_receptionist.delete({ where: { id: existing.id } });
+        return true;
       },
 
       createLodgingRatePlan: async (
