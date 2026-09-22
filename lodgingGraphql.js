@@ -317,8 +317,22 @@ export const lodgingTypeDefsBlock = `
     revparETB: Float!
     staysCheckedOut: Int!
     staysInHouse: Int!
+    """Room-nights held as complimentary (not sold) in the period."""
+    complimentaryRoomNights: Int!
+    """Foregone rack revenue = company cost of complimentary holds."""
+    complimentaryCostETB: Float!
+    complimentaryRooms: [LodgingComplimentaryCostRow!]!
     byRoomType: [LodgingPerformanceByType!]!
     bySource: [LodgingPerformanceBySource!]!
+  }
+
+  type LodgingComplimentaryCostRow {
+    roomNumber: String!
+    roomType: String!
+    assignee: String!
+    nights: Int!
+    rackRateETB: Float!
+    costETB: Float!
   }
 
   type LodgingPerformanceByType {
@@ -2746,18 +2760,148 @@ export function createLodgingResolvers({
         const from = new Date(`${fromStr}T00:00:00`);
         const to = new Date(`${toStr}T23:59:59.999`);
         const dayMs = 24 * 60 * 60 * 1000;
+        const rangeStart = startOfLocalDay(from);
+        const rangeEndExclusive =
+          startOfLocalDay(to).getTime() + dayMs;
         const days =
           Math.max(
             1,
             Math.round(
-              (startOfLocalDay(to).getTime() - startOfLocalDay(from).getTime()) /
-                dayMs,
+              (startOfLocalDay(to).getTime() - rangeStart.getTime()) / dayMs,
             ) + 1,
           );
-        const roomCount = await prisma.lodging_room.count({
+        const allRooms = await prisma.lodging_room.findMany({
           where: { HotelName },
+          select: {
+            id: true,
+            roomNumber: true,
+            roomType: true,
+            pricePerNightETB: true,
+            status: true,
+            notes: true,
+          },
         });
-        const availableRoomNights = roomCount * days;
+        const roomCount = allRooms.length;
+        const roomById = new Map(allRooms.map((r) => [r.id, r]));
+
+        // Reconstruct complimentary hold intervals from action logs + active rooms.
+        const complimentLogs = await prisma.lodging_action_log.findMany({
+          where: {
+            HotelName,
+            action: {
+              in: ["assign_compliment_room", "release_compliment_room"],
+            },
+          },
+          orderBy: { createdAt: "asc" },
+          take: 8000,
+        });
+        /** @type {Map<number, Array<{ start: Date, end: Date | null, assignee: string }>>} */
+        const intervalsByRoom = new Map();
+        const openStartByRoom = new Map();
+        for (const log of complimentLogs) {
+          const rid = Number(log.entityId);
+          if (!Number.isFinite(rid) || rid <= 0) continue;
+          if (log.action === "assign_compliment_room") {
+            let assignee = "Staff";
+            try {
+              const d = log.detailJson ? JSON.parse(log.detailJson) : null;
+              if (d?.assignee) assignee = String(d.assignee).trim() || assignee;
+            } catch {
+              /* ignore */
+            }
+            openStartByRoom.set(rid, {
+              start: new Date(log.createdAt),
+              assignee,
+            });
+          } else if (log.action === "release_compliment_room") {
+            const open = openStartByRoom.get(rid);
+            if (open) {
+              const list = intervalsByRoom.get(rid) || [];
+              list.push({
+                start: open.start,
+                end: new Date(log.createdAt),
+                assignee: open.assignee,
+              });
+              intervalsByRoom.set(rid, list);
+              openStartByRoom.delete(rid);
+            }
+          }
+        }
+        // Still-open intervals from logs
+        for (const [rid, open] of openStartByRoom) {
+          const list = intervalsByRoom.get(rid) || [];
+          list.push({ start: open.start, end: null, assignee: open.assignee });
+          intervalsByRoom.set(rid, list);
+        }
+        // Active compliment rooms with no/missing assign log — use notes timestamp
+        for (const room of allRooms) {
+          const notes = String(room.notes || "");
+          if (!notes.startsWith("COMPLIMENT|") || room.status !== "blocked") {
+            continue;
+          }
+          const parts = notes.slice("COMPLIMENT|".length).split("|");
+          const assignee = (parts[0] || "Staff").trim() || "Staff";
+          const atRaw = parts[2] || "";
+          const start = atRaw ? new Date(atRaw) : new Date();
+          const existing = intervalsByRoom.get(room.id) || [];
+          const hasOpen = existing.some((iv) => iv.end == null);
+          if (!hasOpen) {
+            existing.push({
+              start: Number.isNaN(start.getTime()) ? new Date() : start,
+              end: null,
+              assignee,
+            });
+            intervalsByRoom.set(room.id, existing);
+          }
+        }
+
+        let complimentaryRoomNights = 0;
+        let complimentaryCostETB = 0;
+        const complimentaryRooms = [];
+        for (const [rid, intervals] of intervalsByRoom) {
+          const room = roomById.get(rid);
+          if (!room) continue;
+          const rack = Number(room.pricePerNightETB) || 0;
+          let nights = 0;
+          let assignee = "Staff";
+          for (const iv of intervals) {
+            const ivStart = startOfLocalDay(iv.start).getTime();
+            const ivEndExclusive = iv.end
+              ? startOfLocalDay(iv.end).getTime()
+              : rangeEndExclusive;
+            const overlapStart = Math.max(ivStart, rangeStart.getTime());
+            const overlapEnd = Math.min(ivEndExclusive, rangeEndExclusive);
+            const n = Math.max(
+              0,
+              Math.round((overlapEnd - overlapStart) / dayMs),
+            );
+            if (n > 0) {
+              nights += n;
+              assignee = iv.assignee || assignee;
+            }
+          }
+          if (nights <= 0) continue;
+          const cost = nights * rack;
+          complimentaryRoomNights += nights;
+          complimentaryCostETB += cost;
+          complimentaryRooms.push({
+            roomNumber: room.roomNumber,
+            roomType: room.roomType || "—",
+            assignee,
+            nights,
+            rackRateETB: Math.round(rack * 100) / 100,
+            costETB: Math.round(cost * 100) / 100,
+          });
+        }
+        complimentaryRooms.sort((a, b) =>
+          String(a.roomNumber).localeCompare(String(b.roomNumber)),
+        );
+
+        // Complimentary holds are not sellable — exclude those nights from inventory.
+        const availableRoomNights = Math.max(
+          0,
+          roomCount * days - complimentaryRoomNights,
+        );
 
         const stays = await prisma.lodging_stay.findMany({
           where: {
@@ -2783,10 +2927,10 @@ export function createLodgingResolvers({
         for (const stay of stays) {
           const arr = startOfLocalDay(stay.arrivalAt);
           const dep = startOfLocalDay(stay.departureAt);
-          const overlapStart = Math.max(arr.getTime(), startOfLocalDay(from).getTime());
+          const overlapStart = Math.max(arr.getTime(), rangeStart.getTime());
           const overlapEnd = Math.min(
             dep.getTime(),
-            startOfLocalDay(to).getTime() + dayMs,
+            rangeEndExclusive,
           );
           const overlapNights = Math.max(
             0,
@@ -2860,6 +3004,9 @@ export function createLodgingResolvers({
           revparETB: Math.round(revparETB * 100) / 100,
           staysCheckedOut,
           staysInHouse,
+          complimentaryRoomNights,
+          complimentaryCostETB: Math.round(complimentaryCostETB * 100) / 100,
+          complimentaryRooms,
           byRoomType: [...byType.values()].map((r) => ({
             ...r,
             roomRevenueETB: Math.round(r.roomRevenueETB * 100) / 100,
