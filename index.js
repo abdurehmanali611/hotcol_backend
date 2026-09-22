@@ -761,6 +761,8 @@ const typeDefs = gql`
     user: User!
     accessMode: String!
     paymentKind: String
+    receptionistId: Int
+    receptionistName: String
   }
 
   type TenantFeedbackMessage {
@@ -4123,6 +4125,8 @@ const resolvers = {
         token,
         accessMode: loginAccess.accessMode,
         paymentKind: loginAccess.paymentKind ?? null,
+        receptionistId: receptionistId ?? null,
+        receptionistName: receptionistName || null,
         user: attachSubscriptionFields(
           {
             id: user.id,
