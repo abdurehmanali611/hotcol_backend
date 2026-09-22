@@ -3981,15 +3981,33 @@ const resolvers = {
       const deskPasswordOk = await bcrypt.compare(Password, user.Password);
 
       if (String(user.Role || "") === "Reception") {
-        const receptionists = await prisma.lodging_receptionist.findMany({
-          where: { HotelName: user.HotelName, isActive: true },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            passwordHash: true,
-          },
-        });
+        // Receptionists are saved under tenant TIN (same as Manager writes),
+        // not the display HotelName on the Reception user row.
+        const hotelKeys = [
+          ...new Set(
+            [user.tinNumber, user.HotelName]
+              .map((v) => String(v ?? "").trim())
+              .filter(Boolean),
+          ),
+        ];
+        const receptionists =
+          hotelKeys.length === 0
+            ? []
+            : await prisma.lodging_receptionist.findMany({
+                where: {
+                  HotelName:
+                    hotelKeys.length === 1
+                      ? hotelKeys[0]
+                      : { in: hotelKeys },
+                  isActive: true,
+                },
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  passwordHash: true,
+                },
+              });
         let matched = null;
         for (const r of receptionists) {
           // eslint-disable-next-line no-await-in-loop
@@ -4004,9 +4022,6 @@ const resolvers = {
             `${matched.firstName || ""} ${matched.lastName || ""}`.trim();
         } else if (!deskPasswordOk) {
           throw new Error("Invalid Password");
-        } else if (receptionists.length > 0) {
-          // Desk password still works for bootstrap, but prefer receptionist passwords.
-          // Allow desk login when no receptionist password matched.
         }
       } else if (!deskPasswordOk) {
         throw new Error("Invalid Password");
