@@ -1194,6 +1194,8 @@ model lodging_bill_line {
   amountETB         Float     @default(0)
   taxPercent        Float     @default(0)
   taxETB            Float     @default(0)
+  /// JSON array: [{ name, percent, amountETB }] — named tax split at posting time
+  taxDetailJson     String    @default("") @db.VarChar(4096)
   roomNumber        String    @default("")
   fulfillmentStatus String    @default("pending")
   fulfilledAt       DateTime?

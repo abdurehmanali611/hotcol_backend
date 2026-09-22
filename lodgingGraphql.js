@@ -141,6 +141,7 @@ export const lodgingTypeDefsBlock = `
     amountETB: Float!
     taxPercent: Float!
     taxETB: Float!
+    taxDetailJson: String!
     roomNumber: String!
     # pending | completed | cancelled
     fulfillmentStatus: String!
@@ -1628,15 +1629,23 @@ async function taxPercentForKind(prisma, HotelName, kind) {
 
 async function applyTaxToAmounts(prisma, HotelName, kind, amountETB) {
   const rows = await taxConfigsForKind(prisma, HotelName, kind);
-  const taxPercent = rows.reduce((s, r) => s + (Number(r.taxPercent) || 0), 0);
-  const taxETB = Math.round(amountETB * taxPercent) / 100;
+  const active = rows.filter((r) => Number(r.taxPercent) > 0);
+  const parts = active.map((r) => {
+    const percent = Number(r.taxPercent) || 0;
+    return {
+      name: String(r.name || "Tax").trim() || "Tax",
+      percent,
+      amountETB: Math.round(amountETB * percent) / 100,
+    };
+  });
+  const taxPercent = parts.reduce((s, p) => s + p.percent, 0);
+  const taxETB = Math.round(parts.reduce((s, p) => s + p.amountETB, 0) * 100) / 100;
   return {
     taxPercent,
     taxETB,
-    taxNames: rows
-      .filter((r) => Number(r.taxPercent) > 0)
-      .map((r) => `${r.name || "Tax"} ${Number(r.taxPercent) || 0}%`)
-      .join(", "),
+    taxParts: parts,
+    taxDetailJson: JSON.stringify(parts),
+    taxNames: parts.map((p) => `${p.name} ${p.percent}%`).join(", "),
   };
 }
 
@@ -3467,7 +3476,7 @@ export function createLodgingResolvers({
             );
             const unit = priced.unit;
             const amount = unit * nightsN;
-            const { taxPercent, taxETB } = await applyTaxToAmounts(
+            const { taxPercent, taxETB, taxDetailJson } = await applyTaxToAmounts(
               tx,
               HotelName,
               "room",
@@ -3487,6 +3496,7 @@ export function createLodgingResolvers({
                 amountETB: amount,
                 taxPercent,
                 taxETB,
+                taxDetailJson,
                 roomNumber: r.roomNumber,
                 createdBy: actorName,
               },
@@ -3743,7 +3753,7 @@ export function createLodgingResolvers({
         if (!(unit >= 0)) throw new Error("Invalid unit price");
         const { actorName, actorRole } = actorFromContext(context);
         const amountETB = qty * unit;
-        const { taxPercent, taxETB } = await applyTaxToAmounts(
+        const { taxPercent, taxETB, taxDetailJson } = await applyTaxToAmounts(
           prisma,
           stay.HotelName,
           k,
@@ -3760,6 +3770,7 @@ export function createLodgingResolvers({
             amountETB,
             taxPercent,
             taxETB,
+            taxDetailJson,
             roomNumber: String(roomNumber ?? "").trim(),
             createdBy: actorName,
           },
@@ -4355,13 +4366,8 @@ export function createLodgingResolvers({
           async (tx) => {
             await syncRoomNightCharges(tx, stayFresh, nightsN, actorName);
 
-            // Re-apply tax on room lines after night sync
+            // Re-apply named tax on room lines after night sync
             if (stayFresh.bill) {
-              const roomTaxPercent = await taxPercentForKind(
-                tx,
-                stay.HotelName,
-                "room",
-              );
               const roomLines = await tx.lodging_bill_line.findMany({
                 where: {
                   billId: stayFresh.bill.id,
@@ -4371,10 +4377,11 @@ export function createLodgingResolvers({
               });
               for (const line of roomLines) {
                 const amount = Number(line.amountETB) || 0;
-                const taxETB = Math.round(amount * roomTaxPercent) / 100;
+                const { taxPercent, taxETB, taxDetailJson } =
+                  await applyTaxToAmounts(tx, stay.HotelName, "room", amount);
                 await tx.lodging_bill_line.update({
                   where: { id: line.id },
-                  data: { taxPercent: roomTaxPercent, taxETB },
+                  data: { taxPercent, taxETB, taxDetailJson },
                 });
               }
               await recalcBillTotal(tx, stayFresh.bill.id);
@@ -6381,7 +6388,7 @@ export function createLodgingResolvers({
           const amount = Math.max(0, Number(raw?.amountETB ?? raw?.amount) || 0);
           if (!name) throw new Error("Penalty name is required");
           if (!(amount > 0)) throw new Error("Penalty amount must be positive");
-          const { taxPercent, taxETB } = await applyTaxToAmounts(
+          const { taxPercent, taxETB, taxDetailJson } = await applyTaxToAmounts(
             prisma,
             stay.HotelName,
             "penalty",
@@ -6400,6 +6407,7 @@ export function createLodgingResolvers({
               amountETB: amount,
               taxPercent,
               taxETB,
+              taxDetailJson,
               roomNumber: String(roomNumber || "").trim(),
               fulfillmentStatus: "completed",
               fulfilledAt: new Date(),
