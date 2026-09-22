@@ -46,7 +46,13 @@ const STAY_STATUSES = new Set([
   "cancelled",
 ]);
 const BILL_STATUSES = new Set(["open", "settled", "void"]);
-const BILL_LINE_KINDS = new Set(["room", "food_drink", "laundry", "other"]);
+const BILL_LINE_KINDS = new Set([
+  "room",
+  "food_drink",
+  "laundry",
+  "other",
+  "penalty",
+]);
 const RATE_PLAN_KINDS = new Set([
   "standard",
   "corporate",
@@ -75,6 +81,10 @@ export const lodgingTypeDefsBlock = `
     roomType: String!
     floor: String!
     pricePerNightETB: Float!
+    bedType: String!
+    capacity: Int!
+    amenities: String!
+    imageUrl: String!
     status: String!
     maintenanceUntil: DateTime
     statusExpectedEndAt: DateTime
@@ -239,6 +249,7 @@ export const lodgingTypeDefsBlock = `
   type LodgingTaxConfig {
     id: Int!
     HotelName: String!
+    name: String!
     kind: String!
     taxPercent: Float!
     updatedBy: String!
@@ -468,6 +479,10 @@ export const lodgingMutationFields = `
       roomType: String!
       floor: String
       pricePerNightETB: Float!
+      bedType: String
+      capacity: Int
+      amenities: String
+      imageUrl: String
       notes: String
     ): LodgingRoom!
     updateLodgingRoom(
@@ -476,6 +491,10 @@ export const lodgingMutationFields = `
       roomType: String
       floor: String
       pricePerNightETB: Float
+      bedType: String
+      capacity: Int
+      amenities: String
+      imageUrl: String
       notes: String
       status: String
       maintenanceUntil: DateTime
@@ -695,7 +714,19 @@ export const lodgingMutationFields = `
       notes: String
     ): LodgingStay!
 
-    upsertLodgingTaxConfig(kind: String!, taxPercent: Float!): LodgingTaxConfig!
+    upsertLodgingTaxConfig(
+      kind: String!
+      name: String!
+      taxPercent: Float!
+      id: Int
+    ): LodgingTaxConfig!
+    deleteLodgingTaxConfig(id: Int!): Boolean!
+    """Batch guest penalty charges on an open stay — no Manager approval."""
+    addLodgingPenaltyLines(
+      stayId: Int!
+      linesJson: String!
+      note: String
+    ): LodgingStay!
     closeLodgingBusinessDay(
       businessDate: String
       fromAt: DateTime!
@@ -1581,19 +1612,32 @@ async function recalcBillTotal(prisma, billId) {
   });
 }
 
-async function taxPercentForKind(prisma, HotelName, kind) {
-  const row = await prisma.lodging_tax_config.findUnique({
-    where: {
-      HotelName_kind: { HotelName, kind: String(kind) },
-    },
+async function taxConfigsForKind(prisma, HotelName, kind) {
+  const k = String(kind || "").trim();
+  const rows = await prisma.lodging_tax_config.findMany({
+    where: { HotelName, kind: k },
+    orderBy: [{ name: "asc" }, { id: "asc" }],
   });
-  return row ? Number(row.taxPercent) || 0 : 0;
+  return rows;
+}
+
+async function taxPercentForKind(prisma, HotelName, kind) {
+  const rows = await taxConfigsForKind(prisma, HotelName, kind);
+  return rows.reduce((s, r) => s + (Number(r.taxPercent) || 0), 0);
 }
 
 async function applyTaxToAmounts(prisma, HotelName, kind, amountETB) {
-  const taxPercent = await taxPercentForKind(prisma, HotelName, kind);
+  const rows = await taxConfigsForKind(prisma, HotelName, kind);
+  const taxPercent = rows.reduce((s, r) => s + (Number(r.taxPercent) || 0), 0);
   const taxETB = Math.round(amountETB * taxPercent) / 100;
-  return { taxPercent, taxETB };
+  return {
+    taxPercent,
+    taxETB,
+    taxNames: rows
+      .filter((r) => Number(r.taxPercent) > 0)
+      .map((r) => `${r.name || "Tax"} ${Number(r.taxPercent) || 0}%`)
+      .join(", "),
+  };
 }
 
 const RESERVATION_INCLUDE = {
@@ -2877,7 +2921,17 @@ export function createLodgingResolvers({
     Mutation: {
       createLodgingRoom: async (
         _,
-        { roomNumber, roomType, floor, pricePerNightETB, notes },
+        {
+          roomNumber,
+          roomType,
+          floor,
+          pricePerNightETB,
+          bedType,
+          capacity,
+          amenities,
+          imageUrl,
+          notes,
+        },
         context,
       ) => {
         assertAdminOrManager(context);
@@ -2885,6 +2939,7 @@ export function createLodgingResolvers({
         const { actorName, actorRole } = actorFromContext(context);
         const rn = String(roomNumber).trim();
         if (!rn) throw new Error("Room number is required");
+        const cap = Math.max(1, Math.floor(Number(capacity) || 2));
         const room = await prisma.lodging_room.create({
           data: {
             HotelName,
@@ -2892,6 +2947,10 @@ export function createLodgingResolvers({
             roomType: String(roomType).trim(),
             floor: String(floor ?? "").trim(),
             pricePerNightETB: Number(pricePerNightETB) || 0,
+            bedType: String(bedType ?? "").trim(),
+            capacity: cap,
+            amenities: String(amenities ?? "").trim(),
+            imageUrl: String(imageUrl ?? "").trim(),
             status: "vacant_clean",
             notes: String(notes ?? "").trim(),
             createdBy: actorName,
@@ -2918,6 +2977,10 @@ export function createLodgingResolvers({
           roomType,
           floor,
           pricePerNightETB,
+          bedType,
+          capacity,
+          amenities,
+          imageUrl,
           notes,
           status,
           maintenanceUntil,
@@ -2942,6 +3005,11 @@ export function createLodgingResolvers({
         if (floor != null) data.floor = String(floor).trim();
         if (pricePerNightETB != null)
           data.pricePerNightETB = Number(pricePerNightETB) || 0;
+        if (bedType != null) data.bedType = String(bedType).trim();
+        if (capacity != null)
+          data.capacity = Math.max(1, Math.floor(Number(capacity) || 2));
+        if (amenities != null) data.amenities = String(amenities).trim();
+        if (imageUrl != null) data.imageUrl = String(imageUrl).trim();
         if (notes != null) data.notes = String(notes).trim();
         if (status != null) {
           const s = String(status).trim();
@@ -3674,6 +3742,13 @@ export function createLodgingResolvers({
         if (!(qty > 0)) throw new Error("Quantity must be positive");
         if (!(unit >= 0)) throw new Error("Invalid unit price");
         const { actorName, actorRole } = actorFromContext(context);
+        const amountETB = qty * unit;
+        const { taxPercent, taxETB } = await applyTaxToAmounts(
+          prisma,
+          stay.HotelName,
+          k,
+          amountETB,
+        );
 
         const line = await prisma.lodging_bill_line.create({
           data: {
@@ -3682,7 +3757,9 @@ export function createLodgingResolvers({
             description: String(description).trim(),
             quantity: qty,
             unitPriceETB: unit,
-            amountETB: qty * unit,
+            amountETB,
+            taxPercent,
+            taxETB,
             roomNumber: String(roomNumber ?? "").trim(),
             createdBy: actorName,
           },
@@ -6177,23 +6254,53 @@ export function createLodgingResolvers({
         );
       },
 
-      upsertLodgingTaxConfig: async (_, { kind, taxPercent }, context) => {
+      upsertLodgingTaxConfig: async (
+        _,
+        { kind, name, taxPercent, id },
+        context,
+      ) => {
         assertAdminOrManager(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const k = String(kind || "").trim();
         if (!BILL_LINE_KINDS.has(k)) throw new Error("Invalid tax kind");
+        const n = String(name || "").trim() || "Tax";
         const pct = Math.max(0, Number(taxPercent) || 0);
         const { actorName, actorRole } = actorFromContext(context);
-        const row = await prisma.lodging_tax_config.upsert({
-          where: { HotelName_kind: { HotelName, kind: k } },
-          create: {
-            HotelName,
-            kind: k,
-            taxPercent: pct,
-            updatedBy: actorName,
-          },
-          update: { taxPercent: pct, updatedBy: actorName },
-        });
+        let row;
+        if (id != null && Number(id) > 0) {
+          const existing = await prisma.lodging_tax_config.findUnique({
+            where: { id: Number(id) },
+          });
+          if (
+            !existing ||
+            !tenantHotelReadMatches(context, existing.HotelName)
+          ) {
+            throw new Error("Tax config not found");
+          }
+          row = await prisma.lodging_tax_config.update({
+            where: { id: existing.id },
+            data: {
+              name: n,
+              kind: k,
+              taxPercent: pct,
+              updatedBy: actorName,
+            },
+          });
+        } else {
+          row = await prisma.lodging_tax_config.upsert({
+            where: {
+              HotelName_kind_name: { HotelName, kind: k, name: n },
+            },
+            create: {
+              HotelName,
+              kind: k,
+              name: n,
+              taxPercent: pct,
+              updatedBy: actorName,
+            },
+            update: { taxPercent: pct, updatedBy: actorName },
+          });
+        }
         await logLodgingAction(prisma, {
           HotelName,
           actorRole,
@@ -6201,9 +6308,122 @@ export function createLodgingResolvers({
           action: "upsert_tax_config",
           entityType: "lodging_tax_config",
           entityId: row.id,
-          detail: { kind: k, taxPercent: pct },
+          detail: { kind: k, name: n, taxPercent: pct },
         });
         return row;
+      },
+
+      deleteLodgingTaxConfig: async (_, { id }, context) => {
+        assertAdminOrManager(context);
+        const row = await prisma.lodging_tax_config.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("Tax config not found");
+        }
+        const { actorName, actorRole } = actorFromContext(context);
+        await prisma.lodging_tax_config.delete({ where: { id: row.id } });
+        await logLodgingAction(prisma, {
+          HotelName: row.HotelName,
+          actorRole,
+          actorName,
+          action: "delete_tax_config",
+          entityType: "lodging_tax_config",
+          entityId: row.id,
+          detail: { kind: row.kind, name: row.name },
+        });
+        return true;
+      },
+
+      addLodgingPenaltyLines: async (_, { stayId, linesJson, note }, context) => {
+        assertReceptionOrManager(context);
+        const stay = await loadStayOrThrow(
+          prisma,
+          context,
+          stayId,
+          tenantHotelReadMatches,
+        );
+        if (stay.status === "checked_out" || stay.status === "cancelled") {
+          throw new Error("Stay is closed");
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(String(linesJson || "[]"));
+        } catch {
+          throw new Error("Invalid penalty lines");
+        }
+        if (!Array.isArray(parsed) || parsed.length === 0) {
+          throw new Error("Add at least one penalty line");
+        }
+        const noteText = String(note ?? "").trim();
+        const { actorName, actorRole } = actorFromContext(context);
+        let bill = stay.bill;
+        if (!bill) {
+          bill = await prisma.lodging_bill.create({
+            data: {
+              HotelName: stay.HotelName,
+              stayId: stay.id,
+              status: "open",
+              totalETB: 0,
+            },
+            include: { lines: true },
+          });
+        }
+        if (bill.status !== "open") throw new Error("Bill is not open");
+
+        const roomNumber =
+          stay.rooms?.[0]?.room?.roomNumber ||
+          stay.rooms?.[0]?.roomNumber ||
+          "";
+
+        for (const raw of parsed) {
+          const name = String(raw?.name ?? raw?.description ?? "").trim();
+          const amount = Math.max(0, Number(raw?.amountETB ?? raw?.amount) || 0);
+          if (!name) throw new Error("Penalty name is required");
+          if (!(amount > 0)) throw new Error("Penalty amount must be positive");
+          const { taxPercent, taxETB } = await applyTaxToAmounts(
+            prisma,
+            stay.HotelName,
+            "penalty",
+            amount,
+          );
+          const desc = noteText
+            ? `${name} · ${noteText}`
+            : name;
+          await prisma.lodging_bill_line.create({
+            data: {
+              billId: bill.id,
+              kind: "penalty",
+              description: desc,
+              quantity: 1,
+              unitPriceETB: amount,
+              amountETB: amount,
+              taxPercent,
+              taxETB,
+              roomNumber: String(roomNumber || "").trim(),
+              fulfillmentStatus: "completed",
+              fulfilledAt: new Date(),
+              fulfilledBy: actorName,
+              approvalStatus: "",
+              createdBy: actorName,
+            },
+          });
+        }
+        await recalcBillTotal(prisma, bill.id);
+        await logLodgingAction(prisma, {
+          HotelName: stay.HotelName,
+          actorRole,
+          actorName,
+          action: "add_penalty_lines",
+          entityType: "lodging_stay",
+          entityId: stay.id,
+          stayId: stay.id,
+          detail: { count: parsed.length, note: noteText },
+        });
+        return prisma.lodging_stay.findUnique({
+          where: { id: stay.id },
+          include: STAY_INCLUDE,
+        });
       },
 
       openLodgingBusinessDay: async (
