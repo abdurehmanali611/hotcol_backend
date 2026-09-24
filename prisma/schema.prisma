@@ -1343,6 +1343,25 @@ model lodging_receptionist {
   @@index([HotelName, isActive])
 }
 
+/// Cleaners and maintainers roster (Manager-managed; CM assigns by name).
+model lodging_cm_staff {
+  id         Int      @id @default(autoincrement())
+  HotelName  String
+  /// cleaner | maintainer
+  role       String
+  firstName  String
+  lastName   String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  updatedBy  String   @default("")
+
+  @@index([HotelName])
+  @@index([HotelName, role])
+  @@index([HotelName, role, isActive])
+  @@unique([HotelName, role, firstName, lastName])
+}
+
 /// Sellable rate plans (rack, corporate, seasonal, weekend, promo, long-stay…).
 model lodging_rate_plan {
   id               Int      @id @default(autoincrement())

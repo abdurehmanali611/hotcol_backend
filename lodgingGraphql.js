@@ -287,6 +287,19 @@ export const lodgingTypeDefsBlock = `
     updatedBy: String!
   }
 
+  type LodgingCmStaff {
+    id: Int!
+    HotelName: String!
+    """cleaner | maintainer"""
+    role: String!
+    firstName: String!
+    lastName: String!
+    isActive: Boolean!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    updatedBy: String!
+  }
+
   type LodgingRatePlan {
     id: Int!
     HotelName: String!
@@ -497,6 +510,7 @@ export const lodgingQueryFields = `
     lodgingBusinessDay(businessDate: String): LodgingBusinessDay
     lodgingBusinessDays(limit: Int): [LodgingBusinessDay!]!
     lodgingReceptionists(includeInactive: Boolean): [LodgingReceptionist!]!
+    lodgingCmStaff(role: String, includeInactive: Boolean): [LodgingCmStaff!]!
     lodgingGuestComplaints(status: String, limit: Int): [LodgingGuestComplaint!]!
     lodgingGuestComplaintHistory(guestId: Int!, limit: Int): [LodgingGuestComplaint!]!
     lodgingGuestRatings(limit: Int): [LodgingGuestRating!]!
@@ -781,6 +795,15 @@ export const lodgingMutationFields = `
       isActive: Boolean
     ): LodgingReceptionist!
     deleteLodgingReceptionist(id: Int!): Boolean!
+    """Batch-create cleaners or maintainers (role = cleaner | maintainer)."""
+    createLodgingCmStaff(role: String!, linesJson: String!): [LodgingCmStaff!]!
+    updateLodgingCmStaff(
+      id: Int!
+      firstName: String
+      lastName: String
+      isActive: Boolean
+    ): LodgingCmStaff!
+    deleteLodgingCmStaff(id: Int!): Boolean!
     createLodgingRatePlan(
       name: String!
       code: String
@@ -3060,6 +3083,25 @@ export function createLodgingResolvers({
             ...(includeInactive ? {} : { isActive: true }),
           },
           orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+        });
+      },
+
+      lodgingCmStaff: async (_, { role, includeInactive }, context) => {
+        assertReceptionOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const roleNorm = String(role || "")
+          .trim()
+          .toLowerCase();
+        if (roleNorm && roleNorm !== "cleaner" && roleNorm !== "maintainer") {
+          throw new Error("role must be cleaner or maintainer");
+        }
+        return prisma.lodging_cm_staff.findMany({
+          where: {
+            HotelName,
+            ...(roleNorm ? { role: roleNorm } : {}),
+            ...(includeInactive ? {} : { isActive: true }),
+          },
+          orderBy: [{ role: "asc" }, { firstName: "asc" }, { lastName: "asc" }],
         });
       },
 
@@ -7026,6 +7068,133 @@ export function createLodgingResolvers({
           throw new Error("Receptionist not found");
         }
         await prisma.lodging_receptionist.delete({ where: { id: existing.id } });
+        return true;
+      },
+
+      createLodgingCmStaff: async (_, { role, linesJson }, context) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorName, actorRole } = actorFromContext(context);
+        const roleNorm = String(role || "")
+          .trim()
+          .toLowerCase();
+        if (roleNorm !== "cleaner" && roleNorm !== "maintainer") {
+          throw new Error("role must be cleaner or maintainer");
+        }
+        let lines;
+        try {
+          lines = JSON.parse(String(linesJson || "[]"));
+        } catch {
+          throw new Error("Invalid staff lines");
+        }
+        if (!Array.isArray(lines) || lines.length === 0) {
+          throw new Error("Add at least one line");
+        }
+        const created = [];
+        for (const line of lines) {
+          const firstName = String(line?.firstName ?? "").trim();
+          const lastName = String(line?.lastName ?? "").trim();
+          if (!firstName || !lastName) {
+            throw new Error("First and last name are required");
+          }
+          const existing = await prisma.lodging_cm_staff.findFirst({
+            where: {
+              HotelName,
+              role: roleNorm,
+              firstName,
+              lastName,
+            },
+          });
+          if (existing) {
+            if (!existing.isActive) {
+              const revived = await prisma.lodging_cm_staff.update({
+                where: { id: existing.id },
+                data: {
+                  isActive: true,
+                  updatedBy: actorName,
+                },
+              });
+              created.push(revived);
+              continue;
+            }
+            throw new Error(
+              `${firstName} ${lastName} is already registered as a ${roleNorm}`,
+            );
+          }
+          const row = await prisma.lodging_cm_staff.create({
+            data: {
+              HotelName,
+              role: roleNorm,
+              firstName,
+              lastName,
+              isActive: true,
+              updatedBy: actorName,
+            },
+          });
+          created.push(row);
+        }
+        await logLodgingAction(prisma, {
+          HotelName,
+          actorRole,
+          actorName,
+          action: "create_cm_staff",
+          entityType: "lodging_cm_staff",
+          detail: {
+            role: roleNorm,
+            count: created.length,
+            names: created.map((r) => `${r.firstName} ${r.lastName}`),
+          },
+        });
+        return created;
+      },
+
+      updateLodgingCmStaff: async (
+        _,
+        { id, firstName, lastName, isActive },
+        context,
+      ) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorName } = actorFromContext(context);
+        const existing = await prisma.lodging_cm_staff.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!existing || existing.HotelName !== HotelName) {
+          throw new Error("Staff member not found");
+        }
+        const data = { updatedBy: actorName };
+        if (firstName != null) data.firstName = String(firstName).trim();
+        if (lastName != null) data.lastName = String(lastName).trim();
+        if (isActive != null) data.isActive = Boolean(isActive);
+        return prisma.lodging_cm_staff.update({
+          where: { id: existing.id },
+          data,
+        });
+      },
+
+      deleteLodgingCmStaff: async (_, { id }, context) => {
+        assertAdminOrManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorName, actorRole } = actorFromContext(context);
+        const existing = await prisma.lodging_cm_staff.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!existing || existing.HotelName !== HotelName) {
+          throw new Error("Staff member not found");
+        }
+        await prisma.lodging_cm_staff.delete({ where: { id: existing.id } });
+        await logLodgingAction(prisma, {
+          HotelName,
+          actorRole,
+          actorName,
+          action: "delete_cm_staff",
+          entityType: "lodging_cm_staff",
+          entityId: existing.id,
+          detail: {
+            role: existing.role,
+            name: `${existing.firstName} ${existing.lastName}`,
+          },
+        });
         return true;
       },
 
