@@ -2343,7 +2343,7 @@ export function createHrResolvers({
           kind: "otp_reset_pending",
           title: "OTP reset needs approval",
           body: `${actorName} requested a portal OTP reset for ${employee.fullName}.`,
-          href: `/HR?section=employees&otpReset=${req.id}`,
+          href: `/HR?section=otp-reset`,
           actionStatus: "pending",
           createdBy: actorName,
         });
