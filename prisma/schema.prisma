@@ -235,6 +235,10 @@ model tenant_account {
   receptionCmPortalEnabled Boolean @default(false)
   /// Apex opt-in: Café and Restaurant properties may use HotCol Waiter ordering.
   waiterOrderingEnabled Boolean @default(false)
+  /// Apex opt-in (café + HR Module): dedicated HR Manager role vs Admin hosting HR.
+  hrSoloManagerEnabled Boolean @default(false)
+  /// Apex opt-in: use biometric clock path when devices are configured.
+  hrBiometricsEnabled Boolean @default(false)
   /// Manager/Admin opt-in: waiters may send payment-approval requests to cashiers.
   waiterPaymentApprovalEnabled Boolean @default(false)
   /// digital | analog — café/restaurant order fulfillment
@@ -1462,6 +1466,16 @@ model hr_employee {
   credentialUserId Int?
   credentialUserName String @default("")
   notes           String    @db.Text
+  /// bcrypt hash of portal OTP/PIN for hotcol-emp
+  portalOtpHash   String    @default("")
+  /// Plaintext preview only while portalOtpViewer allows (cleared after first login)
+  portalOtpPreview String   @default("")
+  /// HR | Manager | none — who may read portalOtpPreview
+  portalOtpViewer String    @default("none")
+  mustChangeOtp   Boolean   @default(false)
+  portalOtpIssuedAt DateTime?
+  portalFirstLoginAt DateTime?
+  profileImageUrl String    @default("")
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -1472,6 +1486,8 @@ model hr_employee {
   documents       hr_document[]
   payslips        hr_payslip[]
   incidents       hr_incident[]
+  capabilities    hr_employee_capability[]
+  otpResetRequests hr_otp_reset_request[]
 
   @@index([HotelName])
   @@index([HotelName, status])
@@ -1756,6 +1772,90 @@ model hr_incident {
 
   @@index([HotelName])
   @@index([employeeId])
+}
+
+/// HR — granted capabilities for hotcol-emp (e.g. leave_approve_supervisor)
+model hr_employee_capability {
+  id         Int      @id @default(autoincrement())
+  HotelName  String
+  employeeId Int
+  /// e.g. leave_approve_supervisor
+  code       String
+  /// { departmentCodes?: string[], employeeIds?: number[] }
+  scopeJson  Json?
+  grantedBy  String   @default("")
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  employee hr_employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([HotelName, employeeId, code])
+  @@index([HotelName])
+  @@index([employeeId])
+  @@index([HotelName, code, active])
+}
+
+/// HR — portal OTP reset: HR requests → Manager approves → Manager-only preview
+model hr_otp_reset_request {
+  id          Int       @id @default(autoincrement())
+  HotelName   String
+  employeeId  Int
+  requestedBy String    @default("")
+  /// pending | approved | rejected | cancelled
+  status      String    @default("pending")
+  decidedBy   String    @default("")
+  decidedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  employee hr_employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([HotelName])
+  @@index([employeeId])
+  @@index([HotelName, status])
+}
+
+/// HR — unified in-app notifications (bell); not a separate announcement product
+model hr_notification {
+  id            Int       @id @default(autoincrement())
+  HotelName     String
+  /// Role audience when not employee-targeted: Manager | HR | Finance | Admin | ""
+  recipientRole String    @default("")
+  employeeId    Int?
+  /// otp_reset_pending | otp_reset_decided | hr_message | leave_pending | leave_countersign | ...
+  kind          String
+  title         String
+  body          String    @db.Text
+  href          String    @default("")
+  /// pending | done | "" — for actionable items
+  actionStatus  String    @default("")
+  createdBy     String    @default("")
+  readAt        DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([HotelName])
+  @@index([HotelName, recipientRole])
+  @@index([employeeId])
+  @@index([HotelName, createdAt])
+}
+
+/// HR — biometric device registry (runtime only when tenant hrBiometricsEnabled)
+model hr_biometric_device {
+  id         Int      @id @default(autoincrement())
+  HotelName  String
+  /// zkteco | hikvision | other
+  vendor     String   @default("other")
+  deviceKey  String   @default("")
+  label      String   @default("")
+  active     Boolean  @default(true)
+  lastSyncAt DateTime?
+  notes      String   @default("") @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([HotelName, deviceKey])
+  @@index([HotelName])
 }
 
 /// Canonical crystal (catalyst) product names for inventory / recipe / purchase selectors.
