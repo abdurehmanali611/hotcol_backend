@@ -409,6 +409,8 @@ async function resolveTenantSubscription(prismaClient, user) {
           receptionCmPortalEnabled: true,
           waiterOrderingEnabled: true,
           waiterPaymentApprovalEnabled: true,
+          hrSoloManagerEnabled: true,
+          hrBiometricsEnabled: true,
         },
       })
     : null;
@@ -423,6 +425,8 @@ async function resolveTenantSubscription(prismaClient, user) {
     waiterPaymentApprovalEnabled: Boolean(
       account?.waiterPaymentApprovalEnabled,
     ),
+    hrSoloManagerEnabled: Boolean(account?.hrSoloManagerEnabled),
+    hrBiometricsEnabled: Boolean(account?.hrBiometricsEnabled),
   };
 }
 
@@ -459,6 +463,8 @@ function graphqlTenantSubscriptionSnapshot(
     waiterPaymentApprovalEnabled: Boolean(
       subscription.waiterPaymentApprovalEnabled,
     ),
+    hrSoloManagerEnabled: Boolean(subscription.hrSoloManagerEnabled),
+    hrBiometricsEnabled: Boolean(subscription.hrBiometricsEnabled),
   };
 }
 
@@ -509,6 +515,8 @@ function attachSubscriptionFields(user, subscription, options = {}) {
     waiterPaymentApprovalEnabled: Boolean(
       subscription.waiterPaymentApprovalEnabled,
     ),
+    hrSoloManagerEnabled: Boolean(subscription.hrSoloManagerEnabled),
+    hrBiometricsEnabled: Boolean(subscription.hrBiometricsEnabled),
     awaitingSelfSignupSetup: selfSignupAwaitingSetup(
       subscription,
       pendingSetupSubmission,
@@ -741,6 +749,8 @@ const typeDefs = gql`
     receptionCmPortalEnabled: Boolean
     waiterOrderingEnabled: Boolean
     waiterPaymentApprovalEnabled: Boolean
+    hrSoloManagerEnabled: Boolean
+    hrBiometricsEnabled: Boolean
   }
 
   type TenantPaymentSubmission {
@@ -829,6 +839,8 @@ const typeDefs = gql`
     receptionCmPortalEnabled: Boolean!
     waiterOrderingEnabled: Boolean!
     waiterPaymentApprovalEnabled: Boolean!
+    hrSoloManagerEnabled: Boolean!
+    hrBiometricsEnabled: Boolean!
   }
 
   type Item {
