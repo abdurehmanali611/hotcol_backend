@@ -65,7 +65,7 @@ CREATE TABLE `hr_biometric_device` (
     `label` VARCHAR(191) NOT NULL DEFAULT '',
     `active` BOOLEAN NOT NULL DEFAULT true,
     `lastSyncAt` DATETIME(3) NULL,
-    `notes` TEXT NOT NULL,
+    `notes` VARCHAR(191) NOT NULL DEFAULT '',
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
     PRIMARY KEY (`id`)

@@ -1850,7 +1850,7 @@ model hr_biometric_device {
   label      String   @default("")
   active     Boolean  @default(true)
   lastSyncAt DateTime?
-  notes      String   @default("") @db.Text
+  notes      String   @default("")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
