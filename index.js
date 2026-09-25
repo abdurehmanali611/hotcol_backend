@@ -3191,6 +3191,12 @@ const resolvers = {
   HrPayslip: {
     ...(hrResolvers.HrPayslip || {}),
   },
+  HrEmployee: {
+    ...(hrResolvers.HrEmployee || {}),
+  },
+  HrOtpResetRequest: {
+    ...(hrResolvers.HrOtpResetRequest || {}),
+  },
   CrystalName: {
     ...(crystalNameResolvers.CrystalName || {}),
   },

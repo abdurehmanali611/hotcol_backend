@@ -17,6 +17,17 @@ import {
   eachYmdInRange,
   inclusiveDayCount,
 } from "./hrPayrollHelpers.js";
+import {
+  generatePortalOtp,
+  hashPortalOtp,
+  issuePortalOtpPayload,
+} from "./hrPortalOtp.js";
+import {
+  createHrNotification,
+  listHrNotificationsForActor,
+  markHrNotificationRead,
+  createHrEmployeeNotifications,
+} from "./hrNotifications.js";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -67,8 +78,45 @@ export const hrTypeDefsBlock = `
     credentialUserId: Int
     credentialUserName: String!
     notes: String!
+    portalOtpHash: String!
+    """Plaintext OTP only when caller matches portalOtpViewer; else empty."""
+    portalOtpPreview: String!
+    portalOtpViewer: String!
+    mustChangeOtp: Boolean!
+    portalOtpIssuedAt: DateTime
+    portalFirstLoginAt: DateTime
+    profileImageUrl: String!
     createdAt: DateTime!
     updatedAt: DateTime!
+  }
+
+  type HrNotification {
+    id: Int!
+    HotelName: String!
+    recipientRole: String!
+    employeeId: Int
+    kind: String!
+    title: String!
+    body: String!
+    href: String!
+    actionStatus: String!
+    createdBy: String!
+    readAt: DateTime
+    createdAt: DateTime!
+  }
+
+  type HrOtpResetRequest {
+    id: Int!
+    HotelName: String!
+    employeeId: Int!
+    requestedBy: String!
+    status: String!
+    decidedBy: String!
+    decidedAt: DateTime
+    createdAt: DateTime!
+    """Present only for Manager/Admin when status=approved and preview still visible."""
+    portalOtpPreview: String!
+    employee: HrEmployee
   }
 
   type HrLeaveBalance {
@@ -332,6 +380,8 @@ export const hrQueryFields = `
     hrWagePayWindows: [HrWagePayWindow!]!
     hrIncidents(employeeId: Int): [HrIncident!]!
     hrDashboardStats: HrDashboardStats!
+    hrNotifications(unreadOnly: Boolean): [HrNotification!]!
+    hrOtpResetRequests(status: String): [HrOtpResetRequest!]!
 `;
 
 export const hrMutationFields = `
@@ -441,6 +491,18 @@ export const hrMutationFields = `
       amountETB: Float
     ): HrIncident!
     deleteHrIncident(id: Int!): Boolean!
+
+    """Issue / re-issue portal OTP after hire; preview visible to HR until first login."""
+    enableHrEmployeePortal(id: Int!): HrEmployee!
+    requestHrOtpReset(employeeId: Int!): HrOtpResetRequest!
+    decideHrOtpReset(id: Int!, approve: Boolean!): HrOtpResetRequest!
+    markHrNotificationRead(id: Int!): HrNotification!
+    createHrEmployeeNotification(
+      employeeIds: [Int!]!
+      title: String!
+      body: String!
+      href: String
+    ): [HrNotification!]!
 `;
 
 function round2(n) {
@@ -459,6 +521,24 @@ function actorFromContext(context) {
     actorRole: String(u?.Role ?? u?.role ?? ""),
     actorName: String(u?.UserName ?? u?.userName ?? ""),
   };
+}
+
+/** Mask portal OTP preview unless caller role matches portalOtpViewer. */
+function visiblePortalOtpPreview(employee, context) {
+  const preview = String(employee?.portalOtpPreview ?? "").trim();
+  if (!preview) return "";
+  const viewer = String(employee?.portalOtpViewer ?? "none").trim();
+  const { actorRole } = actorFromContext(context);
+  if (viewer === "HR" && (actorRole === "HR" || actorRole === "Admin")) {
+    return preview;
+  }
+  if (
+    viewer === "Manager" &&
+    (actorRole === "Manager" || actorRole === "Admin")
+  ) {
+    return preview;
+  }
+  return "";
 }
 
 function assertYmd(value, label) {
@@ -650,6 +730,12 @@ export function createHrResolvers({
     HrPayslip: {
       earnings: (row) => parsePayLines(row.earningsJson),
       deductions: (row) => parsePayLines(row.deductionsJson),
+    },
+
+    HrEmployee: {
+      portalOtpPreview: (row, _, context) =>
+        visiblePortalOtpPreview(row, context),
+      portalOtpHash: () => "",
     },
 
     Query: {
@@ -919,6 +1005,32 @@ export function createHrResolvers({
           openShiftsToday,
           openPayrollPeriods,
         };
+      },
+
+      hrNotifications: async (_, { unreadOnly }, context) => {
+        assertHrAccess(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorRole } = actorFromContext(context);
+        return listHrNotificationsForActor(prisma, {
+          HotelName,
+          role: actorRole,
+          unreadOnly: Boolean(unreadOnly),
+        });
+      },
+
+      hrOtpResetRequests: async (_, { status }, context) => {
+        assertHrAccess(context);
+        const where = {
+          ...tenantHotelReadWhere(context),
+        };
+        if (status != null && String(status).trim()) {
+          where.status = String(status).trim();
+        }
+        return prisma.hr_otp_reset_request.findMany({
+          where,
+          include: { employee: true },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        });
       },
     },
 
@@ -2168,6 +2280,199 @@ export function createHrResolvers({
         await prisma.hr_incident.delete({ where: { id: incident.id } });
         return true;
       },
+
+      enableHrEmployeePortal: async (_, { id }, context) => {
+        assertHrAccess(context);
+        const { actorRole } = actorFromContext(context);
+        if (actorRole !== "HR" && actorRole !== "Admin") {
+          throw new Error("Only HR Manager can issue portal OTP");
+        }
+        const employee = await loadEmployeeInTenantOrThrow(context, id);
+        if (employee.status === "terminated") {
+          throw new Error("Cannot enable portal for a terminated employee");
+        }
+        const plain = generatePortalOtp();
+        const hash = await hashPortalOtp(plain);
+        const issued = issuePortalOtpPayload(plain, "HR");
+        return prisma.hr_employee.update({
+          where: { id: employee.id },
+          data: {
+            portalOtpHash: hash,
+            portalOtpPreview: issued.portalOtpPreview,
+            portalOtpViewer: issued.portalOtpViewer,
+            mustChangeOtp: true,
+            portalOtpIssuedAt: issued.portalOtpIssuedAt,
+            portalFirstLoginAt: null,
+          },
+        });
+      },
+
+      requestHrOtpReset: async (_, { employeeId }, context) => {
+        assertHrAccess(context);
+        const { actorRole, actorName } = actorFromContext(context);
+        if (actorRole !== "HR" && actorRole !== "Admin") {
+          throw new Error("Only HR Manager can request OTP reset");
+        }
+        const employee = await loadEmployeeInTenantOrThrow(context, employeeId);
+        if (employee.status === "terminated") {
+          throw new Error("Cannot reset OTP for a terminated employee");
+        }
+        const HotelName = employee.HotelName;
+        const pending = await prisma.hr_otp_reset_request.findFirst({
+          where: {
+            HotelName,
+            employeeId: employee.id,
+            status: "pending",
+          },
+        });
+        if (pending) {
+          throw new Error("An OTP reset request is already pending for this employee");
+        }
+        const req = await prisma.hr_otp_reset_request.create({
+          data: {
+            HotelName,
+            employeeId: employee.id,
+            requestedBy: actorName,
+            status: "pending",
+          },
+          include: { employee: true },
+        });
+        await createHrNotification(prisma, {
+          HotelName,
+          recipientRole: "Manager",
+          kind: "otp_reset_pending",
+          title: "OTP reset needs approval",
+          body: `${actorName} requested a portal OTP reset for ${employee.fullName}.`,
+          href: `/HR?section=employees&otpReset=${req.id}`,
+          actionStatus: "pending",
+          createdBy: actorName,
+        });
+        return { ...req, portalOtpPreview: "" };
+      },
+
+      decideHrOtpReset: async (_, { id, approve }, context) => {
+        assertLeaveManager(context);
+        const { actorRole, actorName } = actorFromContext(context);
+        if (actorRole !== "Manager" && actorRole !== "Admin") {
+          throw new Error("Only Manager can approve OTP reset");
+        }
+        const req = await prisma.hr_otp_reset_request.findUnique({
+          where: { id: Number(id) },
+          include: { employee: true },
+        });
+        if (!req || !tenantHotelReadMatches(context, req.HotelName)) {
+          throw new Error("OTP reset request not found");
+        }
+        if (req.status !== "pending") {
+          throw new Error("OTP reset request is not pending");
+        }
+        if (!approve) {
+          const rejected = await prisma.hr_otp_reset_request.update({
+            where: { id: req.id },
+            data: {
+              status: "rejected",
+              decidedBy: actorName,
+              decidedAt: new Date(),
+            },
+            include: { employee: true },
+          });
+          await createHrNotification(prisma, {
+            HotelName: req.HotelName,
+            recipientRole: "HR",
+            kind: "otp_reset_decided",
+            title: "OTP reset rejected",
+            body: `Manager rejected OTP reset for ${req.employee?.fullName || "employee"}.`,
+            href: `/HR?section=employees`,
+            actionStatus: "done",
+            createdBy: actorName,
+          });
+          return { ...rejected, portalOtpPreview: "" };
+        }
+
+        const plain = generatePortalOtp();
+        const hash = await hashPortalOtp(plain);
+        const issued = issuePortalOtpPayload(plain, "Manager");
+        await prisma.$transaction([
+          prisma.hr_employee.update({
+            where: { id: req.employeeId },
+            data: {
+              portalOtpHash: hash,
+              portalOtpPreview: issued.portalOtpPreview,
+              portalOtpViewer: "Manager",
+              mustChangeOtp: true,
+              portalOtpIssuedAt: issued.portalOtpIssuedAt,
+              portalFirstLoginAt: null,
+            },
+          }),
+          prisma.hr_otp_reset_request.update({
+            where: { id: req.id },
+            data: {
+              status: "approved",
+              decidedBy: actorName,
+              decidedAt: new Date(),
+            },
+          }),
+        ]);
+        const updated = await prisma.hr_otp_reset_request.findUnique({
+          where: { id: req.id },
+          include: { employee: true },
+        });
+        await createHrNotification(prisma, {
+          HotelName: req.HotelName,
+          recipientRole: "HR",
+          kind: "otp_reset_decided",
+          title: "OTP reset approved",
+          body: `Manager approved OTP reset for ${req.employee?.fullName || "employee"}. The new code is visible only to Manager until first login.`,
+          href: `/HR?section=employees`,
+          actionStatus: "done",
+          createdBy: actorName,
+        });
+        return {
+          ...updated,
+          portalOtpPreview: visiblePortalOtpPreview(updated.employee, context),
+        };
+      },
+
+      markHrNotificationRead: async (_, { id }, context) => {
+        assertHrAccess(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorRole } = actorFromContext(context);
+        return markHrNotificationRead(prisma, {
+          id,
+          HotelName,
+          role: actorRole,
+        });
+      },
+
+      createHrEmployeeNotification: async (
+        _,
+        { employeeIds, title, body, href },
+        context,
+      ) => {
+        assertHrAccess(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const { actorName } = actorFromContext(context);
+        const ids = (employeeIds || []).map(Number).filter((n) => n > 0);
+        for (const eid of ids) {
+          await loadEmployeeInTenantOrThrow(context, eid);
+        }
+        return createHrEmployeeNotifications(prisma, {
+          HotelName,
+          employeeIds: ids,
+          title,
+          body,
+          href: href || `/`,
+          createdBy: actorName,
+        });
+      },
+    },
+
+    HrOtpResetRequest: {
+      portalOtpPreview: (row, _, context) => {
+        if (row.status !== "approved" || !row.employee) return "";
+        return visiblePortalOtpPreview(row.employee, context);
+      },
+      employee: (row) => row.employee ?? null,
     },
   };
 }
