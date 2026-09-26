@@ -2712,8 +2712,8 @@ export function createLodgingResolvers({
           if (!RESERVATION_STATUSES.has(s)) throw new Error("Invalid status");
           where.status = s;
         } else {
-          // Active board: cancel/check-in remove the booking from this list.
-          where.status = { notIn: ["cancelled", "checked_in"] };
+          // Active board: cancel / check-in / no-show leave this list.
+          where.status = { notIn: ["cancelled", "checked_in", "no_show"] };
         }
         if (from || to) {
           where.arrivalAt = {};
@@ -3503,12 +3503,31 @@ export function createLodgingResolvers({
           ) {
             throw new Error("Reservation not found");
           }
-          if (
-            linkedReservation.status === "cancelled" ||
-            linkedReservation.status === "no_show" ||
-            linkedReservation.status === "checked_in"
-          ) {
-            throw new Error("Reservation cannot be checked in");
+          const resStatus = String(linkedReservation.status || "").trim();
+          // Idempotent: retry after a successful check-in (e.g. client timeout).
+          if (resStatus === "checked_in") {
+            const existingStay = await prisma.lodging_stay.findFirst({
+              where: {
+                reservationId: linkedReservation.id,
+                status: { in: ["checked_in", "reserved"] },
+              },
+              include: STAY_INCLUDE,
+              orderBy: { id: "desc" },
+            });
+            if (existingStay) return existingStay;
+            throw new Error(
+              "Reservation was already checked in but no stay was found",
+            );
+          }
+          if (resStatus === "cancelled" || resStatus === "no_show") {
+            throw new Error(
+              `Reservation cannot be checked in (status: ${resStatus.replace(/_/g, " ")})`,
+            );
+          }
+          if (!OPEN_RESERVATION_STATUSES.includes(resStatus)) {
+            throw new Error(
+              `Reservation cannot be checked in (status: ${resStatus || "unknown"})`,
+            );
           }
         }
 
@@ -3555,47 +3574,45 @@ export function createLodgingResolvers({
           },
         );
 
+        // Always apply guestJson when present so reservation→check-in can fill
+        // ID / location fields that were never collected at reservation time.
         let guest;
-        if (guestId != null) {
+        const payload = guestJson ? parseGuestPayload(guestJson) : null;
+        const resolvedGuestId =
+          guestId != null
+            ? Number(guestId)
+            : payload?.id != null
+              ? Number(payload.id)
+              : linkedReservation?.guestId != null
+                ? Number(linkedReservation.guestId)
+                : null;
+
+        if (resolvedGuestId != null) {
           guest = await prisma.lodging_guest.findUnique({
-            where: { id: Number(guestId) },
+            where: { id: resolvedGuestId },
           });
           if (!guest || !tenantHotelReadMatches(context, guest.HotelName)) {
             throw new Error("Guest not found");
           }
-        } else if (linkedReservation?.guestId) {
-          guest = await prisma.lodging_guest.findUnique({
-            where: { id: linkedReservation.guestId },
-          });
-        } else {
-          const payload = parseGuestPayload(guestJson);
-          if (!payload) throw new Error("guestId or guestJson is required");
-          const gData = guestDataFromInput(payload, HotelName);
-          if (payload.id != null) {
-            const existing = await prisma.lodging_guest.findUnique({
-              where: { id: Number(payload.id) },
-            });
-            if (
-              !existing ||
-              !tenantHotelReadMatches(context, existing.HotelName)
-            ) {
-              throw new Error("Guest not found");
-            }
+          if (payload) {
+            const gData = guestDataFromInput(payload, HotelName);
             guest = await prisma.lodging_guest.update({
-              where: { id: existing.id },
+              where: { id: guest.id },
               data: gData,
             });
-          } else {
-            const byPhone = await prisma.lodging_guest.findFirst({
-              where: { HotelName, phone: gData.phone },
-            });
-            guest = byPhone
-              ? await prisma.lodging_guest.update({
-                  where: { id: byPhone.id },
-                  data: gData,
-                })
-              : await prisma.lodging_guest.create({ data: gData });
           }
+        } else {
+          if (!payload) throw new Error("guestId or guestJson is required");
+          const gData = guestDataFromInput(payload, HotelName);
+          const byPhone = await prisma.lodging_guest.findFirst({
+            where: { HotelName, phone: gData.phone },
+          });
+          guest = byPhone
+            ? await prisma.lodging_guest.update({
+                where: { id: byPhone.id },
+                data: gData,
+              })
+            : await prisma.lodging_guest.create({ data: gData });
         }
 
         const voucherCode = await generateVoucherCode(
@@ -6468,12 +6485,30 @@ export function createLodgingResolvers({
         if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
           throw new Error("Reservation not found");
         }
-        if (
-          row.status === "cancelled" ||
-          row.status === "no_show" ||
-          row.status === "checked_in"
-        ) {
-          throw new Error("Reservation cannot be checked in");
+        const resStatus = String(row.status || "").trim();
+        if (resStatus === "checked_in") {
+          const existingStay = await prisma.lodging_stay.findFirst({
+            where: {
+              reservationId: row.id,
+              status: { in: ["checked_in", "reserved"] },
+            },
+            include: STAY_INCLUDE,
+            orderBy: { id: "desc" },
+          });
+          if (existingStay) return existingStay;
+          throw new Error(
+            "Reservation was already checked in but no stay was found",
+          );
+        }
+        if (resStatus === "cancelled" || resStatus === "no_show") {
+          throw new Error(
+            `Reservation cannot be checked in (status: ${resStatus.replace(/_/g, " ")})`,
+          );
+        }
+        if (!OPEN_RESERVATION_STATUSES.includes(resStatus)) {
+          throw new Error(
+            `Reservation cannot be checked in (status: ${resStatus || "unknown"})`,
+          );
         }
         const ids = Array.isArray(roomIds)
           ? [...new Set(roomIds.map((x) => Number(x)).filter((n) => n > 0))]
