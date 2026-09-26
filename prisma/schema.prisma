@@ -1454,6 +1454,10 @@ model hr_employee {
   email           String    @default("")
   department      String    @default("")
   jobTitle        String    @default("")
+  /// leader | employee — org hierarchy position (not job title text)
+  orgPosition     String    @default("employee")
+  /// Optional team under department
+  teamId          Int?
   /// active | on_leave | terminated
   status          String    @default("active")
   hireDate        String    @default("") // YYYY-MM-DD
@@ -1488,10 +1492,13 @@ model hr_employee {
   incidents       hr_incident[]
   capabilities    hr_employee_capability[]
   otpResetRequests hr_otp_reset_request[]
+  team            hr_team?  @relation(fields: [teamId], references: [id], onDelete: SetNull)
 
   @@index([HotelName])
   @@index([HotelName, status])
   @@index([HotelName, department])
+  @@index([HotelName, orgPosition])
+  @@index([teamId])
   @@index([HotelName, credentialUserName])
 }
 
@@ -1523,8 +1530,30 @@ model hr_department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  teams hr_team[]
+
   @@unique([HotelName, code])
   @@index([HotelName])
+}
+
+/// HR — optional teams under a department
+model hr_team {
+  id           Int      @id @default(autoincrement())
+  HotelName    String
+  departmentId Int
+  code         String
+  label        String
+  active       Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  department hr_department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  employees  hr_employee[]
+
+  @@unique([HotelName, departmentId, code])
+  @@index([HotelName])
+  @@index([departmentId])
 }
 
 /// HR — tenant-configured incident categories with optional pay impact
@@ -1575,15 +1604,20 @@ model hr_leave_request {
   reason       String    @db.Text
   /// pending | approved | rejected | cancelled
   status       String    @default("pending")
+  /// Attached approval flow (nullable = resolved at runtime via defaults)
+  flowId       Int?
+  currentStepIndex Int   @default(0)
   decidedBy    String    @default("")
   decidedAt    DateTime?
   createdAt    DateTime  @default(now())
 
   employee hr_employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  flow     hr_approval_flow? @relation(fields: [flowId], references: [id], onDelete: SetNull)
 
   @@index([HotelName])
   @@index([HotelName, status])
   @@index([employeeId])
+  @@index([flowId])
 }
 
 model hr_attendance {
@@ -1794,6 +1828,48 @@ model hr_employee_capability {
   @@index([HotelName])
   @@index([employeeId])
   @@index([HotelName, code, active])
+}
+
+/// HR — configurable approval chain (per request type + optional department)
+model hr_approval_flow {
+  id                     Int      @id @default(autoincrement())
+  HotelName              String
+  /// leave | overtime | ...
+  requestType            String
+  /// null = tenant default for this requestType
+  departmentId           Int?
+  requireTeamLeaderFirst Boolean  @default(true)
+  /// [{ "kind": "team_leader"|"department_leader"|"hr"|"manager"|"admin" }, ...]
+  stepsJson              Json
+  active                 Boolean  @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  leaveRequests hr_leave_request[]
+
+  @@index([HotelName, requestType, active])
+  @@index([HotelName, departmentId])
+}
+
+/// HR — audit of each approval / reject / escalate step
+model hr_approval_action {
+  id               Int      @id @default(autoincrement())
+  HotelName        String
+  requestType      String
+  requestId        Int
+  stepIndex        Int
+  stepKind         String
+  /// employee | credential
+  actorType        String
+  actorEmployeeId  Int?
+  actorUserName    String   @default("")
+  /// approved | rejected | escalated
+  decision         String
+  note             String   @default("") @db.VarChar(500)
+  createdAt        DateTime @default(now())
+
+  @@index([HotelName, requestType, requestId])
+  @@index([HotelName, createdAt])
 }
 
 /// HR — portal OTP reset: HR requests → Manager approves → Manager-only preview

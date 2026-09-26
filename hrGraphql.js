@@ -28,8 +28,17 @@ import {
   markHrNotificationRead,
   createHrEmployeeNotifications,
 } from "./hrNotifications.js";
+import {
+  decideLeaveOnEngine,
+  normalizeSteps,
+  prepareLeaveFlowAttachment,
+  recordEscalations,
+  resolveAssignees,
+  STEP_KINDS,
+} from "./hrApprovalEngine.js";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ORG_POSITIONS = new Set(["leader", "employee"]);
 
 const EMPLOYEE_STATUSES = new Set(["active", "on_leave", "terminated"]);
 const WAGE_TYPES = new Set(["monthly", "weekly"]);
@@ -68,6 +77,9 @@ export const hrTypeDefsBlock = `
     email: String!
     department: String!
     jobTitle: String!
+    """leader | employee"""
+    orgPosition: String!
+    teamId: Int
     status: String!
     hireDate: String!
     endDate: String!
@@ -88,6 +100,26 @@ export const hrTypeDefsBlock = `
     profileImageUrl: String!
     createdAt: DateTime!
     updatedAt: DateTime!
+  }
+
+  type HrTeam {
+    id: Int!
+    HotelName: String!
+    departmentId: Int!
+    code: String!
+    label: String!
+    active: Boolean!
+    sortOrder: Int!
+  }
+
+  type HrApprovalFlow {
+    id: Int!
+    HotelName: String!
+    requestType: String!
+    departmentId: Int
+    requireTeamLeaderFirst: Boolean!
+    stepsJson: JSON!
+    active: Boolean!
   }
 
   type HrNotification {
@@ -139,6 +171,8 @@ export const hrTypeDefsBlock = `
     days: Float!
     reason: String!
     status: String!
+    flowId: Int
+    currentStepIndex: Int!
     decidedBy: String!
     decidedAt: DateTime
     createdAt: DateTime!
@@ -368,6 +402,8 @@ export const hrQueryFields = `
     hrEmployeeMe: HrEmployee
     hrLeaveTypes: [HrLeaveType!]!
     hrDepartments: [HrDepartment!]!
+    hrTeams(departmentId: Int): [HrTeam!]!
+    hrApprovalFlows(requestType: String): [HrApprovalFlow!]!
     hrIncidentTypes: [HrIncidentType!]!
     hrLeaveRequests(status: String): [HrLeaveRequest!]!
     hrLeaveBalances(employeeId: Int): [HrLeaveBalance!]!
@@ -391,6 +427,8 @@ export const hrMutationFields = `
       email: String
       department: String
       jobTitle: String
+      orgPosition: String
+      teamId: Int
       hireDate: String
       wageType: String
       baseSalaryETB: Float
@@ -407,6 +445,8 @@ export const hrMutationFields = `
       email: String
       department: String
       jobTitle: String
+      orgPosition: String
+      teamId: Int
       status: String
       hireDate: String
       wageType: String
@@ -423,6 +463,26 @@ export const hrMutationFields = `
     replaceHrDepartments(departments: [HrDepartmentInput!]!): [HrDepartment!]!
     replaceHrIncidentTypes(types: [HrIncidentTypeInput!]!): [HrIncidentType!]!
 
+    upsertHrTeam(
+      id: Int
+      departmentId: Int!
+      code: String!
+      label: String!
+      active: Boolean
+      sortOrder: Int
+    ): HrTeam!
+    deleteHrTeam(id: Int!): Boolean!
+
+    upsertHrApprovalFlow(
+      id: Int
+      requestType: String!
+      departmentId: Int
+      requireTeamLeaderFirst: Boolean
+      stepsJson: JSON!
+      active: Boolean
+    ): HrApprovalFlow!
+    deleteHrApprovalFlow(id: Int!): Boolean!
+
     upsertHrLeaveBalance(
       employeeId: Int!
       leaveType: String!
@@ -436,7 +496,7 @@ export const hrMutationFields = `
       days: Float
       reason: String
     ): HrLeaveRequest!
-    decideHrLeaveRequest(id: Int!, approve: Boolean!): HrLeaveRequest!
+    decideHrLeaveRequest(id: Int!, approve: Boolean!, note: String): HrLeaveRequest!
 
     clockHrAttendance(employeeId: Int!, action: String!): HrAttendance!
     upsertHrAttendance(
@@ -785,6 +845,28 @@ export function createHrResolvers({
         });
       },
 
+      hrTeams: async (_, { departmentId }, context) => {
+        assertHrAccess(context);
+        const where = { ...tenantHotelReadWhere(context) };
+        if (departmentId != null) where.departmentId = Number(departmentId);
+        return prisma.hr_team.findMany({
+          where,
+          orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+        });
+      },
+
+      hrApprovalFlows: async (_, { requestType }, context) => {
+        assertLeaveManager(context);
+        const where = { ...tenantHotelReadWhere(context) };
+        if (requestType != null && String(requestType).trim()) {
+          where.requestType = String(requestType).trim();
+        }
+        return prisma.hr_approval_flow.findMany({
+          where,
+          orderBy: [{ requestType: "asc" }, { id: "asc" }],
+        });
+      },
+
       hrIncidentTypes: async (_, __, context) => {
         assertHrAccess(context);
         return prisma.hr_incident_type.findMany({
@@ -1043,6 +1125,8 @@ export function createHrResolvers({
           email,
           department,
           jobTitle,
+          orgPosition,
+          teamId,
           hireDate,
           wageType,
           baseSalaryETB,
@@ -1062,6 +1146,16 @@ export function createHrResolvers({
           hireDate != null && String(hireDate).trim() !== ""
             ? assertYmd(hireDate, "hireDate")
             : "";
+        let pos = String(orgPosition ?? "employee").trim().toLowerCase();
+        if (!ORG_POSITIONS.has(pos)) pos = "employee";
+        let tid =
+          teamId != null && Number(teamId) > 0 ? Number(teamId) : null;
+        if (tid) {
+          const team = await prisma.hr_team.findFirst({
+            where: { id: tid, HotelName },
+          });
+          if (!team) throw new Error("Team not found");
+        }
 
         const employee = await prisma.hr_employee.create({
           data: {
@@ -1071,6 +1165,8 @@ export function createHrResolvers({
             email: String(email ?? "").trim(),
             department: String(department ?? "").trim(),
             jobTitle: String(jobTitle ?? "").trim(),
+            orgPosition: pos,
+            teamId: tid,
             status: "active",
             hireDate: hd,
             wageType: wt,
@@ -1109,6 +1205,8 @@ export function createHrResolvers({
           email,
           department,
           jobTitle,
+          orgPosition,
+          teamId,
           status,
           hireDate,
           wageType,
@@ -1133,6 +1231,22 @@ export function createHrResolvers({
         if (email != null) data.email = String(email).trim();
         if (department != null) data.department = String(department).trim();
         if (jobTitle != null) data.jobTitle = String(jobTitle).trim();
+        if (orgPosition != null) {
+          const pos = String(orgPosition).trim().toLowerCase();
+          if (!ORG_POSITIONS.has(pos)) throw new Error("Invalid org position");
+          data.orgPosition = pos;
+        }
+        if (teamId !== undefined) {
+          if (teamId == null || Number(teamId) <= 0) {
+            data.teamId = null;
+          } else {
+            const team = await prisma.hr_team.findFirst({
+              where: { id: Number(teamId), HotelName: employee.HotelName },
+            });
+            if (!team) throw new Error("Team not found");
+            data.teamId = team.id;
+          }
+        }
         if (status != null) {
           const s = String(status).trim();
           if (!EMPLOYEE_STATUSES.has(s)) throw new Error("Invalid employee status");
@@ -1370,6 +1484,112 @@ export function createHrResolvers({
         });
       },
 
+      upsertHrTeam: async (
+        _,
+        { id, departmentId, code, label, active, sortOrder },
+        context,
+      ) => {
+        assertLeaveManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const dept = await prisma.hr_department.findFirst({
+          where: { id: Number(departmentId), HotelName },
+        });
+        if (!dept) throw new Error("Department not found");
+        const c = String(code ?? "").trim();
+        const lab = String(label ?? "").trim();
+        if (!c || !lab) throw new Error("Team code and label are required");
+        const data = {
+          HotelName,
+          departmentId: dept.id,
+          code: c,
+          label: lab,
+          active: active == null ? true : Boolean(active),
+          sortOrder: sortOrder == null ? 0 : Number(sortOrder) || 0,
+        };
+        if (id != null && Number(id) > 0) {
+          const existing = await prisma.hr_team.findFirst({
+            where: { id: Number(id), HotelName },
+          });
+          if (!existing) throw new Error("Team not found");
+          return prisma.hr_team.update({ where: { id: existing.id }, data });
+        }
+        return prisma.hr_team.create({ data });
+      },
+
+      deleteHrTeam: async (_, { id }, context) => {
+        assertLeaveManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const existing = await prisma.hr_team.findFirst({
+          where: { id: Number(id), HotelName },
+        });
+        if (!existing) throw new Error("Team not found");
+        await prisma.hr_employee.updateMany({
+          where: { teamId: existing.id },
+          data: { teamId: null },
+        });
+        await prisma.hr_team.delete({ where: { id: existing.id } });
+        return true;
+      },
+
+      upsertHrApprovalFlow: async (
+        _,
+        {
+          id,
+          requestType,
+          departmentId,
+          requireTeamLeaderFirst,
+          stepsJson,
+          active,
+        },
+        context,
+      ) => {
+        assertLeaveManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const rt = String(requestType ?? "").trim();
+        if (!rt) throw new Error("requestType is required");
+        const steps = normalizeSteps(stepsJson);
+        if (!steps.length) throw new Error("At least one approval step is required");
+        let deptId = null;
+        if (departmentId != null && Number(departmentId) > 0) {
+          const dept = await prisma.hr_department.findFirst({
+            where: { id: Number(departmentId), HotelName },
+          });
+          if (!dept) throw new Error("Department not found");
+          deptId = dept.id;
+        }
+        const data = {
+          HotelName,
+          requestType: rt,
+          departmentId: deptId,
+          requireTeamLeaderFirst:
+            requireTeamLeaderFirst == null ? true : Boolean(requireTeamLeaderFirst),
+          stepsJson: steps,
+          active: active == null ? true : Boolean(active),
+        };
+        if (id != null && Number(id) > 0) {
+          const existing = await prisma.hr_approval_flow.findFirst({
+            where: { id: Number(id), HotelName },
+          });
+          if (!existing) throw new Error("Approval flow not found");
+          return prisma.hr_approval_flow.update({
+            where: { id: existing.id },
+            data,
+          });
+        }
+        return prisma.hr_approval_flow.create({ data });
+      },
+
+      deleteHrApprovalFlow: async (_, { id }, context) => {
+        assertLeaveManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const existing = await prisma.hr_approval_flow.findFirst({
+          where: { id: Number(id), HotelName },
+        });
+        if (!existing) throw new Error("Approval flow not found");
+        await prisma.hr_approval_flow.delete({ where: { id: existing.id } });
+        return true;
+      },
+
       upsertHrLeaveBalance: async (
         _,
         { employeeId, leaveType, balanceDays },
@@ -1432,7 +1652,24 @@ export function createHrResolvers({
             );
           }
         }
-        return prisma.hr_leave_request.create({
+
+        const businessType = String(context?.user?.businessType || "").trim();
+        const account = await prisma.tenant_account.findFirst({
+          where: {
+            OR: [
+              { hotelDisplayName: employee.HotelName },
+              { tinNumber: employee.HotelName },
+            ],
+          },
+          select: { hrSoloManagerEnabled: true },
+        });
+        const prep = await prepareLeaveFlowAttachment(prisma, {
+          employee,
+          businessType,
+          hrSoloManagerEnabled: Boolean(account?.hrSoloManagerEnabled),
+        });
+
+        const created = await prisma.hr_leave_request.create({
           data: {
             HotelName: employee.HotelName,
             employeeId: employee.id,
@@ -1442,12 +1679,53 @@ export function createHrResolvers({
             days: round2(d),
             reason: String(reason ?? "").trim(),
             status: "pending",
+            flowId: prep.flowId,
+            currentStepIndex: prep.currentStepIndex,
           },
+          include: { employee: true },
         });
+        await recordEscalations(prisma, {
+          HotelName: employee.HotelName,
+          requestId: created.id,
+          steps: prep.steps,
+          escalatedKinds: prep.escalatedKinds,
+        });
+
+        const step = prep.steps[prep.currentStepIndex] || { kind: "manager" };
+        const assignees = await resolveAssignees(prisma, {
+          HotelName: employee.HotelName,
+          kind: step.kind,
+          employee,
+        });
+        for (const role of assignees.roles) {
+          await createHrNotification(prisma, {
+            HotelName: employee.HotelName,
+            recipientRole: role,
+            kind: "leave_pending",
+            title: "Leave needs approval",
+            body: `${employee.fullName} requested ${lt} leave (${from} → ${to}).`,
+            href: `/HR?section=leave`,
+            actionStatus: "pending",
+            createdBy: actorFromContext(context).actorName,
+          });
+        }
+        for (const eid of assignees.employeeIds) {
+          await createHrNotification(prisma, {
+            HotelName: employee.HotelName,
+            employeeId: eid,
+            kind: "leave_pending",
+            title: "Leave needs your approval",
+            body: `${employee.fullName} requested ${lt} leave (${from} → ${to}).`,
+            href: `/approvals`,
+            actionStatus: "pending",
+            createdBy: actorFromContext(context).actorName,
+          });
+        }
+        return created;
       },
 
-      decideHrLeaveRequest: async (_, { id, approve }, context) => {
-        assertLeaveManager(context);
+      decideHrLeaveRequest: async (_, { id, approve, note }, context) => {
+        assertHrAccess(context);
         const request = await prisma.hr_leave_request.findUnique({
           where: { id: Number(id) },
           include: { employee: true },
@@ -1455,75 +1733,66 @@ export function createHrResolvers({
         if (!request || !tenantHotelReadMatches(context, request.HotelName)) {
           throw new Error("Leave request not found");
         }
-        if (request.status !== "pending") {
-          throw new Error("Leave request already decided");
+        const { actorName, actorRole } = actorFromContext(context);
+        const updated = await decideLeaveOnEngine(prisma, {
+          leave: request,
+          approve: Boolean(approve),
+          actor: { role: actorRole, name: actorName },
+          note,
+          onFinalApprove: async (leave) => {
+            await prisma.$transaction(async (tx) => {
+              const typeRow = await tx.hr_leave_type.findFirst({
+                where: {
+                  HotelName: leave.HotelName,
+                  code: leave.leaveType,
+                },
+              });
+              const deductPaid = typeRow
+                ? Boolean(typeRow.paid)
+                : ["annual", "sick"].includes(leave.leaveType);
+              if (deductPaid) {
+                const balance = await tx.hr_leave_balance.findUnique({
+                  where: {
+                    employeeId_leaveType: {
+                      employeeId: leave.employeeId,
+                      leaveType: leave.leaveType,
+                    },
+                  },
+                });
+                const nextBalance = round2(
+                  (balance ? Number(balance.balanceDays) : 0) -
+                    Number(leave.days),
+                );
+                await tx.hr_leave_balance.upsert({
+                  where: {
+                    employeeId_leaveType: {
+                      employeeId: leave.employeeId,
+                      leaveType: leave.leaveType,
+                    },
+                  },
+                  create: {
+                    HotelName: leave.HotelName,
+                    employeeId: leave.employeeId,
+                    leaveType: leave.leaveType,
+                    balanceDays: nextBalance,
+                  },
+                  update: { balanceDays: nextBalance },
+                });
+              }
+              await syncEmployeeLeaveStatus(tx, leave.employeeId);
+              await markAttendanceOnLeave(
+                tx,
+                leave.employee,
+                leave.fromYmd,
+                leave.toYmd,
+              );
+            });
+          },
+        });
+        if (updated.status === "rejected") {
+          await syncEmployeeLeaveStatus(prisma, updated.employeeId);
         }
-        const { actorName } = actorFromContext(context);
-        const nextStatus = approve ? "approved" : "rejected";
-
-        await prisma.$transaction(async (tx) => {
-          await tx.hr_leave_request.update({
-            where: { id: request.id },
-            data: {
-              status: nextStatus,
-              decidedBy: actorName,
-              decidedAt: new Date(),
-            },
-          });
-
-          const typeRow = await tx.hr_leave_type.findFirst({
-            where: {
-              HotelName: request.HotelName,
-              code: request.leaveType,
-            },
-          });
-          const deductPaid = typeRow
-            ? Boolean(typeRow.paid)
-            : ["annual", "sick"].includes(request.leaveType);
-          if (approve && deductPaid) {
-            const balance = await tx.hr_leave_balance.findUnique({
-              where: {
-                employeeId_leaveType: {
-                  employeeId: request.employeeId,
-                  leaveType: request.leaveType,
-                },
-              },
-            });
-            const nextBalance = round2(
-              (balance ? Number(balance.balanceDays) : 0) - Number(request.days),
-            );
-            await tx.hr_leave_balance.upsert({
-              where: {
-                employeeId_leaveType: {
-                  employeeId: request.employeeId,
-                  leaveType: request.leaveType,
-                },
-              },
-              create: {
-                HotelName: request.HotelName,
-                employeeId: request.employeeId,
-                leaveType: request.leaveType,
-                balanceDays: nextBalance,
-              },
-              update: { balanceDays: nextBalance },
-            });
-          }
-
-          await syncEmployeeLeaveStatus(tx, request.employeeId);
-          if (approve) {
-            await markAttendanceOnLeave(
-              tx,
-              request.employee,
-              request.fromYmd,
-              request.toYmd,
-            );
-          }
-        });
-
-        return prisma.hr_leave_request.findUnique({
-          where: { id: request.id },
-          include: { employee: true },
-        });
+        return updated;
       },
 
       clockHrAttendance: async (_, { employeeId, action }, context) => {
