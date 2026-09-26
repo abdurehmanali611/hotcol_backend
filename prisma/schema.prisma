@@ -1916,6 +1916,27 @@ model hr_notification {
   @@index([HotelName, createdAt])
 }
 
+/// HR — Manager must approve: terminate, attendance correction, payroll generate (F06/F12/F17)
+model hr_manager_pending_action {
+  id          Int       @id @default(autoincrement())
+  HotelName   String
+  /// terminate | attendance_correction | payroll_generate
+  kind        String
+  employeeId  Int?
+  payloadJson Json?
+  requestedBy String    @default("")
+  /// pending | approved | rejected
+  status      String    @default("pending")
+  decidedBy   String    @default("")
+  decidedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([HotelName, status])
+  @@index([HotelName, kind])
+  @@index([employeeId])
+}
+
 /// HR — biometric device registry (runtime only when tenant hrBiometricsEnabled)
 model hr_biometric_device {
   id         Int      @id @default(autoincrement())

@@ -36,6 +36,11 @@ import {
   resolveAssignees,
   STEP_KINDS,
 } from "./hrApprovalEngine.js";
+import {
+  createManagerPendingAction,
+  isDeskManagerOrAdmin,
+} from "./hrManagerPending.js";
+import { parseModulesJson } from "./lib/subscriptionPricing.js";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ORG_POSITIONS = new Set(["leader", "employee"]);
@@ -135,6 +140,21 @@ export const hrTypeDefsBlock = `
     createdBy: String!
     readAt: DateTime
     createdAt: DateTime!
+  }
+
+  type HrManagerPendingAction {
+    id: Int!
+    HotelName: String!
+    """terminate | attendance_correction | payroll_generate"""
+    kind: String!
+    employeeId: Int
+    payloadJson: JSON
+    requestedBy: String!
+    status: String!
+    decidedBy: String!
+    decidedAt: DateTime
+    createdAt: DateTime!
+    employee: HrEmployee
   }
 
   type HrOtpResetRequest {
@@ -418,6 +438,7 @@ export const hrQueryFields = `
     hrDashboardStats: HrDashboardStats!
     hrNotifications(unreadOnly: Boolean): [HrNotification!]!
     hrOtpResetRequests(status: String): [HrOtpResetRequest!]!
+    hrManagerPendingActions(status: String): [HrManagerPendingAction!]!
 `;
 
 export const hrMutationFields = `
@@ -556,6 +577,7 @@ export const hrMutationFields = `
     enableHrEmployeePortal(id: Int!): HrEmployee!
     requestHrOtpReset(employeeId: Int!): HrOtpResetRequest!
     decideHrOtpReset(id: Int!, approve: Boolean!): HrOtpResetRequest!
+    decideHrManagerPendingAction(id: Int!, approve: Boolean!): HrManagerPendingAction!
     markHrNotificationRead(id: Int!): HrNotification!
     createHrEmployeeNotification(
       employeeIds: [Int!]!
@@ -707,6 +729,285 @@ function slugLeaveTypeCode(value) {
 }
 
 /**
+ * Shared payroll generate used by Manager-direct create and pending approval.
+ */
+async function runCreateHrPayrollPeriod(
+  prisma,
+  _context,
+  {
+    HotelName,
+    actorName,
+    fromYmd: from,
+    toYmd: to,
+    notes,
+    employeeIds,
+    wageScope,
+  },
+) {
+  const named = namedMonthFromPayRange(from, to);
+  const payDate = todayYmd();
+  const rangeDays = inclusiveDayCount(from, to);
+
+  const existing = await prisma.hr_payroll_period.findUnique({
+    where: {
+      HotelName_fromYmd_toYmd: { HotelName, fromYmd: from, toYmd: to },
+    },
+  });
+  if (existing) {
+    const st = String(existing.status || "").trim();
+    // Open runs can be replaced so later incidents/attendance are picked up.
+    if (st === "open") {
+      await prisma.hr_payroll_period.delete({
+        where: { id: existing.id },
+      });
+    } else {
+      throw new Error(
+        "A payroll run already exists for this From–To range. Only open runs can be replaced — choose different dates or keep the existing run.",
+      );
+    }
+  }
+
+  const windows = await prisma.hr_wage_pay_window.findMany({
+    where: { HotelName, active: true },
+  });
+  const windowByWage = new Map(
+    windows.map((w) => [String(w.wageType), w]),
+  );
+
+  const idFilter = Array.isArray(employeeIds)
+    ? employeeIds.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+    : [];
+
+  let scope = String(wageScope ?? "").trim().toLowerCase();
+  if (idFilter.length) scope = "employee";
+  if (!scope) scope = "batch";
+  if (!["batch", "monthly", "weekly", "employee"].includes(scope)) {
+    throw new Error("Invalid wage scope");
+  }
+
+  const minGapForWages = (wageTypes) => {
+    let minGap = 0;
+    for (const wt of wageTypes) {
+      const w = windowByWage.get(wt);
+      if (!w) continue;
+      const fd = Number(w.fromDay) || 0;
+      if (fd > minGap) minGap = fd;
+    }
+    return minGap;
+  };
+
+  let targetWageTypes = [];
+  if (scope === "batch") {
+    targetWageTypes = ["monthly", "weekly"].filter((wt) =>
+      windowByWage.has(wt),
+    );
+    if (!targetWageTypes.length) {
+      throw new Error(
+        "Configure wage-type pay windows (monthly and/or weekly) before batch generate",
+      );
+    }
+  } else if (scope === "monthly" || scope === "weekly") {
+    if (!windowByWage.has(scope)) {
+      throw new Error(
+        `Configure a ${scope} wage-type pay window in Payroll settings first`,
+      );
+    }
+    targetWageTypes = [scope];
+  }
+
+  let employees;
+  if (idFilter.length) {
+    employees = await prisma.hr_employee.findMany({
+      where: {
+        HotelName,
+        id: { in: idFilter },
+        status: { in: ["active", "on_leave"] },
+      },
+      orderBy: { fullName: "asc" },
+    });
+    const empWages = [
+      ...new Set(
+        employees
+          .map((e) => String(e.wageType || "").trim())
+          .filter((wt) => WAGE_TYPES.has(wt)),
+      ),
+    ];
+    const minGap = minGapForWages(empWages);
+    if (minGap > 0 && rangeDays < minGap) {
+      throw new Error(
+        `From–To must cover at least ${minGap} day${minGap === 1 ? "" : "s"} for the selected employee wage type(s)`,
+      );
+    }
+  } else {
+    const minGap = minGapForWages(targetWageTypes);
+    if (minGap > 0 && rangeDays < minGap) {
+      throw new Error(
+        `From–To must cover at least ${minGap} day${minGap === 1 ? "" : "s"} for ${scope === "batch" ? "batch (largest wage-window from-day)" : `${scope} wage window`}`,
+      );
+    }
+    employees = await prisma.hr_employee.findMany({
+      where: {
+        HotelName,
+        status: { in: ["active", "on_leave"] },
+        wageType: { in: targetWageTypes },
+      },
+      orderBy: { fullName: "asc" },
+    });
+  }
+  if (!employees.length) {
+    throw new Error("No eligible employees for this payroll run");
+  }
+
+  const lineRules = await prisma.hr_payroll_line_rule.findMany({
+    where: { HotelName, active: true },
+    orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+  });
+  const appliedRules = lineRules.filter((rule) =>
+    lineRuleApplies(rule, from, to),
+  );
+
+  const employeeIdList = employees.map((e) => e.id);
+  const [incidents, leaveRequests, leaveTypes, attendanceRows, incidentTypes] =
+    await Promise.all([
+      prisma.hr_incident.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          occurredYmd: { gte: from, lte: to },
+        },
+      }),
+      prisma.hr_leave_request.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          status: "approved",
+          fromYmd: { lte: to },
+          toYmd: { gte: from },
+        },
+      }),
+      prisma.hr_leave_type.findMany({ where: { HotelName } }),
+      prisma.hr_attendance.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          workDate: { gte: from, lte: to },
+        },
+      }),
+      prisma.hr_incident_type.findMany({
+        where: { HotelName, active: true },
+      }),
+    ]);
+
+  const leaveTypesByCode = Object.fromEntries(
+    leaveTypes.map((t) => [t.code, t]),
+  );
+  const leaveTypeLabels = Object.fromEntries(
+    leaveTypes.map((t) => [t.code, t.label]),
+  );
+  const attendanceLinkedTypes = incidentTypes.filter(
+    (t) =>
+      String(t.attendanceLink || "").trim() &&
+      (Number(t.percentOfSalary) > 0 || Number(t.amountETB) > 0),
+  );
+
+  const period = await prisma.$transaction(async (tx) => {
+    const created = await tx.hr_payroll_period.create({
+      data: {
+        HotelName,
+        periodKey: named.periodKey,
+        monthName: named.monthName,
+        fromYmd: from,
+        toYmd: to,
+        status: "open",
+        notes: String(notes ?? "").trim(),
+        createdBy: actorName,
+      },
+    });
+
+    let seq = 1;
+    for (const employee of employees) {
+      const empIncidents = incidents.filter(
+        (i) => Number(i.employeeId) === Number(employee.id),
+      );
+      const empLeaves = leaveRequests.filter(
+        (l) => l.employeeId === employee.id,
+      );
+      const unpaidLeaves = empLeaves.filter((l) => {
+        const type = leaveTypesByCode[l.leaveType];
+        if (type) return type.paid === false;
+        return String(l.leaveType).toLowerCase().includes("unpaid");
+      });
+      const leaveDates = new Set();
+      for (const leave of empLeaves) {
+        for (const ymd of eachYmdInRange(
+          leave.fromYmd > from ? leave.fromYmd : from,
+          leave.toYmd < to ? leave.toYmd : to,
+        )) {
+          leaveDates.add(ymd);
+        }
+      }
+      const attendanceByDate = new Map();
+      for (const row of attendanceRows) {
+        if (row.employeeId !== employee.id) continue;
+        if (leaveDates.has(row.workDate)) continue;
+        attendanceByDate.set(row.workDate, row.status);
+      }
+
+      const built = buildIntegratedPayLines({
+        employee,
+        fromYmd: from,
+        toYmd: to,
+        appliedRules,
+        incidents: empIncidents,
+        unpaidLeaves,
+        leaveTypeLabels,
+        attendanceByDate,
+        leaveDates,
+        attendanceLinkedTypes,
+      });
+      const number = payslipNumberFor(employee.id, created.id, seq++);
+      const weeksNote =
+        String(employee.wageType || "").trim() === "weekly" &&
+        built.weeks
+          ? `payrollWeeks=${built.weeks}`
+          : "";
+
+      await tx.hr_payslip.create({
+        data: {
+          HotelName,
+          periodId: created.id,
+          employeeId: employee.id,
+          payslipNumber: number,
+          employeeName: employee.fullName,
+          jobTitle: employee.jobTitle || "",
+          taxPeriod: named.monthName,
+          organizationLocation: HotelName,
+          payDate,
+          hireDate: employee.hireDate || "",
+          wageType: employee.wageType || "",
+          bankName: employee.bankName || "",
+          accountNumber: employee.accountNumber || "",
+          basePayETB: built.gross,
+          overtimeETB: 0,
+          tipsETB: 0,
+          deductionsETB: built.totalDeductionsETB,
+          netPayETB: built.netPayETB,
+          grossSalaryETB: built.gross,
+          totalEarningsETB: built.totalEarningsETB,
+          totalDeductionsETB: built.totalDeductionsETB,
+          earningsJson: JSON.stringify(built.earnings),
+          deductionsJson: JSON.stringify(built.deductions),
+          paymentStatus: "unpaid",
+          notes: weeksNote,
+        },
+      });
+    }
+    return created;
+  });
+  return period;
+}
+
+/**
  * @param {{
  *   prisma: import("@prisma/client").PrismaClient,
  *   tenantScopeFromContext: Function,
@@ -732,6 +1033,53 @@ export function createHrResolvers({
   const assertPayrollRunner = (context) =>
     assertRole(context, ["HR", "Admin"]);
   const assertHrAccess = assertHrStaff;
+
+  async function loadTenantModules(context) {
+    const tin = requireTenant(context, tenantScopeFromContext);
+    const acct = await prisma.tenant_account.findUnique({
+      where: { tinNumber: tin },
+      select: { modules: true },
+    });
+    return parseModulesJson(acct?.modules);
+  }
+
+  async function assertTenantHrFinance(context) {
+    const mods = await loadTenantModules(context);
+    const set = new Set(mods.map((m) => String(m)));
+    if (!set.has("HR Module") || !set.has("Financial Management")) {
+      throw new Error(
+        "HR finance requires HR Module and Financial Management",
+      );
+    }
+  }
+
+  /** HR/Admin always; Finance when tenant has HR Module + Financial Management. */
+  async function assertCanMarkPayslipsPaid(context) {
+    const { actorRole } = actorFromContext(context);
+    if (actorRole === "HR" || actorRole === "Admin") return;
+    if (actorRole === "Finance") {
+      await assertTenantHrFinance(context);
+      return;
+    }
+    throw new Error("Not authorized to mark payslips paid");
+  }
+
+  /** Staff HR + Manager; Finance for payroll read when HR+Fin. */
+  async function assertHrOrFinancePayrollRead(context) {
+    const { actorRole } = actorFromContext(context);
+    if (HR_STAFF_ROLES.includes(actorRole)) return;
+    if (actorRole === "Finance") {
+      await assertTenantHrFinance(context);
+      return;
+    }
+    assertHrStaff(context);
+  }
+
+  function pendingManagerApprovalError(message) {
+    const err = new Error(message);
+    err.extensions = { code: "PENDING_MANAGER_APPROVAL" };
+    return err;
+  }
 
   async function loadEmployeeOrThrow(id) {
     const employee = await prisma.hr_employee.findUnique({
@@ -986,7 +1334,7 @@ export function createHrResolvers({
       },
 
       hrPayrollPeriods: async (_, __, context) => {
-        assertHrAccess(context);
+        await assertHrOrFinancePayrollRead(context);
         return prisma.hr_payroll_period.findMany({
           where: tenantHotelReadWhere(context),
           orderBy: [{ fromYmd: "desc" }, { id: "desc" }],
@@ -994,7 +1342,7 @@ export function createHrResolvers({
       },
 
       hrPayslips: async (_, { periodId, paymentStatus }, context) => {
-        assertHrAccess(context);
+        await assertHrOrFinancePayrollRead(context);
         const where = { ...tenantHotelReadWhere(context) };
         if (periodId != null) {
           const period = await prisma.hr_payroll_period.findUnique({
@@ -1111,6 +1459,18 @@ export function createHrResolvers({
         return prisma.hr_otp_reset_request.findMany({
           where,
           include: { employee: true },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        });
+      },
+
+      hrManagerPendingActions: async (_, { status }, context) => {
+        assertLeaveManager(context);
+        const where = { ...tenantHotelReadWhere(context) };
+        if (status != null && String(status).trim()) {
+          where.status = String(status).trim();
+        }
+        return prisma.hr_manager_pending_action.findMany({
+          where,
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         });
       },
@@ -1291,10 +1651,35 @@ export function createHrResolvers({
       terminateHrEmployee: async (_, { id, endDate }, context) => {
         assertHrAccess(context);
         const employee = await loadEmployeeInTenantOrThrow(context, id);
+        const { actorRole, actorName } = actorFromContext(context);
         const ed =
           endDate != null && String(endDate).trim() !== ""
             ? assertYmd(endDate, "endDate")
             : todayYmd();
+
+        if (!isDeskManagerOrAdmin(actorRole)) {
+          await createManagerPendingAction(prisma, {
+            HotelName: employee.HotelName,
+            kind: "terminate",
+            employeeId: employee.id,
+            payloadJson: { endDate: ed },
+            requestedBy: actorName,
+          });
+          await createHrNotification(prisma, {
+            HotelName: employee.HotelName,
+            recipientRole: "Manager",
+            kind: "manager_pending_terminate",
+            title: "Terminate employee awaiting approval",
+            body: `${actorName || "HR"} requested termination of ${employee.fullName}.`,
+            href: "manager-pending",
+            actionStatus: "pending",
+            createdBy: actorName,
+          });
+          throw pendingManagerApprovalError(
+            "Termination submitted for Manager approval.",
+          );
+        }
+
         return prisma.hr_employee.update({
           where: { id: employee.id },
           data: { status: "terminated", endDate: ed },
@@ -1862,6 +2247,7 @@ export function createHrResolvers({
       ) => {
         assertHrAccess(context);
         const employee = await loadEmployeeInTenantOrThrow(context, employeeId);
+        const { actorRole, actorName } = actorFromContext(context);
         const wd = assertYmd(workDate, "workDate");
         const onLeave = await prisma.hr_leave_request.findFirst({
           where: {
@@ -1914,6 +2300,55 @@ export function createHrResolvers({
           }
           if (st != null) updateData.status = st;
           if (notes != null) updateData.notes = String(notes).trim();
+        }
+
+        if (!isDeskManagerOrAdmin(actorRole)) {
+          await createManagerPendingAction(prisma, {
+            HotelName: employee.HotelName,
+            kind: "attendance_correction",
+            employeeId: employee.id,
+            payloadJson: {
+              workDate: wd,
+              createData: {
+                ...createData,
+                clockInAt: createData.clockInAt
+                  ? createData.clockInAt.toISOString()
+                  : null,
+                clockOutAt: createData.clockOutAt
+                  ? createData.clockOutAt.toISOString()
+                  : null,
+              },
+              updateData: {
+                ...updateData,
+                clockInAt:
+                  updateData.clockInAt !== undefined
+                    ? updateData.clockInAt
+                      ? updateData.clockInAt.toISOString()
+                      : null
+                    : undefined,
+                clockOutAt:
+                  updateData.clockOutAt !== undefined
+                    ? updateData.clockOutAt
+                      ? updateData.clockOutAt.toISOString()
+                      : null
+                    : undefined,
+              },
+            },
+            requestedBy: actorName,
+          });
+          await createHrNotification(prisma, {
+            HotelName: employee.HotelName,
+            recipientRole: "Manager",
+            kind: "manager_pending_attendance",
+            title: "Attendance correction awaiting approval",
+            body: `${actorName || "HR"} requested a correction for ${employee.fullName} on ${wd}.`,
+            href: "manager-pending",
+            actionStatus: "pending",
+            createdBy: actorName,
+          });
+          throw pendingManagerApprovalError(
+            "Attendance correction submitted for Manager approval.",
+          );
         }
 
         return prisma.hr_attendance.upsert({
@@ -1998,278 +2433,57 @@ export function createHrResolvers({
         { fromYmd, toYmd, notes, employeeIds, wageScope },
         context,
       ) => {
-        assertPayrollRunner(context);
+        assertHrAccess(context);
+        const { actorName, actorRole } = actorFromContext(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
-        const { actorName } = actorFromContext(context);
         const from = assertYmd(fromYmd, "fromYmd");
         const to = assertYmd(toYmd, "toYmd");
         if (to < from) throw new Error("toYmd must not be before fromYmd");
-        const named = namedMonthFromPayRange(from, to);
-        const payDate = todayYmd();
-        const rangeDays = inclusiveDayCount(from, to);
 
-        const existing = await prisma.hr_payroll_period.findUnique({
-          where: {
-            HotelName_fromYmd_toYmd: { HotelName, fromYmd: from, toYmd: to },
-          },
-        });
-        if (existing) {
-          const st = String(existing.status || "").trim();
-          // Open runs can be replaced so later incidents/attendance are picked up.
-          if (st === "open") {
-            await prisma.hr_payroll_period.delete({
-              where: { id: existing.id },
-            });
-          } else {
-            throw new Error(
-              "A payroll run already exists for this From–To range. Only open runs can be replaced — choose different dates or keep the existing run.",
-            );
-          }
-        }
-
-        const windows = await prisma.hr_wage_pay_window.findMany({
-          where: { HotelName, active: true },
-        });
-        const windowByWage = new Map(
-          windows.map((w) => [String(w.wageType), w]),
-        );
-
-        const idFilter = Array.isArray(employeeIds)
-          ? employeeIds.map((n) => Number(n)).filter((n) => Number.isFinite(n))
-          : [];
-
-        let scope = String(wageScope ?? "").trim().toLowerCase();
-        if (idFilter.length) scope = "employee";
-        if (!scope) scope = "batch";
-        if (!["batch", "monthly", "weekly", "employee"].includes(scope)) {
-          throw new Error("Invalid wage scope");
-        }
-
-        const minGapForWages = (wageTypes) => {
-          let minGap = 0;
-          for (const wt of wageTypes) {
-            const w = windowByWage.get(wt);
-            if (!w) continue;
-            const fd = Number(w.fromDay) || 0;
-            if (fd > minGap) minGap = fd;
-          }
-          return minGap;
-        };
-
-        let targetWageTypes = [];
-        if (scope === "batch") {
-          targetWageTypes = ["monthly", "weekly"].filter((wt) =>
-            windowByWage.has(wt),
+        if (!isDeskManagerOrAdmin(actorRole)) {
+          await createManagerPendingAction(prisma, {
+            HotelName,
+            kind: "payroll_generate",
+            payloadJson: {
+              fromYmd: from,
+              toYmd: to,
+              notes: notes != null ? String(notes) : "",
+              employeeIds: Array.isArray(employeeIds)
+                ? employeeIds.map((n) => Number(n)).filter((n) => n > 0)
+                : null,
+              wageScope: wageScope != null ? String(wageScope) : null,
+            },
+            requestedBy: actorName,
+          });
+          await createHrNotification(prisma, {
+            HotelName,
+            recipientRole: "Manager",
+            kind: "manager_pending_payroll",
+            title: "Payroll generate awaiting approval",
+            body: `${actorName || "HR"} requested payroll for ${from} → ${to}.`,
+            href: "manager-pending",
+            actionStatus: "pending",
+            createdBy: actorName,
+          });
+          throw pendingManagerApprovalError(
+            "Payroll generation submitted for Manager approval.",
           );
-          if (!targetWageTypes.length) {
-            throw new Error(
-              "Configure wage-type pay windows (monthly and/or weekly) before batch generate",
-            );
-          }
-        } else if (scope === "monthly" || scope === "weekly") {
-          if (!windowByWage.has(scope)) {
-            throw new Error(
-              `Configure a ${scope} wage-type pay window in Payroll settings first`,
-            );
-          }
-          targetWageTypes = [scope];
         }
 
-        let employees;
-        if (idFilter.length) {
-          employees = await prisma.hr_employee.findMany({
-            where: {
-              HotelName,
-              id: { in: idFilter },
-              status: { in: ["active", "on_leave"] },
-            },
-            orderBy: { fullName: "asc" },
-          });
-          const empWages = [
-            ...new Set(
-              employees
-                .map((e) => String(e.wageType || "").trim())
-                .filter((wt) => WAGE_TYPES.has(wt)),
-            ),
-          ];
-          const minGap = minGapForWages(empWages);
-          if (minGap > 0 && rangeDays < minGap) {
-            throw new Error(
-              `From–To must cover at least ${minGap} day${minGap === 1 ? "" : "s"} for the selected employee wage type(s)`,
-            );
-          }
-        } else {
-          const minGap = minGapForWages(targetWageTypes);
-          if (minGap > 0 && rangeDays < minGap) {
-            throw new Error(
-              `From–To must cover at least ${minGap} day${minGap === 1 ? "" : "s"} for ${scope === "batch" ? "batch (largest wage-window from-day)" : `${scope} wage window`}`,
-            );
-          }
-          employees = await prisma.hr_employee.findMany({
-            where: {
-              HotelName,
-              status: { in: ["active", "on_leave"] },
-              wageType: { in: targetWageTypes },
-            },
-            orderBy: { fullName: "asc" },
-          });
-        }
-        if (!employees.length) {
-          throw new Error("No eligible employees for this payroll run");
-        }
-
-        const lineRules = await prisma.hr_payroll_line_rule.findMany({
-          where: { HotelName, active: true },
-          orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
+        return runCreateHrPayrollPeriod(prisma, context, {
+          HotelName,
+          actorName,
+          fromYmd: from,
+          toYmd: to,
+          notes,
+          employeeIds,
+          wageScope,
+          tenantHotelReadMatches,
         });
-        const appliedRules = lineRules.filter((rule) =>
-          lineRuleApplies(rule, from, to),
-        );
-
-        const employeeIdList = employees.map((e) => e.id);
-        const [incidents, leaveRequests, leaveTypes, attendanceRows, incidentTypes] =
-          await Promise.all([
-            prisma.hr_incident.findMany({
-              where: {
-                HotelName,
-                employeeId: { in: employeeIdList },
-                occurredYmd: { gte: from, lte: to },
-              },
-            }),
-            prisma.hr_leave_request.findMany({
-              where: {
-                HotelName,
-                employeeId: { in: employeeIdList },
-                status: "approved",
-                fromYmd: { lte: to },
-                toYmd: { gte: from },
-              },
-            }),
-            prisma.hr_leave_type.findMany({ where: { HotelName } }),
-            prisma.hr_attendance.findMany({
-              where: {
-                HotelName,
-                employeeId: { in: employeeIdList },
-                workDate: { gte: from, lte: to },
-              },
-            }),
-            prisma.hr_incident_type.findMany({
-              where: { HotelName, active: true },
-            }),
-          ]);
-
-        const leaveTypesByCode = Object.fromEntries(
-          leaveTypes.map((t) => [t.code, t]),
-        );
-        const leaveTypeLabels = Object.fromEntries(
-          leaveTypes.map((t) => [t.code, t.label]),
-        );
-        const attendanceLinkedTypes = incidentTypes.filter(
-          (t) =>
-            String(t.attendanceLink || "").trim() &&
-            (Number(t.percentOfSalary) > 0 || Number(t.amountETB) > 0),
-        );
-
-        const period = await prisma.$transaction(async (tx) => {
-          const created = await tx.hr_payroll_period.create({
-            data: {
-              HotelName,
-              periodKey: named.periodKey,
-              monthName: named.monthName,
-              fromYmd: from,
-              toYmd: to,
-              status: "open",
-              notes: String(notes ?? "").trim(),
-              createdBy: actorName,
-            },
-          });
-
-          let seq = 1;
-          for (const employee of employees) {
-            const empIncidents = incidents.filter(
-              (i) => Number(i.employeeId) === Number(employee.id),
-            );
-            const empLeaves = leaveRequests.filter(
-              (l) => l.employeeId === employee.id,
-            );
-            const unpaidLeaves = empLeaves.filter((l) => {
-              const type = leaveTypesByCode[l.leaveType];
-              if (type) return type.paid === false;
-              return String(l.leaveType).toLowerCase().includes("unpaid");
-            });
-            const leaveDates = new Set();
-            for (const leave of empLeaves) {
-              for (const ymd of eachYmdInRange(
-                leave.fromYmd > from ? leave.fromYmd : from,
-                leave.toYmd < to ? leave.toYmd : to,
-              )) {
-                leaveDates.add(ymd);
-              }
-            }
-            const attendanceByDate = new Map();
-            for (const row of attendanceRows) {
-              if (row.employeeId !== employee.id) continue;
-              if (leaveDates.has(row.workDate)) continue;
-              attendanceByDate.set(row.workDate, row.status);
-            }
-
-            const built = buildIntegratedPayLines({
-              employee,
-              fromYmd: from,
-              toYmd: to,
-              appliedRules,
-              incidents: empIncidents,
-              unpaidLeaves,
-              leaveTypeLabels,
-              attendanceByDate,
-              leaveDates,
-              attendanceLinkedTypes,
-            });
-            const number = payslipNumberFor(employee.id, created.id, seq++);
-            const weeksNote =
-              String(employee.wageType || "").trim() === "weekly" &&
-              built.weeks
-                ? `payrollWeeks=${built.weeks}`
-                : "";
-
-            await tx.hr_payslip.create({
-              data: {
-                HotelName,
-                periodId: created.id,
-                employeeId: employee.id,
-                payslipNumber: number,
-                employeeName: employee.fullName,
-                jobTitle: employee.jobTitle || "",
-                taxPeriod: named.monthName,
-                organizationLocation: HotelName,
-                payDate,
-                hireDate: employee.hireDate || "",
-                wageType: employee.wageType || "",
-                bankName: employee.bankName || "",
-                accountNumber: employee.accountNumber || "",
-                basePayETB: built.gross,
-                overtimeETB: 0,
-                tipsETB: 0,
-                deductionsETB: built.totalDeductionsETB,
-                netPayETB: built.netPayETB,
-                grossSalaryETB: built.gross,
-                totalEarningsETB: built.totalEarningsETB,
-                totalDeductionsETB: built.totalDeductionsETB,
-                earningsJson: JSON.stringify(built.earnings),
-                deductionsJson: JSON.stringify(built.deductions),
-                paymentStatus: "unpaid",
-                notes: weeksNote,
-              },
-            });
-          }
-          return created;
-        });
-
-        return period;
       },
 
       markHrPayslipsPaid: async (_, { payslipIds }, context) => {
-        assertPayrollRunner(context);
+        await assertCanMarkPayslipsPaid(context);
         const { actorName } = actorFromContext(context);
         const ids = (Array.isArray(payslipIds) ? payslipIds : [])
           .map((n) => Number(n))
@@ -2342,7 +2556,7 @@ export function createHrResolvers({
           }
           if (row.paymentStatus !== "marked_paid") {
             throw new Error(
-              `Payslip ${row.payslipNumber || row.id} must be marked paid by HR first`,
+              `Payslip ${row.payslipNumber || row.id} must be marked paid by HR or Finance first`,
             );
           }
         }
@@ -2702,6 +2916,120 @@ export function createHrResolvers({
         };
       },
 
+      decideHrManagerPendingAction: async (_, { id, approve }, context) => {
+        assertLeaveManager(context);
+        const { actorName } = actorFromContext(context);
+        const row = await prisma.hr_manager_pending_action.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!row || !tenantHotelReadMatches(context, row.HotelName)) {
+          throw new Error("Pending action not found");
+        }
+        if (row.status !== "pending") {
+          throw new Error("Action is not pending");
+        }
+
+        if (!approve) {
+          const rejected = await prisma.hr_manager_pending_action.update({
+            where: { id: row.id },
+            data: {
+              status: "rejected",
+              decidedBy: actorName,
+              decidedAt: new Date(),
+            },
+          });
+          await createHrNotification(prisma, {
+            HotelName: row.HotelName,
+            recipientRole: "HR",
+            kind: "manager_pending_decided",
+            title: "Request rejected",
+            body: `Manager rejected ${row.kind.replaceAll("_", " ")} request.`,
+            href: "manager-pending",
+            actionStatus: "done",
+            createdBy: actorName,
+          });
+          return rejected;
+        }
+
+        const payload = row.payloadJson && typeof row.payloadJson === "object"
+          ? row.payloadJson
+          : {};
+
+        if (row.kind === "terminate") {
+          if (!row.employeeId) throw new Error("Missing employee on terminate request");
+          const ed =
+            payload.endDate && String(payload.endDate).trim()
+              ? assertYmd(payload.endDate, "endDate")
+              : todayYmd();
+          await prisma.hr_employee.update({
+            where: { id: row.employeeId },
+            data: { status: "terminated", endDate: ed },
+          });
+        } else if (row.kind === "attendance_correction") {
+          if (!row.employeeId) throw new Error("Missing employee on attendance request");
+          const wd = assertYmd(payload.workDate, "workDate");
+          const reviveDate = (v) =>
+            v == null || v === undefined ? v : v ? new Date(v) : null;
+          const createData = {
+            ...(payload.createData || {}),
+            HotelName: row.HotelName,
+            employeeId: row.employeeId,
+            workDate: wd,
+            clockInAt: reviveDate(payload.createData?.clockInAt),
+            clockOutAt: reviveDate(payload.createData?.clockOutAt),
+          };
+          const updateData = { ...(payload.updateData || {}) };
+          if (updateData.clockInAt !== undefined) {
+            updateData.clockInAt = reviveDate(updateData.clockInAt);
+          }
+          if (updateData.clockOutAt !== undefined) {
+            updateData.clockOutAt = reviveDate(updateData.clockOutAt);
+          }
+          await prisma.hr_attendance.upsert({
+            where: {
+              employeeId_workDate: {
+                employeeId: row.employeeId,
+                workDate: wd,
+              },
+            },
+            create: createData,
+            update: updateData,
+          });
+        } else if (row.kind === "payroll_generate") {
+          await runCreateHrPayrollPeriod(prisma, context, {
+            HotelName: row.HotelName,
+            actorName: row.requestedBy || actorName,
+            fromYmd: assertYmd(payload.fromYmd, "fromYmd"),
+            toYmd: assertYmd(payload.toYmd, "toYmd"),
+            notes: payload.notes,
+            employeeIds: payload.employeeIds,
+            wageScope: payload.wageScope,
+          });
+        } else {
+          throw new Error(`Unknown pending kind: ${row.kind}`);
+        }
+
+        const approved = await prisma.hr_manager_pending_action.update({
+          where: { id: row.id },
+          data: {
+            status: "approved",
+            decidedBy: actorName,
+            decidedAt: new Date(),
+          },
+        });
+        await createHrNotification(prisma, {
+          HotelName: row.HotelName,
+          recipientRole: "HR",
+          kind: "manager_pending_decided",
+          title: "Request approved",
+          body: `Manager approved ${row.kind.replaceAll("_", " ")} request.`,
+          href: "manager-pending",
+          actionStatus: "done",
+          createdBy: actorName,
+        });
+        return approved;
+      },
+
       markHrNotificationRead: async (_, { id }, context) => {
         assertHrAccess(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
@@ -2742,6 +3070,15 @@ export function createHrResolvers({
         return visiblePortalOtpPreview(row.employee, context);
       },
       employee: (row) => row.employee ?? null,
+    },
+
+    HrManagerPendingAction: {
+      employee: async (row) => {
+        if (!row.employeeId) return null;
+        return prisma.hr_employee.findUnique({
+          where: { id: Number(row.employeeId) },
+        });
+      },
     },
   };
 }

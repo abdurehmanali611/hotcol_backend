@@ -3209,6 +3209,9 @@ const resolvers = {
   HrOtpResetRequest: {
     ...(hrResolvers.HrOtpResetRequest || {}),
   },
+  HrManagerPendingAction: {
+    ...(hrResolvers.HrManagerPendingAction || {}),
+  },
   CrystalName: {
     ...(crystalNameResolvers.CrystalName || {}),
   },
