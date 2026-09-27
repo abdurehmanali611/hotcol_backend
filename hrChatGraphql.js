@@ -207,22 +207,31 @@ export function createHrChatResolvers({
     return { tin, businessType, isCafe };
   }
 
-  async function hotelNameForTenant(context) {
-    const where = tenantHotelReadWhere(context);
-    // Prefer display hotel from a known employee / user HotelName
-    const u = context?.user;
-    const hn = String(u?.HotelName || "").trim();
-    if (hn) return hn;
-    const emp = await prisma.hr_employee.findFirst({
-      where: typeof where === "object" ? where : { HotelName: where },
-      select: { HotelName: true },
-    });
-    if (emp?.HotelName) return emp.HotelName;
-    throw new Error("Could not resolve hotel scope");
+  /**
+   * Canonical write key = TIN (same as HR employees / leave / OTP).
+   * JWT `HotelName` is display-only and must not be used for employee lookups.
+   */
+  function writeHotelName(context) {
+    return requireTenant(context, tenantScopeFromContext);
   }
 
-  async function loadBlocks(HotelName) {
-    return prisma.hr_chat_block.findMany({ where: { HotelName } });
+  /** Reads OR TIN + legacy display HotelName (mid-migration safe). */
+  function hotelReadWhere(context) {
+    return tenantHotelReadWhere(context);
+  }
+
+  async function findTenantEmployee(context, employeeId) {
+    const emp = await prisma.hr_employee.findUnique({
+      where: { id: Number(employeeId) },
+    });
+    if (!emp || !tenantHotelReadMatches(context, emp.HotelName)) {
+      return null;
+    }
+    return emp;
+  }
+
+  async function loadBlocks(context) {
+    return prisma.hr_chat_block.findMany({ where: hotelReadWhere(context) });
   }
 
   function pairBlocked(blocks, empA, empB) {
@@ -273,10 +282,9 @@ export function createHrChatResolvers({
     Query: {
       hrChatThreads: async (_, __, context) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
         const rows = await prisma.hr_chat_thread.findMany({
           where: {
-            HotelName,
+            ...hotelReadWhere(context),
             members: { some: { isManager: true } },
           },
           include: threadInclude,
@@ -288,9 +296,8 @@ export function createHrChatResolvers({
 
       hrChatMessages: async (_, { threadId, limit }, context) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
         const thread = await prisma.hr_chat_thread.findFirst({
-          where: { id: Number(threadId), HotelName },
+          where: { id: Number(threadId), ...hotelReadWhere(context) },
         });
         if (!thread) throw new Error("Thread not found");
         const rows = await prisma.hr_chat_message.findMany({
@@ -303,9 +310,8 @@ export function createHrChatResolvers({
 
       hrChatBlocks: async (_, __, context) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
         const rows = await prisma.hr_chat_block.findMany({
-          where: { HotelName },
+          where: hotelReadWhere(context),
           orderBy: { createdAt: "desc" },
         });
         const empIds = [
@@ -339,8 +345,7 @@ export function createHrChatResolvers({
         context,
       ) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
-        const where = { HotelName };
+        const where = { ...hotelReadWhere(context) };
         if (kind === "direct" || kind === "group") where.kind = kind;
         if (withManager === "includes") {
           where.members = { some: { isManager: true } };
@@ -373,9 +378,11 @@ export function createHrChatResolvers({
         } catch {
           return 0;
         }
-        const HotelName = await hotelNameForTenant(context);
         const memberships = await prisma.hr_chat_member.findMany({
-          where: { isManager: true, thread: { HotelName } },
+          where: {
+            isManager: true,
+            thread: hotelReadWhere(context),
+          },
           select: { threadId: true, lastReadAt: true },
         });
         let unread = 0;
@@ -400,18 +407,16 @@ export function createHrChatResolvers({
         context,
       ) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
+        const HotelName = writeHotelName(context);
         const { actorId } = actorFromContext(context);
-        const emp = await prisma.hr_employee.findFirst({
-          where: { id: Number(employeeId), HotelName },
-        });
+        const emp = await findTenantEmployee(context, employeeId);
         if (!emp) throw new Error("Employee not found");
-        const blocks = await loadBlocks(HotelName);
+        const blocks = await loadBlocks(context);
         // Manager messaging out — block does not stop create
         const withMgr = includeManager !== false;
         const existing = await prisma.hr_chat_thread.findFirst({
           where: {
-            HotelName,
+            ...hotelReadWhere(context),
             kind: "direct",
             AND: [
               { members: { some: { memberKey: memberKeyForEmployee(emp.id) } } },
@@ -460,13 +465,20 @@ export function createHrChatResolvers({
         context,
       ) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
+        const HotelName = writeHotelName(context);
         const { actorId } = actorFromContext(context);
         const ids = [...new Set((employeeIds || []).map(Number))].filter(
           (n) => n > 0,
         );
         if (ids.length < 1) throw new Error("Pick at least one employee");
-        const blocks = await loadBlocks(HotelName);
+        const found = await prisma.hr_employee.findMany({
+          where: { id: { in: ids }, ...hotelReadWhere(context) },
+          select: { id: true },
+        });
+        if (found.length !== ids.length) {
+          throw new Error("One or more employees were not found");
+        }
+        const blocks = await loadBlocks(context);
         assertMembersAllowed(blocks, ids, false, {
           initiatingAsManager: true,
         });
@@ -503,11 +515,10 @@ export function createHrChatResolvers({
 
       sendHrChatMessage: async (_, { threadId, body }, context) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
         const text = String(body || "").trim().slice(0, 4000);
         if (!text) throw new Error("Message required");
         const thread = await prisma.hr_chat_thread.findFirst({
-          where: { id: Number(threadId), HotelName },
+          where: { id: Number(threadId), ...hotelReadWhere(context) },
           include: { members: true },
         });
         if (!thread) throw new Error("Thread not found");
@@ -538,9 +549,8 @@ export function createHrChatResolvers({
 
       markHrChatThreadRead: async (_, { threadId }, context) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
         const thread = await prisma.hr_chat_thread.findFirst({
-          where: { id: Number(threadId), HotelName },
+          where: { id: Number(threadId), ...hotelReadWhere(context) },
           include: threadInclude,
         });
         if (!thread) throw new Error("Thread not found");
@@ -562,17 +572,21 @@ export function createHrChatResolvers({
       ) => {
         const { actorName } = actorFromContext(context);
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
+        const HotelName = writeHotelName(context);
         const type = String(pathType || "").trim();
         if (type !== "emp_emp" && type !== "emp_manager") {
           throw new Error("pathType must be emp_emp or emp_manager");
         }
         const a = Number(employeeIdA);
         if (!(a > 0)) throw new Error("employeeIdA required");
+        const empA = await findTenantEmployee(context, a);
+        if (!empA) throw new Error("Employee not found");
         let b = employeeIdB != null ? Number(employeeIdB) : null;
         if (type === "emp_emp") {
           if (!(b > 0)) throw new Error("employeeIdB required for emp_emp");
           if (a === b) throw new Error("Pick two different employees");
+          const empB = await findTenantEmployee(context, b);
+          if (!empB) throw new Error("Employee not found");
         } else {
           b = null;
         }
@@ -591,9 +605,8 @@ export function createHrChatResolvers({
 
       deleteHrChatBlock: async (_, { id }, context) => {
         await assertChatController(context);
-        const HotelName = await hotelNameForTenant(context);
         const row = await prisma.hr_chat_block.findFirst({
-          where: { id: Number(id), HotelName },
+          where: { id: Number(id), ...hotelReadWhere(context) },
         });
         if (!row) throw new Error("Block not found");
         await prisma.hr_chat_block.delete({ where: { id: row.id } });
