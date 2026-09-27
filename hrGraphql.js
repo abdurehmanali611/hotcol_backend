@@ -18,9 +18,8 @@ import {
   inclusiveDayCount,
 } from "./hrPayrollHelpers.js";
 import {
-  generatePortalOtp,
-  hashPortalOtp,
-  issuePortalOtpPayload,
+  issueUniquePortalOtp,
+  clearPortalOtpLoginFields,
 } from "./hrPortalOtp.js";
 import {
   createHrNotification,
@@ -1682,7 +1681,11 @@ export function createHrResolvers({
 
         return prisma.hr_employee.update({
           where: { id: employee.id },
-          data: { status: "terminated", endDate: ed },
+          data: {
+            status: "terminated",
+            endDate: ed,
+            ...clearPortalOtpLoginFields(),
+          },
         });
       },
 
@@ -2774,20 +2777,20 @@ export function createHrResolvers({
         if (employee.status === "terminated") {
           throw new Error("Cannot enable portal for a terminated employee");
         }
-        const plain = generatePortalOtp();
-        const hash = await hashPortalOtp(plain);
-        const issued = issuePortalOtpPayload(plain, "HR");
-        return prisma.hr_employee.update({
-          where: { id: employee.id },
-          data: {
-            portalOtpHash: hash,
-            portalOtpPreview: issued.portalOtpPreview,
-            portalOtpViewer: issued.portalOtpViewer,
-            mustChangeOtp: true,
-            portalOtpIssuedAt: issued.portalOtpIssuedAt,
-            portalFirstLoginAt: null,
-          },
-        });
+        // Already issued and waiting for first login — do not mint a new code.
+        if (
+          String(employee.portalOtpLookup || "").trim() ||
+          employee.portalOtpIssuedAt
+        ) {
+          if (!employee.portalFirstLoginAt) {
+            return employee;
+          }
+          throw new Error(
+            "Portal already enabled — request an OTP reset for Manager approval",
+          );
+        }
+        await issueUniquePortalOtp(prisma, employee.id, "HR");
+        return prisma.hr_employee.findUnique({ where: { id: employee.id } });
       },
 
       requestHrOtpReset: async (_, { employeeId }, context) => {
@@ -2872,30 +2875,15 @@ export function createHrResolvers({
           return { ...rejected, portalOtpPreview: "" };
         }
 
-        const plain = generatePortalOtp();
-        const hash = await hashPortalOtp(plain);
-        const issued = issuePortalOtpPayload(plain, "Manager");
-        await prisma.$transaction([
-          prisma.hr_employee.update({
-            where: { id: req.employeeId },
-            data: {
-              portalOtpHash: hash,
-              portalOtpPreview: issued.portalOtpPreview,
-              portalOtpViewer: "Manager",
-              mustChangeOtp: true,
-              portalOtpIssuedAt: issued.portalOtpIssuedAt,
-              portalFirstLoginAt: null,
-            },
-          }),
-          prisma.hr_otp_reset_request.update({
-            where: { id: req.id },
-            data: {
-              status: "approved",
-              decidedBy: actorName,
-              decidedAt: new Date(),
-            },
-          }),
-        ]);
+        await issueUniquePortalOtp(prisma, req.employeeId, "Manager");
+        await prisma.hr_otp_reset_request.update({
+          where: { id: req.id },
+          data: {
+            status: "approved",
+            decidedBy: actorName,
+            decidedAt: new Date(),
+          },
+        });
         const updated = await prisma.hr_otp_reset_request.findUnique({
           where: { id: req.id },
           include: { employee: true },
@@ -2963,7 +2951,11 @@ export function createHrResolvers({
               : todayYmd();
           await prisma.hr_employee.update({
             where: { id: row.employeeId },
-            data: { status: "terminated", endDate: ed },
+            data: {
+              status: "terminated",
+              endDate: ed,
+              ...clearPortalOtpLoginFields(),
+            },
           });
         } else if (row.kind === "attendance_correction") {
           if (!row.employeeId) throw new Error("Missing employee on attendance request");

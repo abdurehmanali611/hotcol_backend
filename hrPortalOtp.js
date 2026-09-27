@@ -1,5 +1,7 @@
 /**
  * Alphanumeric portal OTP/PIN helpers for hotcol-emp (bcrypt, cost 12).
+ * Login is OTP-only (like hotcol-room guestOtp) — codes are globally unique
+ * among active portal employees via portalOtpLookup.
  */
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
@@ -77,5 +79,82 @@ export function issuePortalOtpPayload(plainOtp, viewer) {
     portalOtpViewer: viewer,
     mustChangeOtp: true,
     portalOtpIssuedAt: new Date(),
+  };
+}
+
+/**
+ * True when another non-terminated portal employee already uses this code.
+ */
+export async function isPortalOtpTaken(
+  prisma,
+  otp,
+  { excludeEmployeeId = null } = {},
+) {
+  const code = normalizePortalOtp(otp);
+  if (!isValidPortalOtpFormat(code)) return false;
+  const where = {
+    portalOtpLookup: code,
+    status: { not: "terminated" },
+  };
+  if (excludeEmployeeId != null && Number(excludeEmployeeId) > 0) {
+    where.id = { not: Number(excludeEmployeeId) };
+  }
+  const clash = await prisma.hr_employee.findFirst({
+    where,
+    select: { id: true },
+  });
+  return Boolean(clash);
+}
+
+/**
+ * Allocate a globally unique portal OTP (among active employees) and write
+ * hash + lookup + preview — same uniqueness model as lodging guestOtp.
+ */
+export async function issueUniquePortalOtp(
+  prisma,
+  employeeId,
+  viewer,
+  { maxAttempts = 40 } = {},
+) {
+  const id = Number(employeeId);
+  if (!(id > 0)) throw new Error("Invalid employee id");
+  if (viewer !== "HR" && viewer !== "Manager") {
+    throw new Error("portalOtpViewer must be HR or Manager when issuing");
+  }
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const plain = generatePortalOtp();
+    const taken = await isPortalOtpTaken(prisma, plain, {
+      excludeEmployeeId: id,
+    });
+    if (taken) continue;
+
+    const hash = await hashPortalOtp(plain);
+    const issued = issuePortalOtpPayload(plain, viewer);
+    await prisma.hr_employee.update({
+      where: { id },
+      data: {
+        portalOtpHash: hash,
+        portalOtpLookup: plain,
+        portalOtpPreview: issued.portalOtpPreview,
+        portalOtpViewer: issued.portalOtpViewer,
+        mustChangeOtp: true,
+        portalOtpIssuedAt: issued.portalOtpIssuedAt,
+        portalFirstLoginAt: null,
+      },
+    });
+    return plain;
+  }
+  throw new Error("Could not allocate a unique portal code — try again");
+}
+
+/** Clear lookup so the code can be reused (terminate / disable portal). */
+export function clearPortalOtpLoginFields() {
+  return {
+    portalOtpHash: "",
+    portalOtpLookup: "",
+    ...clearOtpPreviewFields(),
+    mustChangeOtp: false,
+    portalOtpIssuedAt: null,
   };
 }

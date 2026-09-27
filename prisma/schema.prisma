@@ -1472,6 +1472,8 @@ model hr_employee {
   notes           String    @db.Text
   /// bcrypt hash of portal OTP/PIN for hotcol-emp
   portalOtpHash   String    @default("")
+  /// Current portal code for global login lookup (like lodging guestOtp). Unique among active portal employees at issue time.
+  portalOtpLookup String    @default("")
   /// Plaintext preview only while portalOtpViewer allows (cleared after first login)
   portalOtpPreview String   @default("")
   /// HR | Manager | none — who may read portalOtpPreview
@@ -1500,6 +1502,7 @@ model hr_employee {
   @@index([HotelName, orgPosition])
   @@index([teamId])
   @@index([HotelName, credentialUserName])
+  @@index([portalOtpLookup])
 }
 
 /// HR — tenant-configured leave types (empty until HR adds them)
