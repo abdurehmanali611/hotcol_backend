@@ -289,10 +289,20 @@ export async function decideLeaveOnEngine(
     employee,
   });
   const role = String(actor?.role || "").trim();
-  /** Desk staff on hotcol-user leave queue can decide any pending request. */
-  const isDeskBoss =
-    role === "Manager" || role === "Admin" || role === "HR";
-  if (!actorCanDecide(assignees, actor) && !isDeskBoss) {
+  const stepKind = String(step.kind || "").trim();
+  /** Credential roles may act on their matching desk step. */
+  const roleMatchesStep =
+    (role === "HR" && stepKind === "hr") ||
+    (role === "Manager" && stepKind === "manager") ||
+    (role === "Admin" &&
+      (stepKind === "admin" || stepKind === "manager" || stepKind === "hr"));
+  /** Manager/Admin may override any step (still advances the chain — does not skip remaining steps). */
+  const isDeskOverride = role === "Manager" || role === "Admin";
+  if (
+    !actorCanDecide(assignees, actor) &&
+    !roleMatchesStep &&
+    !isDeskOverride
+  ) {
     throw new Error("Not an assignee for this approval step");
   }
 
@@ -322,24 +332,6 @@ export async function decideLeaveOnEngine(
       },
       include: { employee: true },
     });
-  }
-
-  // Desk override (HR / Manager / Admin): one click finalizes the request.
-  if (isDeskBoss && actor.employeeId == null) {
-    const updated = await prisma.hr_leave_request.update({
-      where: { id: leave.id },
-      data: {
-        status: "approved",
-        currentStepIndex: steps.length,
-        decidedBy: String(actor.name || actor.role || "").trim(),
-        decidedAt: new Date(),
-      },
-      include: { employee: true },
-    });
-    if (typeof onFinalApprove === "function") {
-      await onFinalApprove(updated);
-    }
-    return updated;
   }
 
   // Advance: escalate through empty subsequent steps
