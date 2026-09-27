@@ -77,7 +77,79 @@ function mapMessage(row) {
     createdAt: row.createdAt,
     senderName: row.senderIsManager
       ? "Manager"
-      : row.sender?.fullName || "Employee",
+      : row.senderName || row.sender?.fullName || "Employee",
+  };
+}
+
+async function enrichMessages(prismaClient, messages) {
+  const ids = [
+    ...new Set(
+      (messages || [])
+        .filter((m) => !m.senderIsManager && m.senderEmployeeId != null)
+        .map((m) => Number(m.senderEmployeeId)),
+    ),
+  ];
+  const emps = ids.length
+    ? await prismaClient.hr_employee.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, fullName: true },
+      })
+    : [];
+  const nameById = new Map(emps.map((e) => [e.id, e.fullName]));
+  return (messages || []).map((m) =>
+    mapMessage({
+      ...m,
+      senderName: m.senderIsManager
+        ? "Manager"
+        : nameById.get(Number(m.senderEmployeeId)) || "Employee",
+    }),
+  );
+}
+
+async function enrichMembers(prismaClient, members) {
+  const ids = [
+    ...new Set(
+      (members || [])
+        .filter((m) => !m.isManager && m.employeeId != null)
+        .map((m) => Number(m.employeeId)),
+    ),
+  ];
+  const emps = ids.length
+    ? await prismaClient.hr_employee.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, fullName: true },
+      })
+    : [];
+  const nameById = new Map(emps.map((e) => [e.id, e.fullName]));
+  return (members || []).map((m) =>
+    mapMember({
+      ...m,
+      employee: m.isManager
+        ? { fullName: "Manager" }
+        : { fullName: nameById.get(Number(m.employeeId)) || null },
+    }),
+  );
+}
+
+async function mapThreadEnriched(prismaClient, row) {
+  if (!row) return null;
+  const members = await enrichMembers(prismaClient, row.members || []);
+  const lastRaw = row.messages?.[0] ? [row.messages[0]] : [];
+  const lastMapped = lastRaw.length
+    ? (await enrichMessages(prismaClient, lastRaw))[0]
+    : null;
+  return {
+    id: row.id,
+    HotelName: row.HotelName,
+    kind: row.kind,
+    title: row.title || "",
+    createdByEmployeeId: row.createdByEmployeeId ?? null,
+    createdByManagerUserId: row.createdByManagerUserId ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    members,
+    lastMessage: lastMapped,
+    messageCount: row._count?.messages ?? row.messages?.length ?? null,
   };
 }
 
@@ -291,7 +363,9 @@ export function createHrChatResolvers({
           orderBy: { updatedAt: "desc" },
           take: 200,
         });
-        return rows.map(mapThread);
+        return Promise.all(
+          rows.map((r) => mapThreadEnriched(prisma, r)),
+        );
       },
 
       hrChatMessages: async (_, { threadId, limit }, context) => {
@@ -305,7 +379,7 @@ export function createHrChatResolvers({
           orderBy: { createdAt: "asc" },
           take: Math.min(Number(limit) || 200, 500),
         });
-        return rows.map(mapMessage);
+        return enrichMessages(prisma, rows);
       },
 
       hrChatBlocks: async (_, __, context) => {
@@ -369,7 +443,7 @@ export function createHrChatResolvers({
           orderBy: { updatedAt: "desc" },
           take: 300,
         });
-        return rows.map(mapThread);
+        return Promise.all(rows.map((r) => mapThreadEnriched(prisma, r)));
       },
 
       hrChatUnreadCount: async (_, __, context) => {
@@ -427,7 +501,7 @@ export function createHrChatResolvers({
           },
           include: threadInclude,
         });
-        if (existing) return mapThread(existing);
+        if (existing) return mapThreadEnriched(prisma, existing);
 
         const thread = await prisma.hr_chat_thread.create({
           data: {
@@ -456,7 +530,7 @@ export function createHrChatResolvers({
           },
           include: threadInclude,
         });
-        return mapThread(thread);
+        return mapThreadEnriched(prisma, thread);
       },
 
       createHrChatGroup: async (
@@ -510,7 +584,7 @@ export function createHrChatResolvers({
           },
           include: threadInclude,
         });
-        return mapThread(thread);
+        return mapThreadEnriched(prisma, thread);
       },
 
       sendHrChatMessage: async (_, { threadId, body }, context) => {
@@ -544,7 +618,8 @@ export function createHrChatResolvers({
           where: { id: thread.id },
           data: { updatedAt: new Date() },
         });
-        return mapMessage(msg);
+        const [mapped] = await enrichMessages(prisma, [msg]);
+        return mapped;
       },
 
       markHrChatThreadRead: async (_, { threadId }, context) => {
@@ -562,7 +637,7 @@ export function createHrChatResolvers({
           where: { id: thread.id },
           include: threadInclude,
         });
-        return mapThread(refreshed);
+        return mapThreadEnriched(prisma, refreshed);
       },
 
       createHrChatBlock: async (
