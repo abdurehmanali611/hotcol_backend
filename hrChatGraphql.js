@@ -54,6 +54,10 @@ function mapThread(row) {
   };
 }
 
+function isManagerSender(value) {
+  return value === true || value === 1 || value === "1" || value === "true";
+}
+
 function mapMember(row) {
   return {
     id: row.id,
@@ -68,16 +72,26 @@ function mapMember(row) {
 }
 
 function mapMessage(row) {
+  const senderEmployeeId =
+    row.senderEmployeeId != null ? Number(row.senderEmployeeId) : null;
+  // Prefer employee id when present — never label an employee message as Manager
+  const fromEmployee = senderEmployeeId != null && senderEmployeeId > 0;
+  const senderIsManager = fromEmployee
+    ? false
+    : isManagerSender(row.senderIsManager);
   return {
     id: row.id,
     threadId: row.threadId,
-    senderEmployeeId: row.senderEmployeeId ?? null,
-    senderIsManager: Boolean(row.senderIsManager),
+    senderEmployeeId: fromEmployee ? senderEmployeeId : null,
+    senderIsManager,
     body: row.body || "",
     createdAt: row.createdAt,
-    senderName: row.senderIsManager
-      ? "Manager"
-      : row.senderName || row.sender?.fullName || "Employee",
+    imageUrl: String(row.imageUrl || "").trim(),
+    senderName: fromEmployee
+      ? row.senderName || row.sender?.fullName || "Employee"
+      : senderIsManager
+        ? "Manager"
+        : row.senderName || "Employee",
   };
 }
 
@@ -85,8 +99,10 @@ async function enrichMessages(prismaClient, messages) {
   const ids = [
     ...new Set(
       (messages || [])
-        .filter((m) => !m.senderIsManager && m.senderEmployeeId != null)
-        .map((m) => Number(m.senderEmployeeId)),
+        .map((m) =>
+          m.senderEmployeeId != null ? Number(m.senderEmployeeId) : null,
+        )
+        .filter((id) => id != null && id > 0),
     ),
   ];
   const emps = ids.length
@@ -96,14 +112,19 @@ async function enrichMessages(prismaClient, messages) {
       })
     : [];
   const nameById = new Map(emps.map((e) => [e.id, e.fullName]));
-  return (messages || []).map((m) =>
-    mapMessage({
+  return (messages || []).map((m) => {
+    const empId =
+      m.senderEmployeeId != null ? Number(m.senderEmployeeId) : null;
+    const fromEmployee = empId != null && empId > 0;
+    return mapMessage({
       ...m,
-      senderName: m.senderIsManager
-        ? "Manager"
-        : nameById.get(Number(m.senderEmployeeId)) || "Employee",
-    }),
-  );
+      senderEmployeeId: fromEmployee ? empId : null,
+      senderIsManager: fromEmployee ? false : m.senderIsManager,
+      senderName: fromEmployee
+        ? nameById.get(empId) || "Employee"
+        : undefined,
+    });
+  });
 }
 
 async function enrichMembers(prismaClient, members) {
@@ -186,6 +207,7 @@ export const hrChatTypeDefsBlock = `
     senderEmployeeId: Int
     senderIsManager: Boolean!
     body: String!
+    imageUrl: String!
     createdAt: DateTime!
     senderName: String!
   }
@@ -235,7 +257,7 @@ export const hrChatQueryFields = `
 export const hrChatMutationFields = `
   createHrChatDirect(employeeId: Int!, includeManager: Boolean): HrChatThread!
   createHrChatGroup(title: String, employeeIds: [Int!]!, includeManager: Boolean): HrChatThread!
-  sendHrChatMessage(threadId: Int!, body: String!): HrChatMessage!
+  sendHrChatMessage(threadId: Int!, body: String, imageUrl: String): HrChatMessage!
   markHrChatThreadRead(threadId: Int!): HrChatThread!
   createHrChatBlock(pathType: String!, employeeIdA: Int!, employeeIdB: Int, note: String): HrChatBlock!
   deleteHrChatBlock(id: Int!): Boolean!
@@ -587,10 +609,11 @@ export function createHrChatResolvers({
         return mapThreadEnriched(prisma, thread);
       },
 
-      sendHrChatMessage: async (_, { threadId, body }, context) => {
+      sendHrChatMessage: async (_, { threadId, body, imageUrl }, context) => {
         await assertChatController(context);
         const text = String(body || "").trim().slice(0, 4000);
-        if (!text) throw new Error("Message required");
+        const image = String(imageUrl || "").trim().slice(0, 2000);
+        if (!text && !image) throw new Error("Message or image required");
         const thread = await prisma.hr_chat_thread.findFirst({
           where: { id: Number(threadId), ...hotelReadWhere(context) },
           include: { members: true },
@@ -612,6 +635,7 @@ export function createHrChatResolvers({
             threadId: thread.id,
             senderIsManager: true,
             body: text,
+            imageUrl: image,
           },
         });
         await prisma.hr_chat_thread.update({

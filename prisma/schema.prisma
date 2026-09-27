@@ -1962,6 +1962,8 @@ model hr_chat_message {
   senderEmployeeId Int?
   senderIsManager  Boolean  @default(false)
   body             String   @db.Text
+  /// Optional Cloudinary (or CDN) image attachment URL
+  imageUrl         String   @default("")
   createdAt        DateTime @default(now())
 
   thread hr_chat_thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
