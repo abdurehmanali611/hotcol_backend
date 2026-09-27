@@ -1152,32 +1152,36 @@ export function createHrResolvers({
 
     HrLeaveRequest: {
       currentStepKind: async (row, _, context) => {
-        if (String(row.status || "") !== "pending") return "";
-        let flow = null;
-        if (row.flowId != null) {
-          flow = await prisma.hr_approval_flow.findUnique({
-            where: { id: Number(row.flowId) },
-          });
+        try {
+          if (String(row?.status || "") !== "pending") return "";
+          let flow = null;
+          if (row.flowId != null) {
+            flow = await prisma.hr_approval_flow.findUnique({
+              where: { id: Number(row.flowId) },
+            });
+          }
+          const employee =
+            row.employee ||
+            (row.employeeId != null
+              ? await prisma.hr_employee.findUnique({
+                  where: { id: Number(row.employeeId) },
+                  select: { teamId: true },
+                })
+              : null);
+          const steps = effectiveSteps(
+            flow || {
+              requireTeamLeaderFirst: true,
+              stepsJson: defaultSteps({
+                businessType: String(context?.user?.businessType || ""),
+              }),
+            },
+            { hasTeam: Boolean(employee?.teamId) },
+          );
+          const idx = Number(row.currentStepIndex) || 0;
+          return String(steps[idx]?.kind || "");
+        } catch {
+          return "";
         }
-        const employee =
-          row.employee ||
-          (row.employeeId != null
-            ? await prisma.hr_employee.findUnique({
-                where: { id: Number(row.employeeId) },
-                select: { teamId: true },
-              })
-            : null);
-        const steps = effectiveSteps(
-          flow || {
-            requireTeamLeaderFirst: true,
-            stepsJson: defaultSteps({
-              businessType: String(context?.user?.businessType || ""),
-            }),
-          },
-          { hasTeam: Boolean(employee?.teamId) },
-        );
-        const idx = Number(row.currentStepIndex) || 0;
-        return steps[idx]?.kind || "";
       },
     },
 

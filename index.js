@@ -3226,6 +3226,9 @@ const resolvers = {
   HrEmployee: {
     ...(hrResolvers.HrEmployee || {}),
   },
+  HrLeaveRequest: {
+    ...(hrResolvers.HrLeaveRequest || {}),
+  },
   HrOtpResetRequest: {
     ...(hrResolvers.HrOtpResetRequest || {}),
   },
