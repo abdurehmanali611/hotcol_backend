@@ -478,6 +478,7 @@ export const hrMutationFields = `
       notes: String
     ): HrEmployee!
     terminateHrEmployee(id: Int!, endDate: String): HrEmployee!
+    deleteHrEmployee(id: Int!): Boolean!
 
     replaceHrLeaveTypes(types: [HrLeaveTypeInput!]!): [HrLeaveType!]!
     replaceHrDepartments(departments: [HrDepartmentInput!]!): [HrDepartment!]!
@@ -1687,6 +1688,40 @@ export function createHrResolvers({
             ...clearPortalOtpLoginFields(),
           },
         });
+      },
+
+      deleteHrEmployee: async (_, { id }, context) => {
+        assertHrAccess(context);
+        const employee = await loadEmployeeInTenantOrThrow(context, id);
+        const eid = employee.id;
+        await prisma.$transaction(async (tx) => {
+          await tx.hr_notification.deleteMany({
+            where: { HotelName: employee.HotelName, employeeId: eid },
+          });
+          await tx.hr_manager_pending_action.deleteMany({
+            where: { HotelName: employee.HotelName, employeeId: eid },
+          });
+          await tx.hr_chat_member.deleteMany({ where: { employeeId: eid } });
+          await tx.hr_chat_message.updateMany({
+            where: { senderEmployeeId: eid },
+            data: { senderEmployeeId: null },
+          });
+          await tx.hr_chat_block.deleteMany({
+            where: {
+              HotelName: employee.HotelName,
+              OR: [{ employeeIdA: eid }, { employeeIdB: eid }],
+            },
+          });
+          await tx.hr_chat_thread.updateMany({
+            where: {
+              HotelName: employee.HotelName,
+              createdByEmployeeId: eid,
+            },
+            data: { createdByEmployeeId: null },
+          });
+          await tx.hr_employee.delete({ where: { id: eid } });
+        });
+        return true;
       },
 
       replaceHrLeaveTypes: async (_, { types }, context) => {
