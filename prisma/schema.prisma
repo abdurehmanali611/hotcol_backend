@@ -1837,7 +1837,7 @@ model hr_employee_capability {
 model hr_approval_flow {
   id                     Int      @id @default(autoincrement())
   HotelName              String
-  /// leave | overtime | ...
+  /// leave | overtime | document | incident | schedule_change | timesheet
   requestType            String
   /// null = tenant default for this requestType
   departmentId           Int?
