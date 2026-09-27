@@ -1919,6 +1919,75 @@ model hr_notification {
   @@index([HotelName, createdAt])
 }
 
+/// HR chat — emp↔emp and emp↔manager threads (HR Module)
+model hr_chat_thread {
+  id                     Int      @id @default(autoincrement())
+  HotelName              String
+  /// direct | group
+  kind                   String
+  title                  String   @default("")
+  createdByEmployeeId    Int?
+  createdByManagerUserId Int?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  members  hr_chat_member[]
+  messages hr_chat_message[]
+
+  @@index([HotelName, updatedAt])
+  @@index([HotelName, kind])
+}
+
+model hr_chat_member {
+  id         Int       @id @default(autoincrement())
+  threadId   Int
+  employeeId Int?
+  /// Manager (hotel) or Admin (café) seat in the thread
+  isManager  Boolean   @default(false)
+  /// Stable key: "e:{id}" or "m" for manager seat
+  memberKey  String
+  joinedAt   DateTime  @default(now())
+  lastReadAt DateTime?
+
+  thread hr_chat_thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, memberKey])
+  @@index([threadId])
+  @@index([employeeId])
+}
+
+model hr_chat_message {
+  id               Int      @id @default(autoincrement())
+  threadId         Int
+  senderEmployeeId Int?
+  senderIsManager  Boolean  @default(false)
+  body             String   @db.Text
+  createdAt        DateTime @default(now())
+
+  thread hr_chat_thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+}
+
+/// Manager/Admin blocks for emp↔emp or emp↔manager
+model hr_chat_block {
+  id          Int      @id @default(autoincrement())
+  HotelName   String
+  /// emp_emp | emp_manager
+  pathType    String
+  employeeIdA Int
+  /// null when pathType is emp_manager (manager side)
+  employeeIdB Int?
+  note        String   @default("")
+  createdBy   String   @default("")
+  createdAt   DateTime @default(now())
+
+  @@index([HotelName])
+  @@index([HotelName, pathType])
+  @@index([employeeIdA])
+  @@index([employeeIdB])
+}
+
 /// HR — Manager must approve: terminate, attendance correction, payroll generate (F06/F12/F17)
 model hr_manager_pending_action {
   id          Int       @id @default(autoincrement())

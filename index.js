@@ -113,6 +113,12 @@ import {
   createHrResolvers,
 } from "./hrGraphql.js";
 import {
+  hrChatTypeDefsBlock,
+  hrChatQueryFields,
+  hrChatMutationFields,
+  createHrChatResolvers,
+} from "./hrChatGraphql.js";
+import {
   crystalNameTypeDefsBlock,
   crystalNameQueryFields,
   crystalNameMutationFields,
@@ -1347,6 +1353,8 @@ const typeDefs = gql`
 
   ${hrTypeDefsBlock}
 
+  ${hrChatTypeDefsBlock}
+
   ${crystalNameTypeDefsBlock}
 
   type Query {
@@ -1392,6 +1400,7 @@ const typeDefs = gql`
     salesAgents: [SalesAgent!]!
     ${lodgingQueryFields}
     ${hrQueryFields}
+    ${hrChatQueryFields}
     ${crystalNameQueryFields}
     ${waiterOrderingQueryFields}
   }
@@ -1987,6 +1996,7 @@ const typeDefs = gql`
 
     ${lodgingMutationFields}
     ${hrMutationFields}
+    ${hrChatMutationFields}
     ${crystalNameMutationFields}
   }
 `;
@@ -3169,6 +3179,16 @@ const hrResolvers = createHrResolvers({
   assertAuthenticated,
 });
 
+const hrChatResolvers = createHrChatResolvers({
+  prisma,
+  tenantScopeFromContext,
+  tenantHotelReadWhere,
+  tenantHotelReadMatches,
+  assertRole,
+  assertAdminOrManager,
+  assertAuthenticated,
+});
+
 const crystalNameResolvers = createCrystalNameResolvers({
   prisma,
   assertAuthenticated,
@@ -3260,6 +3280,7 @@ const resolvers = {
   Query: {
     ...lodgingResolvers.Query,
     ...hrResolvers.Query,
+    ...hrChatResolvers.Query,
     ...crystalNameResolvers.Query,
     ...waiterOrderingResolvers.Query,
     users: async (_, __, context) => {
@@ -8988,6 +9009,7 @@ const resolvers = {
 
     ...lodgingResolvers.Mutation,
     ...hrResolvers.Mutation,
+    ...hrChatResolvers.Mutation,
     ...crystalNameResolvers.Mutation,
     ...waiterOrderingResolvers.Mutation,
   },
