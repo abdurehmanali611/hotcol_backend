@@ -2745,6 +2745,7 @@ export function createHrResolvers({
         const periodIds = [...new Set(rows.map((r) => r.periodId))];
         for (const periodId of periodIds) {
           if (approve) {
+            // All slips marked paid → ready for Manager Close (do not auto-close)
             const pending = await prisma.hr_payslip.count({
               where: {
                 periodId,
@@ -2757,9 +2758,9 @@ export function createHrResolvers({
               await prisma.hr_payroll_period.update({
                 where: { id: periodId },
                 data: {
-                  status: "approved",
-                  closedAt: new Date(),
-                  closedBy: actorName,
+                  status: "awaiting_manager",
+                  closedAt: null,
+                  closedBy: "",
                 },
               });
             }
@@ -2826,12 +2827,13 @@ export function createHrResolvers({
             },
           });
           if (pending === 0) {
+            // Ready for explicit Close — do not auto-close
             await prisma.hr_payroll_period.update({
               where: { id: periodId },
               data: {
-                status: "approved",
-                closedAt: new Date(),
-                closedBy: actorName,
+                status: "awaiting_manager",
+                closedAt: null,
+                closedBy: "",
               },
             });
           }
@@ -2857,7 +2859,7 @@ export function createHrResolvers({
         if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
           throw new Error("Payroll period not found");
         }
-        if (period.closedAt || period.status === "approved" || period.status === "closed") {
+        if (period.status === "closed") {
           return period;
         }
         const slips = await prisma.hr_payslip.findMany({
@@ -2892,7 +2894,7 @@ export function createHrResolvers({
         return prisma.hr_payroll_period.update({
           where: { id: periodId },
           data: {
-            status: "approved",
+            status: "closed",
             closedAt: new Date(),
             closedBy: actorName,
           },
