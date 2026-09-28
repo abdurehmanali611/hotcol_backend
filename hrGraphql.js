@@ -564,6 +564,8 @@ export const hrMutationFields = `
     """Finance (or Admin) approve/reject HR mark-paid requests."""
     decideHrPayslipsPayment(payslipIds: [Int!]!, approve: Boolean!): [HrPayslip!]!
     approveHrPayslipsPayment(payslipIds: [Int!]!): [HrPayslip!]!
+    """Close a payroll run once every payslip is marked paid (HR+Finance/Manager)."""
+    closeHrPayrollPeriod(id: Int!): HrPayrollPeriod!
     replaceHrPayrollLineRules(rules: [HrPayrollLineRuleInput!]!): [HrPayrollLineRule!]!
     replaceHrWagePayWindows(windows: [HrWagePayWindowInput!]!): [HrWagePayWindow!]!
 
@@ -2838,6 +2840,62 @@ export function createHrResolvers({
         return prisma.hr_payslip.findMany({
           where: { id: { in: rows.map((r) => r.id) } },
           include: { employee: true, period: true },
+        });
+      },
+
+      closeHrPayrollPeriod: async (_, { id }, context) => {
+        const { actorRole, actorName } = actorFromContext(context);
+        if (actorRole === "Finance") {
+          await assertCanDecidePayslipPayment(context);
+        } else {
+          assertLeaveManager(context);
+        }
+        const periodId = Number(id);
+        const period = await prisma.hr_payroll_period.findUnique({
+          where: { id: periodId },
+        });
+        if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
+          throw new Error("Payroll period not found");
+        }
+        if (period.closedAt || period.status === "approved" || period.status === "closed") {
+          return period;
+        }
+        const slips = await prisma.hr_payslip.findMany({
+          where: { periodId },
+        });
+        if (!slips.length) {
+          throw new Error("This payroll run has no payslips to close");
+        }
+        const notReady = slips.find((s) => {
+          const st = String(s.paymentStatus || "");
+          // Close only when every slip is marked paid (or legacy approved)
+          if (st === "approved" || st === "marked_paid") return false;
+          return true;
+        });
+        if (notReady) {
+          throw new Error(
+            "Close is only allowed when every payslip is marked paid",
+          );
+        }
+        // Stamp confirm on any marked_paid still missing managerApprovedAt
+        await prisma.hr_payslip.updateMany({
+          where: {
+            periodId,
+            paymentStatus: "marked_paid",
+            managerApprovedAt: null,
+          },
+          data: {
+            managerApprovedAt: new Date(),
+            managerApprovedBy: actorName,
+          },
+        });
+        return prisma.hr_payroll_period.update({
+          where: { id: periodId },
+          data: {
+            status: "approved",
+            closedAt: new Date(),
+            closedBy: actorName,
+          },
         });
       },
 
