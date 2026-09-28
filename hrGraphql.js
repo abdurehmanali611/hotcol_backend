@@ -649,6 +649,123 @@ function todayYmd() {
   return `${y}-${m}-${d}`;
 }
 
+/** Block new leave while the employee is currently on approved leave. */
+async function assertEmployeeCanRequestLeave(db, employee) {
+  if (!employee) throw new Error("Employee not found");
+  if (String(employee.status || "") === "terminated") {
+    throw new Error("Terminated employees cannot request leave");
+  }
+  const today = todayYmd();
+  if (String(employee.status || "") === "on_leave") {
+    throw new Error(
+      "Employee is currently on leave and cannot request another leave",
+    );
+  }
+  const activeLeave = await db.hr_leave_request.findFirst({
+    where: {
+      employeeId: employee.id,
+      status: "approved",
+      fromYmd: { lte: today },
+      toYmd: { gte: today },
+    },
+    select: { id: true, fromYmd: true, toYmd: true },
+  });
+  if (activeLeave) {
+    throw new Error(
+      `Employee is on leave (${activeLeave.fromYmd} → ${activeLeave.toYmd}) and cannot request another leave`,
+    );
+  }
+}
+
+/**
+ * Prevent a second payroll for the same wage type + period.
+ * Monthly: one run per named month (periodKey) for monthly payslips.
+ * Weekly: one run per From–To week for weekly payslips (no overlapping weekly runs).
+ */
+async function assertNoDuplicateWagePeriodPayroll(
+  prisma,
+  { HotelName, from, to, wageScope, employeeIds },
+) {
+  const named = namedMonthFromPayRange(from, to);
+  const idFilter = Array.isArray(employeeIds)
+    ? employeeIds.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0)
+    : [];
+  let scope = String(wageScope ?? "").trim().toLowerCase();
+  if (idFilter.length) scope = "employee";
+  if (!scope) scope = "batch";
+
+  const exact = await prisma.hr_payroll_period.findUnique({
+    where: {
+      HotelName_fromYmd_toYmd: { HotelName, fromYmd: from, toYmd: to },
+    },
+  });
+  // Only a pending_generate stub for the exact same dates may be replaced.
+  if (exact && String(exact.status || "") !== "pending_generate") {
+    throw new Error(
+      "A payroll run already exists for this From–To range. Choose different dates.",
+    );
+  }
+
+  const checkMonthly = scope === "monthly" || scope === "batch" || scope === "employee";
+  const checkWeekly = scope === "weekly" || scope === "batch" || scope === "employee";
+
+  if (checkMonthly) {
+    const monthPeriods = await prisma.hr_payroll_period.findMany({
+      where: {
+        HotelName,
+        periodKey: named.periodKey,
+        ...(exact ? { id: { not: exact.id } } : {}),
+      },
+      select: { id: true, monthName: true, fromYmd: true, toYmd: true },
+    });
+    if (monthPeriods.length) {
+      const periodIds = monthPeriods.map((p) => p.id);
+      const monthlyWhere = {
+        periodId: { in: periodIds },
+        wageType: "monthly",
+      };
+      if (idFilter.length) monthlyWhere.employeeId = { in: idFilter };
+      const monthlyCount = await prisma.hr_payslip.count({
+        where: monthlyWhere,
+      });
+      if (monthlyCount > 0) {
+        const label = named.monthName || named.periodKey;
+        throw new Error(
+          `A monthly payroll for ${label} already exists. Cannot generate another monthly run for the same month.`,
+        );
+      }
+    }
+  }
+
+  if (checkWeekly) {
+    const overlapping = await prisma.hr_payroll_period.findMany({
+      where: {
+        HotelName,
+        fromYmd: { lte: to },
+        toYmd: { gte: from },
+        ...(exact ? { id: { not: exact.id } } : {}),
+      },
+      select: { id: true, fromYmd: true, toYmd: true },
+    });
+    if (overlapping.length) {
+      const periodIds = overlapping.map((p) => p.id);
+      const weeklyWhere = {
+        periodId: { in: periodIds },
+        wageType: "weekly",
+      };
+      if (idFilter.length) weeklyWhere.employeeId = { in: idFilter };
+      const weeklyCount = await prisma.hr_payslip.count({
+        where: weeklyWhere,
+      });
+      if (weeklyCount > 0) {
+        throw new Error(
+          `A weekly payroll already exists for an overlapping week (${from} → ${to}). Cannot generate another weekly run for the same week.`,
+        );
+      }
+    }
+  }
+}
+
 /** Active approved leave covering `ymd` (default today). */
 async function employeeIdsOnLeave(db, scope, ymd = todayYmd()) {
   const rows = await db.hr_leave_request.findMany({
@@ -786,6 +903,14 @@ async function runCreateHrPayrollPeriod(
   const payDate = todayYmd();
   const rangeDays = inclusiveDayCount(from, to);
 
+  await assertNoDuplicateWagePeriodPayroll(prisma, {
+    HotelName,
+    from,
+    to,
+    wageScope,
+    employeeIds,
+  });
+
   const existing = await prisma.hr_payroll_period.findUnique({
     where: {
       HotelName_fromYmd_toYmd: { HotelName, fromYmd: from, toYmd: to },
@@ -793,8 +918,8 @@ async function runCreateHrPayrollPeriod(
   });
   if (existing) {
     const st = String(existing.status || "").trim();
-    // Open / pending-generate runs can be replaced so later incidents/attendance are picked up.
-    if (st === "open" || st === "pending_generate") {
+    // Only pending_generate stubs can be replaced (HR re-submit before Manager approves).
+    if (st === "pending_generate") {
       await prisma.hr_payslip.deleteMany({
         where: { periodId: existing.id },
       });
@@ -803,7 +928,7 @@ async function runCreateHrPayrollPeriod(
       });
     } else {
       throw new Error(
-        "A payroll run already exists for this From–To range. Only open runs can be replaced — choose different dates or keep the existing run.",
+        "A payroll run already exists for this From–To range. Choose different dates.",
       );
     }
   }
@@ -2105,6 +2230,7 @@ export function createHrResolvers({
         assertHrAccess(context);
         const targetId = Number(employeeId);
         const employee = await loadEmployeeInTenantOrThrow(context, targetId);
+        await assertEmployeeCanRequestLeave(prisma, employee);
         const lt = String(leaveType ?? "").trim();
         if (!lt) throw new Error("Leave type is required");
         const typeRow = await prisma.hr_leave_type.findFirst({
@@ -2549,6 +2675,13 @@ export function createHrResolvers({
 
         if (!isDeskManagerOrAdmin(actorRole)) {
           // Stub run so HR Sees it under Runs as awaiting Manager — exact From–To kept.
+          await assertNoDuplicateWagePeriodPayroll(prisma, {
+            HotelName,
+            from,
+            to,
+            wageScope,
+            employeeIds,
+          });
           const named = namedMonthFromPayRange(from, to);
           const existingStub = await prisma.hr_payroll_period.findUnique({
             where: {
@@ -2561,7 +2694,7 @@ export function createHrResolvers({
           });
           if (existingStub) {
             const st = String(existingStub.status || "").trim();
-            if (st === "pending_generate" || st === "open") {
+            if (st === "pending_generate") {
               await prisma.hr_payslip.deleteMany({
                 where: { periodId: existingStub.id },
               });
