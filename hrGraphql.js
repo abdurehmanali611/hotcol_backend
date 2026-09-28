@@ -26,6 +26,9 @@ import {
   listHrNotificationsForActor,
   markHrNotificationRead,
   createHrEmployeeNotifications,
+  notifyEmployeeLeaveDecision,
+  notifyEmployeesPayslipReady,
+  notifyEmployeesPayslipMarkedPaid,
 } from "./hrNotifications.js";
 import {
   decideLeaveOnEngine,
@@ -2273,6 +2276,14 @@ export function createHrResolvers({
         if (updated.status === "rejected") {
           await syncEmployeeLeaveStatus(prisma, updated.employeeId);
         }
+        if (
+          updated.status === "approved" ||
+          updated.status === "rejected"
+        ) {
+          await notifyEmployeeLeaveDecision(prisma, updated, {
+            createdBy: actorName,
+          });
+        }
         return updated;
       },
 
@@ -2772,10 +2783,16 @@ export function createHrResolvers({
           }
         }
 
-        return prisma.hr_payslip.findMany({
+        const updatedSlips = await prisma.hr_payslip.findMany({
           where: { id: { in: rows.map((r) => r.id) } },
           include: { employee: true, period: true },
         });
+        if (approve) {
+          await notifyEmployeesPayslipMarkedPaid(prisma, updatedSlips, {
+            createdBy: actorName,
+          });
+        }
+        return updatedSlips;
       },
 
       approveHrPayslipsPayment: async (_, { payslipIds }, context) => {
@@ -2839,10 +2856,14 @@ export function createHrResolvers({
           }
         }
 
-        return prisma.hr_payslip.findMany({
+        const confirmedSlips = await prisma.hr_payslip.findMany({
           where: { id: { in: rows.map((r) => r.id) } },
           include: { employee: true, period: true },
         });
+        await notifyEmployeesPayslipMarkedPaid(prisma, confirmedSlips, {
+          createdBy: actorName,
+        });
+        return confirmedSlips;
       },
 
       closeHrPayrollPeriod: async (_, { id }, context) => {
@@ -3394,7 +3415,7 @@ export function createHrResolvers({
             }
           }
           // Always use the requested From–To (never snap to calendar month).
-          await runCreateHrPayrollPeriod(prisma, context, {
+          const period = await runCreateHrPayrollPeriod(prisma, context, {
             HotelName: row.HotelName,
             actorName: row.requestedBy || actorName,
             fromYmd: from,
@@ -3402,6 +3423,11 @@ export function createHrResolvers({
             notes: payload.notes,
             employeeIds: payload.employeeIds,
             wageScope: payload.wageScope,
+          });
+          await notifyEmployeesPayslipReady(prisma, {
+            HotelName: row.HotelName,
+            period,
+            createdBy: actorName,
           });
         } else {
           throw new Error(`Unknown pending kind: ${row.kind}`);

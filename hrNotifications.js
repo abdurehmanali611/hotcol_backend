@@ -124,3 +124,93 @@ export async function createHrEmployeeNotifications(
   }
   return rows;
 }
+
+/** Notify leave requester on final approve/reject. */
+export async function notifyEmployeeLeaveDecision(
+  prisma,
+  leave,
+  { createdBy = "" } = {},
+) {
+  const status = String(leave?.status || "");
+  if (status !== "approved" && status !== "rejected") return null;
+  const approved = status === "approved";
+  return createHrNotification(prisma, {
+    HotelName: leave.HotelName,
+    employeeId: leave.employeeId,
+    kind: approved ? "leave_approved" : "leave_rejected",
+    title: approved ? "Leave approved" : "Leave rejected",
+    body: `Your ${leave.leaveType || "leave"} request (${leave.fromYmd} → ${leave.toYmd}) was ${status}.`,
+    href: "/leave",
+    createdBy,
+  });
+}
+
+/** After payroll generate is approved — payslip ready (unpaid). */
+export async function notifyEmployeesPayslipReady(
+  prisma,
+  { HotelName, period, createdBy = "" },
+) {
+  if (!period?.id) return [];
+  const slips = await prisma.hr_payslip.findMany({
+    where: { periodId: period.id },
+    select: { employeeId: true },
+  });
+  const label =
+    period.monthName ||
+    (period.fromYmd && period.toYmd
+      ? `${period.fromYmd} → ${period.toYmd}`
+      : "this period");
+  const rows = [];
+  const seen = new Set();
+  for (const slip of slips) {
+    const eid = Number(slip.employeeId);
+    if (!eid || seen.has(eid)) continue;
+    seen.add(eid);
+    rows.push(
+      await createHrNotification(prisma, {
+        HotelName,
+        employeeId: eid,
+        kind: "payslip_ready",
+        title: "Your payslip is ready",
+        body: `Payslip for ${label} is available. Status: Unpaid.`,
+        href: "/payslips",
+        createdBy,
+      }),
+    );
+  }
+  return rows;
+}
+
+/** When Finance/Manager confirms mark paid. */
+export async function notifyEmployeesPayslipMarkedPaid(
+  prisma,
+  payslips,
+  { HotelName, createdBy = "" } = {},
+) {
+  const rows = [];
+  const seen = new Set();
+  for (const slip of payslips || []) {
+    const eid = Number(slip.employeeId);
+    if (!eid || seen.has(eid)) continue;
+    seen.add(eid);
+    const hotel = HotelName || slip.HotelName;
+    const label =
+      slip.period?.monthName ||
+      slip.payslipNumber ||
+      (slip.period?.fromYmd
+        ? `${slip.period.fromYmd} → ${slip.period.toYmd}`
+        : "your payslip");
+    rows.push(
+      await createHrNotification(prisma, {
+        HotelName: hotel,
+        employeeId: eid,
+        kind: "payslip_marked_paid",
+        title: "Payslip marked paid",
+        body: `Your payslip (${label}) has been marked paid.`,
+        href: "/payslips",
+        createdBy,
+      }),
+    );
+  }
+  return rows;
+}
