@@ -1727,7 +1727,7 @@ model hr_payslip {
   /// JSON array [{ label, amountETB }]
   earningsJson         String    @db.Text
   deductionsJson       String    @db.Text
-  /// unpaid | marked_paid | approved
+  /// unpaid | awaiting_finance | marked_paid | approved
   paymentStatus        String    @default("unpaid")
   hrMarkedPaidAt       DateTime?
   hrMarkedPaidBy       String    @default("")

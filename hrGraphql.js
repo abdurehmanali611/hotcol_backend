@@ -66,6 +66,7 @@ const PAYROLL_PERIOD_STATUSES = new Set([
 ]);
 const PAYSLIP_PAYMENT_STATUSES = new Set([
   "unpaid",
+  "awaiting_finance",
   "marked_paid",
   "approved",
 ]);
@@ -560,6 +561,8 @@ export const hrMutationFields = `
       wageScope: String
     ): HrPayrollPeriod!
     markHrPayslipsPaid(payslipIds: [Int!]!): [HrPayslip!]!
+    """Finance (or Admin) approve/reject HR mark-paid requests."""
+    decideHrPayslipsPayment(payslipIds: [Int!]!, approve: Boolean!): [HrPayslip!]!
     approveHrPayslipsPayment(payslipIds: [Int!]!): [HrPayslip!]!
     replaceHrPayrollLineRules(rules: [HrPayrollLineRuleInput!]!): [HrPayrollLineRule!]!
     replaceHrWagePayWindows(windows: [HrWagePayWindowInput!]!): [HrWagePayWindow!]!
@@ -723,6 +726,32 @@ function periodKeyFromYmd(ymd) {
   return String(ymd || "").slice(0, 7);
 }
 
+function dayOfYmd(ymd) {
+  return Number(String(ymd).slice(8, 10));
+}
+
+/**
+ * Whether a common payroll line rule applies to a From–To window.
+ * day_range mode uses calendar day-of-month on the endpoints.
+ */
+function lineRuleApplies(rule, fromYmd, toYmd) {
+  if (rule?.active === false) return false;
+  const mode = String(rule?.whenMode || "always").trim();
+  if (mode !== "day_range") return true;
+  const fd = Number(rule.fromDay);
+  const td = Number(rule.toDay);
+  if (!Number.isFinite(fd) || !Number.isFinite(td)) return true;
+  const fromD = dayOfYmd(fromYmd);
+  const toD = dayOfYmd(toYmd);
+  const lo = Math.min(fd, td);
+  const hi = Math.max(fd, td);
+  return (
+    (fromD >= lo && fromD <= hi) ||
+    (toD >= lo && toD <= hi) ||
+    (fromD <= lo && toD >= hi)
+  );
+}
+
 function slugLeaveTypeCode(value) {
   return String(value ?? "")
     .trim()
@@ -759,8 +788,11 @@ async function runCreateHrPayrollPeriod(
   });
   if (existing) {
     const st = String(existing.status || "").trim();
-    // Open runs can be replaced so later incidents/attendance are picked up.
-    if (st === "open") {
+    // Open / pending-generate runs can be replaced so later incidents/attendance are picked up.
+    if (st === "open" || st === "pending_generate") {
+      await prisma.hr_payslip.deleteMany({
+        where: { periodId: existing.id },
+      });
       await prisma.hr_payroll_period.delete({
         where: { id: existing.id },
       });
@@ -1057,15 +1089,22 @@ export function createHrResolvers({
     }
   }
 
-  /** HR/Admin always; Finance when tenant has HR Module + Financial Management. */
+  /** HR/Admin only — sends payslips to Finance for mark-paid confirmation. */
   async function assertCanMarkPayslipsPaid(context) {
     const { actorRole } = actorFromContext(context);
     if (actorRole === "HR" || actorRole === "Admin") return;
+    throw new Error("Only HR can mark payslips paid (Finance then confirms)");
+  }
+
+  /** Finance (HR+Fin modules) or Admin — confirm or reject mark-paid. */
+  async function assertCanDecidePayslipPayment(context) {
+    const { actorRole } = actorFromContext(context);
+    if (actorRole === "Admin") return;
     if (actorRole === "Finance") {
       await assertTenantHrFinance(context);
       return;
     }
-    throw new Error("Not authorized to mark payslips paid");
+    throw new Error("Not authorized to approve payslip payment");
   }
 
   /** Staff HR + Manager; Finance for payroll read when HR+Fin. */
@@ -1101,10 +1140,6 @@ export function createHrResolvers({
     return employee;
   }
 
-  function dayOfYmd(ymd) {
-    return Number(String(ymd).slice(8, 10));
-  }
-
   function parsePayLines(raw) {
     try {
       const parsed = JSON.parse(String(raw || "[]"));
@@ -1118,24 +1153,6 @@ export function createHrResolvers({
     } catch {
       return [];
     }
-  }
-
-  function lineRuleApplies(rule, fromYmd, toYmd) {
-    if (rule.active === false) return false;
-    const mode = String(rule.whenMode || "always").trim();
-    if (mode !== "day_range") return true;
-    const fd = Number(rule.fromDay);
-    const td = Number(rule.toDay);
-    if (!Number.isFinite(fd) || !Number.isFinite(td)) return true;
-    const fromD = dayOfYmd(fromYmd);
-    const toD = dayOfYmd(toYmd);
-    const lo = Math.min(fd, td);
-    const hi = Math.max(fd, td);
-    return (
-      (fromD >= lo && fromD <= hi) ||
-      (toD >= lo && toD <= hi) ||
-      (fromD <= lo && toD >= hi)
-    );
   }
 
   return {
@@ -2518,6 +2535,44 @@ export function createHrResolvers({
         if (to < from) throw new Error("toYmd must not be before fromYmd");
 
         if (!isDeskManagerOrAdmin(actorRole)) {
+          // Stub run so HR Sees it under Runs as awaiting Manager — exact From–To kept.
+          const named = namedMonthFromPayRange(from, to);
+          const existingStub = await prisma.hr_payroll_period.findUnique({
+            where: {
+              HotelName_fromYmd_toYmd: {
+                HotelName,
+                fromYmd: from,
+                toYmd: to,
+              },
+            },
+          });
+          if (existingStub) {
+            const st = String(existingStub.status || "").trim();
+            if (st === "pending_generate" || st === "open") {
+              await prisma.hr_payslip.deleteMany({
+                where: { periodId: existingStub.id },
+              });
+              await prisma.hr_payroll_period.delete({
+                where: { id: existingStub.id },
+              });
+            } else {
+              throw new Error(
+                "A payroll run already exists for this From–To range.",
+              );
+            }
+          }
+          const stub = await prisma.hr_payroll_period.create({
+            data: {
+              HotelName,
+              periodKey: named.periodKey,
+              monthName: named.monthName,
+              fromYmd: from,
+              toYmd: to,
+              status: "pending_generate",
+              notes: String(notes ?? "").trim(),
+              createdBy: actorName,
+            },
+          });
           await createManagerPendingAction(prisma, {
             HotelName,
             kind: "payroll_generate",
@@ -2529,6 +2584,7 @@ export function createHrResolvers({
                 ? employeeIds.map((n) => Number(n)).filter((n) => n > 0)
                 : null,
               wageScope: wageScope != null ? String(wageScope) : null,
+              periodId: stub.id,
             },
             requestedBy: actorName,
           });
@@ -2575,9 +2631,22 @@ export function createHrResolvers({
           if (!tenantHotelReadMatches(context, row.HotelName)) {
             throw new Error("Payslip not found");
           }
-          if (row.paymentStatus === "approved") {
+          if (row.period?.status === "pending_generate") {
             throw new Error(
-              `Payslip ${row.payslipNumber || row.id} is already approved`,
+              "This payroll run is still awaiting Manager generate approval",
+            );
+          }
+          if (
+            row.paymentStatus === "marked_paid" ||
+            row.paymentStatus === "approved"
+          ) {
+            throw new Error(
+              `Payslip ${row.payslipNumber || row.id} is already marked paid`,
+            );
+          }
+          if (row.paymentStatus === "awaiting_finance") {
+            throw new Error(
+              `Payslip ${row.payslipNumber || row.id} is already waiting on Finance`,
             );
           }
         }
@@ -2585,12 +2654,14 @@ export function createHrResolvers({
         await prisma.hr_payslip.updateMany({
           where: {
             id: { in: rows.map((r) => r.id) },
-            paymentStatus: { in: ["unpaid", "marked_paid"] },
+            paymentStatus: "unpaid",
           },
           data: {
-            paymentStatus: "marked_paid",
+            paymentStatus: "awaiting_finance",
             hrMarkedPaidAt: new Date(),
             hrMarkedPaidBy: actorName,
+            managerApprovedAt: null,
+            managerApprovedBy: "",
           },
         });
 
@@ -2616,8 +2687,102 @@ export function createHrResolvers({
         });
       },
 
+      decideHrPayslipsPayment: async (_, { payslipIds, approve }, context) => {
+        await assertCanDecidePayslipPayment(context);
+        const { actorName } = actorFromContext(context);
+        const ids = (Array.isArray(payslipIds) ? payslipIds : [])
+          .map((n) => Number(n))
+          .filter((n) => Number.isFinite(n));
+        if (!ids.length) throw new Error("Select at least one payslip");
+
+        const rows = await prisma.hr_payslip.findMany({
+          where: { id: { in: ids } },
+          include: { period: true },
+        });
+        for (const row of rows) {
+          if (!tenantHotelReadMatches(context, row.HotelName)) {
+            throw new Error("Payslip not found");
+          }
+          // awaiting_finance (new) or legacy marked_paid (pre-Finance-confirm)
+          const st = String(row.paymentStatus || "");
+          if (st !== "awaiting_finance" && st !== "marked_paid") {
+            throw new Error(
+              `Payslip ${row.payslipNumber || row.id} is not awaiting Finance`,
+            );
+          }
+          // Legacy marked_paid that already has managerApprovedAt is done
+          if (st === "marked_paid" && row.managerApprovedAt) {
+            throw new Error(
+              `Payslip ${row.payslipNumber || row.id} is already confirmed`,
+            );
+          }
+        }
+
+        if (approve) {
+          await prisma.hr_payslip.updateMany({
+            where: { id: { in: rows.map((r) => r.id) } },
+            data: {
+              paymentStatus: "marked_paid",
+              managerApprovedAt: new Date(),
+              managerApprovedBy: actorName,
+            },
+          });
+        } else {
+          await prisma.hr_payslip.updateMany({
+            where: { id: { in: rows.map((r) => r.id) } },
+            data: {
+              paymentStatus: "unpaid",
+              hrMarkedPaidAt: null,
+              hrMarkedPaidBy: "",
+              managerApprovedAt: null,
+              managerApprovedBy: "",
+            },
+          });
+        }
+
+        const periodIds = [...new Set(rows.map((r) => r.periodId))];
+        for (const periodId of periodIds) {
+          if (approve) {
+            const pending = await prisma.hr_payslip.count({
+              where: {
+                periodId,
+                paymentStatus: {
+                  in: ["unpaid", "awaiting_finance"],
+                },
+              },
+            });
+            if (pending === 0) {
+              await prisma.hr_payroll_period.update({
+                where: { id: periodId },
+                data: {
+                  status: "approved",
+                  closedAt: new Date(),
+                  closedBy: actorName,
+                },
+              });
+            }
+          } else {
+            await prisma.hr_payroll_period.update({
+              where: { id: periodId },
+              data: { status: "open", closedAt: null, closedBy: "" },
+            });
+          }
+        }
+
+        return prisma.hr_payslip.findMany({
+          where: { id: { in: rows.map((r) => r.id) } },
+          include: { employee: true, period: true },
+        });
+      },
+
       approveHrPayslipsPayment: async (_, { payslipIds }, context) => {
-        assertLeaveManager(context);
+        // Back-compat: Manager/Admin may still confirm; prefer Finance decideHrPayslipsPayment.
+        const { actorRole } = actorFromContext(context);
+        if (actorRole === "Finance") {
+          await assertCanDecidePayslipPayment(context);
+        } else {
+          assertLeaveManager(context);
+        }
         const { actorName } = actorFromContext(context);
         const ids = (Array.isArray(payslipIds) ? payslipIds : [])
           .map((n) => Number(n))
@@ -2631,9 +2796,10 @@ export function createHrResolvers({
           if (!tenantHotelReadMatches(context, row.HotelName)) {
             throw new Error("Payslip not found");
           }
-          if (row.paymentStatus !== "marked_paid") {
+          const st = String(row.paymentStatus || "");
+          if (st !== "awaiting_finance" && st !== "marked_paid") {
             throw new Error(
-              `Payslip ${row.payslipNumber || row.id} must be marked paid by HR or Finance first`,
+              `Payslip ${row.payslipNumber || row.id} must be marked paid by HR first`,
             );
           }
         }
@@ -2641,7 +2807,7 @@ export function createHrResolvers({
         await prisma.hr_payslip.updateMany({
           where: { id: { in: rows.map((r) => r.id) } },
           data: {
-            paymentStatus: "approved",
+            paymentStatus: "marked_paid",
             managerApprovedAt: new Date(),
             managerApprovedBy: actorName,
           },
@@ -2652,7 +2818,9 @@ export function createHrResolvers({
           const pending = await prisma.hr_payslip.count({
             where: {
               periodId,
-              paymentStatus: { not: "approved" },
+              paymentStatus: {
+                in: ["unpaid", "awaiting_finance"],
+              },
             },
           });
           if (pending === 0) {
@@ -3006,10 +3174,75 @@ export function createHrResolvers({
             kind: "manager_pending_decided",
             title: "Request rejected",
             body: `Manager rejected ${row.kind.replaceAll("_", " ")} request.`,
-            href: "manager-pending",
+            href:
+              row.kind === "payroll_generate"
+                ? `/HR?section=payroll-runs`
+                : "manager-pending",
             actionStatus: "done",
             createdBy: actorName,
           });
+          // Clear the original Manager bell item for this request.
+          await prisma.hr_notification.updateMany({
+            where: {
+              HotelName: row.HotelName,
+              recipientRole: "Manager",
+              actionStatus: "pending",
+              kind:
+                row.kind === "payroll_generate"
+                  ? "manager_pending_payroll"
+                  : row.kind === "terminate"
+                    ? "manager_pending_terminate"
+                    : "manager_pending_attendance",
+            },
+            data: { actionStatus: "done" },
+          });
+
+          if (row.kind === "payroll_generate") {
+            const payload =
+              row.payloadJson && typeof row.payloadJson === "object"
+                ? row.payloadJson
+                : {};
+            const stubId = Number(payload.periodId);
+            if (Number.isFinite(stubId) && stubId > 0) {
+              const stub = await prisma.hr_payroll_period.findUnique({
+                where: { id: stubId },
+              });
+              if (
+                stub &&
+                stub.HotelName === row.HotelName &&
+                stub.status === "pending_generate"
+              ) {
+                await prisma.hr_payslip.deleteMany({
+                  where: { periodId: stub.id },
+                });
+                await prisma.hr_payroll_period.delete({
+                  where: { id: stub.id },
+                });
+              }
+            } else {
+              const from = String(payload.fromYmd || "").trim();
+              const to = String(payload.toYmd || "").trim();
+              if (YMD_RE.test(from) && YMD_RE.test(to)) {
+                const stub = await prisma.hr_payroll_period.findUnique({
+                  where: {
+                    HotelName_fromYmd_toYmd: {
+                      HotelName: row.HotelName,
+                      fromYmd: from,
+                      toYmd: to,
+                    },
+                  },
+                });
+                if (stub && stub.status === "pending_generate") {
+                  await prisma.hr_payslip.deleteMany({
+                    where: { periodId: stub.id },
+                  });
+                  await prisma.hr_payroll_period.delete({
+                    where: { id: stub.id },
+                  });
+                }
+              }
+            }
+          }
           return rejected;
         }
 
@@ -3062,11 +3295,50 @@ export function createHrResolvers({
             update: updateData,
           });
         } else if (row.kind === "payroll_generate") {
+          const from = assertYmd(payload.fromYmd, "fromYmd");
+          const to = assertYmd(payload.toYmd, "toYmd");
+          const stubId = Number(payload.periodId);
+          if (Number.isFinite(stubId) && stubId > 0) {
+            const stub = await prisma.hr_payroll_period.findUnique({
+              where: { id: stubId },
+            });
+            if (
+              stub &&
+              stub.HotelName === row.HotelName &&
+              stub.status === "pending_generate"
+            ) {
+              await prisma.hr_payslip.deleteMany({
+                where: { periodId: stub.id },
+              });
+              await prisma.hr_payroll_period.delete({
+                where: { id: stub.id },
+              });
+            }
+          } else {
+            const stub = await prisma.hr_payroll_period.findUnique({
+              where: {
+                HotelName_fromYmd_toYmd: {
+                  HotelName: row.HotelName,
+                  fromYmd: from,
+                  toYmd: to,
+                },
+              },
+            });
+            if (stub && stub.status === "pending_generate") {
+              await prisma.hr_payslip.deleteMany({
+                where: { periodId: stub.id },
+              });
+              await prisma.hr_payroll_period.delete({
+                where: { id: stub.id },
+              });
+            }
+          }
+          // Always use the requested From–To (never snap to calendar month).
           await runCreateHrPayrollPeriod(prisma, context, {
             HotelName: row.HotelName,
             actorName: row.requestedBy || actorName,
-            fromYmd: assertYmd(payload.fromYmd, "fromYmd"),
-            toYmd: assertYmd(payload.toYmd, "toYmd"),
+            fromYmd: from,
+            toYmd: to,
             notes: payload.notes,
             employeeIds: payload.employeeIds,
             wageScope: payload.wageScope,
