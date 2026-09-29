@@ -1,7 +1,8 @@
 /**
  * ATS Admin role OTP helpers (hotcol-ats Admin unlock).
- * Same charset/format as employee portal OTP; uniqueness via ats_access_otp.otpLookup
- * (and must not collide with active employee portalOtpLookup).
+ * Same charset/format as employee portal OTP for UX only.
+ * Uniqueness is scoped to ats_access_otp.otpLookup — not shared with
+ * hotcol-emp hr_employee.portalOtpLookup or lodging guestOtp.
  *
  * Preview lifecycle mirrors hotcol-emp: Manager sees otpPreview until firstUnlockAt.
  */
@@ -9,7 +10,6 @@ import {
   generatePortalOtp,
   hashPortalOtp,
   isValidPortalOtpFormat,
-  isPortalOtpTaken,
   normalizePortalOtp,
   verifyPortalOtp,
 } from "./hrPortalOtp.js";
@@ -35,7 +35,6 @@ export function clearAtsOtpPreviewFields() {
 export async function isAtsOtpTaken(prisma, otp, { excludeId = null } = {}) {
   const code = normalizePortalOtp(otp);
   if (!isValidPortalOtpFormat(code)) return false;
-  if (await isPortalOtpTaken(prisma, code)) return true;
   const where = {
     otpLookup: code,
     otpHash: { not: "" },
