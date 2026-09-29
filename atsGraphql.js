@@ -1,9 +1,10 @@
 /**
- * ATS GraphQL — Manager OTP create/rotate only (hotcol-user).
+ * ATS GraphQL — Manager OTP create/rotate/delete + preview until first unlock.
  * Candidate + Admin APIs live in hotcol-ats/BackEnd.
  */
 import {
   assertAtsRole,
+  deleteAtsAccessOtp,
   issueUniqueAtsAccessOtp,
 } from "./atsPortalOtp.js";
 
@@ -15,10 +16,15 @@ export const atsTypeDefsBlock = `
     role: String!
     """True when a code is configured (hash present)."""
     hasCode: Boolean!
+    """True until the role unlocks ATS Admin for the first time after issue/reset."""
+    awaitingFirstUnlock: Boolean!
+    mustChangeOtp: Boolean!
     updatedBy: String!
     createdAt: DateTime!
     updatedAt: DateTime!
-    """Plaintext only immediately after Get OTP / Save — otherwise empty."""
+    otpIssuedAt: DateTime
+    firstUnlockAt: DateTime
+    """Plaintext while awaiting first unlock — empty after Admin unlocks."""
     otpPreview: String!
   }
 `;
@@ -29,13 +35,22 @@ export const atsQueryFields = `
 
 export const atsMutationFields = `
     upsertAtsAccessOtp(role: String!): AtsAccessOtp!
+    deleteAtsAccessOtp(role: String!): Boolean!
 `;
 
-function mapOtpRow(row, otpPreview = "") {
+function mapOtpRow(row, otpPreviewOverride = null) {
+  const hasCode = Boolean(String(row.otpHash || "").trim());
+  const awaitingFirstUnlock = hasCode && !row.firstUnlockAt;
+  const previewFromDb = awaitingFirstUnlock
+    ? String(row.otpPreview || "").trim()
+    : "";
   return {
     ...row,
-    hasCode: Boolean(String(row.otpHash || "").trim()),
-    otpPreview: otpPreview || "",
+    hasCode,
+    awaitingFirstUnlock,
+    mustChangeOtp: Boolean(row.mustChangeOtp),
+    otpPreview:
+      otpPreviewOverride != null ? otpPreviewOverride : previewFromDb,
   };
 }
 
@@ -81,6 +96,11 @@ export function createAtsResolvers({
           updatedBy,
         });
         return mapOtpRow(row, plain);
+      },
+      deleteAtsAccessOtp: async (_, { role }, context) => {
+        assertManager(context);
+        const tin = requireTenant(context, tenantScopeFromContext);
+        return deleteAtsAccessOtp(prisma, { tinNumber: tin, role });
       },
     },
   };

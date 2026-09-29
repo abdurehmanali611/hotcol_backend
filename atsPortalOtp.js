@@ -2,6 +2,8 @@
  * ATS Admin role OTP helpers (hotcol-ats Admin unlock).
  * Same charset/format as employee portal OTP; uniqueness via ats_access_otp.otpLookup
  * (and must not collide with active employee portalOtpLookup).
+ *
+ * Preview lifecycle mirrors hotcol-emp: Manager sees otpPreview until firstUnlockAt.
  */
 import {
   generatePortalOtp,
@@ -26,11 +28,18 @@ export function assertAtsRole(role) {
   return r;
 }
 
+export function clearAtsOtpPreviewFields() {
+  return { otpPreview: "" };
+}
+
 export async function isAtsOtpTaken(prisma, otp, { excludeId = null } = {}) {
   const code = normalizePortalOtp(otp);
   if (!isValidPortalOtpFormat(code)) return false;
   if (await isPortalOtpTaken(prisma, code)) return true;
-  const where = { otpLookup: code };
+  const where = {
+    otpLookup: code,
+    otpHash: { not: "" },
+  };
   if (excludeId != null && Number(excludeId) > 0) {
     where.id = { not: Number(excludeId) };
   }
@@ -43,6 +52,7 @@ export async function isAtsOtpTaken(prisma, otp, { excludeId = null } = {}) {
 
 /**
  * Issue or rotate ATS OTP for (tinNumber, role). Returns plaintext once.
+ * Resets firstUnlockAt so Manager can see preview until next Admin unlock.
  */
 export async function issueUniqueAtsAccessOtp(
   prisma,
@@ -67,6 +77,7 @@ export async function issueUniqueAtsAccessOtp(
     if (taken) continue;
 
     const hash = await hashPortalOtp(plain);
+    const now = new Date();
     const row = await prisma.ats_access_otp.upsert({
       where: { tinNumber_role: { tinNumber: tin, role: atsRole } },
       create: {
@@ -75,12 +86,20 @@ export async function issueUniqueAtsAccessOtp(
         role: atsRole,
         otpHash: hash,
         otpLookup: plain,
+        otpPreview: plain,
+        mustChangeOtp: true,
+        otpIssuedAt: now,
+        firstUnlockAt: null,
         updatedBy: String(updatedBy ?? "").trim(),
       },
       update: {
         HotelName: hotel,
         otpHash: hash,
         otpLookup: plain,
+        otpPreview: plain,
+        mustChangeOtp: true,
+        otpIssuedAt: now,
+        firstUnlockAt: null,
         updatedBy: String(updatedBy ?? "").trim(),
       },
     });
@@ -93,7 +112,10 @@ export async function findAtsAccessByOtp(prisma, otp) {
   const code = normalizePortalOtp(otp);
   if (!isValidPortalOtpFormat(code)) return null;
   const row = await prisma.ats_access_otp.findFirst({
-    where: { otpLookup: code },
+    where: {
+      otpLookup: code,
+      otpHash: { not: "" },
+    },
   });
   if (!row) return null;
   const ok = await verifyPortalOtp(code, row.otpHash);
@@ -101,4 +123,27 @@ export async function findAtsAccessByOtp(prisma, otp) {
   return row;
 }
 
-export { normalizePortalOtp, verifyPortalOtp, isValidPortalOtpFormat };
+export async function deleteAtsAccessOtp(
+  prisma,
+  { tinNumber, role },
+) {
+  const tin = String(tinNumber ?? "").trim();
+  const atsRole = assertAtsRole(role);
+  const existing = await prisma.ats_access_otp.findUnique({
+    where: { tinNumber_role: { tinNumber: tin, role: atsRole } },
+  });
+  if (!existing || !String(existing.otpHash || "").trim()) {
+    throw new Error("No ATS code configured for this role");
+  }
+  await prisma.ats_access_otp.delete({
+    where: { id: existing.id },
+  });
+  return true;
+}
+
+export {
+  normalizePortalOtp,
+  verifyPortalOtp,
+  isValidPortalOtpFormat,
+  hashPortalOtp,
+};

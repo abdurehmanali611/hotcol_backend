@@ -2084,18 +2084,25 @@ model CrystalNameProposal {
 // =============================================================================
 
 /// Per-tenant ATS Admin access codes (role HR | Manager). Hash at rest; otpLookup for global uniqueness.
+/// Preview visible to Manager until first Admin unlock (mirrors emp portalFirstLoginAt).
 model ats_access_otp {
-  id        Int      @id @default(autoincrement())
-  tinNumber String
-  HotelName String   @default("")
+  id            Int       @id @default(autoincrement())
+  tinNumber     String
+  HotelName     String    @default("")
   /// HR | Manager
-  role      String
-  otpHash   String
+  role          String
+  otpHash       String    @default("")
   /// Normalized plaintext for uniqueness checks (like hr_employee.portalOtpLookup)
-  otpLookup String   @default("")
-  updatedBy String   @default("")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  otpLookup     String    @default("")
+  /// Plaintext Manager can read until firstUnlockAt
+  otpPreview    String    @default("")
+  mustChangeOtp Boolean   @default(false)
+  otpIssuedAt   DateTime?
+  /// Set on first successful ATS Admin unlock — clears otpPreview
+  firstUnlockAt DateTime?
+  updatedBy     String    @default("")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@unique([tinNumber, role])
   @@unique([otpLookup])
