@@ -57,7 +57,7 @@ async function loadInnerApp() {
       }
       innerApp = mod.default;
       return innerApp;
-    } catch (error) {
+      } catch (error) {
       bootError = error instanceof Error ? error : new Error(String(error));
       console.error("[hotcol-backend] failed to load server.js:", bootError);
       throw bootError;
@@ -95,12 +95,12 @@ if (!process.env.VERCEL) {
   const port = process.env.PORT || 4000;
   loadInnerApp()
     .then(() => {
-      app.listen(port, () => {
-        console.log(`Server is running on port ${port}`);
+  app.listen(port, () => {
+    console.log(`Server is running on port ${port}`);
       });
     })
     .catch((error) => {
       console.error(error);
       process.exit(1);
-    });
+  });
 }
