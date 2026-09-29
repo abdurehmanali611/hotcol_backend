@@ -116,6 +116,8 @@ export const atsTypeDefs = `
   }
 `;
 
+export const atsTypeDefsBlock = atsTypeDefs;
+
 export const atsQueryFields = `
     atsTenantPublic(tin: String!): AtsTenantPublic
     atsOpenVacancies(tin: String!): [AtsVacancy!]!

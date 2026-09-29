@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,5 +31,19 @@ const result = spawnSync(
 if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
+
+// Node's package exports map `import` → client.mjs. Bare
+// `@prisma/client/runtime/client` can fail resolution in some serverless
+// ESM graphs; pin the .mjs path explicitly after the bundle.
+let bundled = readFileSync(outfile, "utf8");
+bundled = bundled.replaceAll(
+  'from "@prisma/client/runtime/client"',
+  'from "@prisma/client/runtime/client.mjs"',
+);
+bundled = bundled.replaceAll(
+  "from '@prisma/client/runtime/client'",
+  "from '@prisma/client/runtime/client.mjs'",
+);
+writeFileSync(outfile, bundled);
 
 console.log(`[prisma:bundle] wrote ${path.relative(root, outfile)}`);
