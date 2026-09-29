@@ -2123,6 +2123,10 @@ model ats_vacancy {
   grossSalaryETB Float?
   /// Optional work location / address note
   addressSpec   String   @default("")
+  /// When true, candidates must provide email
+  requireEmail  Boolean  @default(false)
+  /// When true, candidates must upload a CV
+  requireCv     Boolean  @default(true)
   /// draft | open | closed
   status        String   @default("draft")
   createdByRole String   @default("")
@@ -2145,6 +2149,10 @@ model ats_application {
   phone              String   @default("")
   email              String   @default("")
   coverNote          String   @db.Text
+  /// e.g. "0-1", "1-3", "3-5", "5-10", "10+"
+  yearsExperience    String   @default("")
+  /// e.g. High school, Diploma, Bachelor, Master, Other
+  educationLevel     String   @default("")
   cvSecureUrl        String   @default("")
   cvPublicId         String   @default("")
   cvBytes            Int      @default(0)
