@@ -5,10 +5,12 @@
 import jwt from "jsonwebtoken";
 import {
   clearAtsOtpPreviewFields,
+  deleteAtsAccessOtp as deleteAtsAccessOtpRow,
   findAtsAccessByOtp,
   hashPortalOtp,
   isAtsOtpTaken,
   isValidPortalOtpFormat,
+  issueUniqueAtsAccessOtp,
   normalizeAtsRole,
   normalizePortalOtp,
   verifyPortalOtp,
@@ -114,6 +116,24 @@ export const atsTypeDefs = `
     portalOtpPreview: String!
     employeeId: Int!
   }
+
+  """Manager-facing ATS Admin unlock codes (HR / Manager roles)."""
+  type AtsAccessOtp {
+    id: Int!
+    tinNumber: String!
+    HotelName: String!
+    role: String!
+    hasCode: Boolean!
+    awaitingFirstUnlock: Boolean!
+    mustChangeOtp: Boolean!
+    updatedBy: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+    otpIssuedAt: DateTime
+    firstUnlockAt: DateTime
+    """Plaintext only while awaiting first Admin unlock; else empty."""
+    otpPreview: String!
+  }
 `;
 
 export const atsTypeDefsBlock = atsTypeDefs;
@@ -126,9 +146,15 @@ export const atsQueryFields = `
     atsAdminHrOrg: AtsAdminHrOrg!
     atsAdminApplications(vacancyId: Int, status: String): [AtsApplication!]!
     atsAdminMe: AtsAdminSession
+    """Manager: list ATS Admin unlock codes for this property."""
+    atsAccessOtps: [AtsAccessOtp!]!
 `;
 
 export const atsMutationFields = `
+    """Manager: create or reset ATS Admin unlock code for HR or Manager role."""
+    upsertAtsAccessOtp(role: String!): AtsAccessOtp!
+    """Manager: delete ATS Admin unlock code for a role."""
+    deleteAtsAccessOtp(role: String!): Boolean!
     atsAdminUnlock(otp: String!): AtsAdminSession!
     changeAtsAdminOtp(currentOtp: String!, newOtp: String!): Boolean!
     createAtsVacancy(
@@ -182,7 +208,34 @@ export const atsMutationFields = `
     ): HireAtsApplicationResult!
 `;
 
-export function createAtsResolvers({ prisma }) {
+function mapAtsAccessOtp(row) {
+  if (!row) return null;
+  const hasCode = Boolean(String(row.otpHash || "").trim());
+  const awaitingFirstUnlock = hasCode && !row.firstUnlockAt;
+  return {
+    id: row.id,
+    tinNumber: row.tinNumber,
+    HotelName: row.HotelName || "",
+    role: row.role,
+    hasCode,
+    awaitingFirstUnlock,
+    mustChangeOtp: Boolean(row.mustChangeOtp),
+    updatedBy: row.updatedBy || "",
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    otpIssuedAt: row.otpIssuedAt ?? null,
+    firstUnlockAt: row.firstUnlockAt ?? null,
+    otpPreview: awaitingFirstUnlock
+      ? String(row.otpPreview || "").trim()
+      : "",
+  };
+}
+
+export function createAtsResolvers({
+  prisma,
+  tenantScopeFromContext,
+  assertRole,
+}) {
   function signAtsAdmin(row) {
     if (!JWT_Secret) throw new Error("Server misconfigured");
     return jwt.sign(
@@ -195,6 +248,28 @@ export function createAtsResolvers({ prisma }) {
       JWT_Secret,
       { expiresIn: ATS_ADMIN_TTL },
     );
+  }
+
+  function requireManagerForAtsOtp(context) {
+    if (typeof assertRole !== "function") {
+      throw new Error("Server misconfigured");
+    }
+    assertRole(context, ["Manager", "Admin"]);
+    const tin =
+      typeof tenantScopeFromContext === "function"
+        ? tenantScopeFromContext(context)
+        : null;
+    if (!tin) throw new Error("Tenant scope missing");
+    const hotel =
+      String(context?.user?.HotelName || "").trim() || String(tin).trim();
+    const updatedBy =
+      String(
+        context?.user?.UserName ||
+          context?.user?.displayName ||
+          context?.user?.name ||
+          "",
+      ).trim() || "Manager";
+    return { tinNumber: String(tin).trim(), HotelName: hotel, updatedBy };
   }
 
   function atsAdminFromContext(context) {
@@ -423,8 +498,38 @@ export function createAtsResolvers({ prisma }) {
           mustChangeOtp: Boolean(row?.mustChangeOtp),
         };
       },
+      atsAccessOtps: async (_, __, context) => {
+        const { tinNumber } = requireManagerForAtsOtp(context);
+        const rows = await prisma.ats_access_otp.findMany({
+          where: { tinNumber },
+          orderBy: { role: "asc" },
+        });
+        return rows.map(mapAtsAccessOtp).filter(Boolean);
+      },
     },
     Mutation: {
+      upsertAtsAccessOtp: async (_, { role }, context) => {
+        const scope = requireManagerForAtsOtp(context);
+        const { plain, row } = await issueUniqueAtsAccessOtp(prisma, {
+          tinNumber: scope.tinNumber,
+          HotelName: scope.HotelName,
+          role,
+          updatedBy: scope.updatedBy,
+        });
+        return mapAtsAccessOtp({
+          ...row,
+          otpPreview: plain,
+          firstUnlockAt: null,
+        });
+      },
+      deleteAtsAccessOtp: async (_, { role }, context) => {
+        const scope = requireManagerForAtsOtp(context);
+        await deleteAtsAccessOtpRow(prisma, {
+          tinNumber: scope.tinNumber,
+          role,
+        });
+        return true;
+      },
       atsAdminUnlock: async (_, { otp }) => {
         const row = await findAtsAccessByOtp(prisma, otp);
         if (!row) throw new Error("Invalid ATS access code");
