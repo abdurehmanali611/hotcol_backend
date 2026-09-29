@@ -3193,7 +3193,6 @@ const atsResolvers = createAtsResolvers({
   prisma,
   tenantScopeFromContext,
   assertRole,
-  JWT_Secret,
 });
 
 const hrChatResolvers = createHrChatResolvers({
@@ -9035,7 +9034,6 @@ const resolvers = {
     ...crystalNameResolvers.Mutation,
     ...waiterOrderingResolvers.Mutation,
   },
-  AtsApplication: atsResolvers.AtsApplication,
 };
 
 const app = express();
