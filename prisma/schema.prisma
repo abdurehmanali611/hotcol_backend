@@ -2115,7 +2115,14 @@ model ats_vacancy {
   HotelName     String
   title         String
   description   String   @db.Text
+  /// HR department label (from Manager hr_department)
   department    String   @default("")
+  /// Optional HR team label under department
+  team          String   @default("")
+  /// Optional advertised gross salary (ETB)
+  grossSalaryETB Float?
+  /// Optional work location / address note
+  addressSpec   String   @default("")
   /// draft | open | closed
   status        String   @default("draft")
   createdByRole String   @default("")
