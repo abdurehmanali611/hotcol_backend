@@ -113,6 +113,12 @@ import {
   createHrResolvers,
 } from "./hrGraphql.js";
 import {
+  atsTypeDefsBlock,
+  atsQueryFields,
+  atsMutationFields,
+  createAtsResolvers,
+} from "./atsGraphql.js";
+import {
   hrChatTypeDefsBlock,
   hrChatQueryFields,
   hrChatMutationFields,
@@ -1353,6 +1359,8 @@ const typeDefs = gql`
 
   ${hrTypeDefsBlock}
 
+  ${atsTypeDefsBlock}
+
   ${hrChatTypeDefsBlock}
 
   ${crystalNameTypeDefsBlock}
@@ -1400,6 +1408,7 @@ const typeDefs = gql`
     salesAgents: [SalesAgent!]!
     ${lodgingQueryFields}
     ${hrQueryFields}
+    ${atsQueryFields}
     ${hrChatQueryFields}
     ${crystalNameQueryFields}
     ${waiterOrderingQueryFields}
@@ -1996,6 +2005,7 @@ const typeDefs = gql`
 
     ${lodgingMutationFields}
     ${hrMutationFields}
+    ${atsMutationFields}
     ${hrChatMutationFields}
     ${crystalNameMutationFields}
   }
@@ -3179,6 +3189,13 @@ const hrResolvers = createHrResolvers({
   assertAuthenticated,
 });
 
+const atsResolvers = createAtsResolvers({
+  prisma,
+  tenantScopeFromContext,
+  assertRole,
+  JWT_Secret,
+});
+
 const hrChatResolvers = createHrChatResolvers({
   prisma,
   tenantScopeFromContext,
@@ -3283,6 +3300,7 @@ const resolvers = {
   Query: {
     ...lodgingResolvers.Query,
     ...hrResolvers.Query,
+    ...atsResolvers.Query,
     ...hrChatResolvers.Query,
     ...crystalNameResolvers.Query,
     ...waiterOrderingResolvers.Query,
@@ -9012,10 +9030,12 @@ const resolvers = {
 
     ...lodgingResolvers.Mutation,
     ...hrResolvers.Mutation,
+    ...atsResolvers.Mutation,
     ...hrChatResolvers.Mutation,
     ...crystalNameResolvers.Mutation,
     ...waiterOrderingResolvers.Mutation,
   },
+  AtsApplication: atsResolvers.AtsApplication,
 };
 
 const app = express();
