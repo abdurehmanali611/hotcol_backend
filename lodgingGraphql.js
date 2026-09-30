@@ -2974,7 +2974,9 @@ export function createLodgingResolvers({
             if (String(line.approvalStatus || "").toLowerCase() === "pending") {
               continue;
             }
-            stayRoomRev += Number(line.amountETB) || 0;
+            // ADR / RevPAR use room revenue inclusive of lodging tax on room lines.
+            stayRoomRev +=
+              (Number(line.amountETB) || 0) + (Number(line.taxETB) || 0);
           }
           // Attribute revenue by overlap share of stay nights.
           const stayNights = Math.max(1, Number(stay.nights) || overlapNights || 1);
