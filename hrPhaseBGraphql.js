@@ -329,6 +329,16 @@ export const hrPhaseBMutationFields = `
       fileFormat: String
       fileOriginalName: String
     ): HrLibraryDocument!
+    updateHrLibraryDocument(
+      id: Int!
+      title: String!
+      description: String
+      fileSecureUrl: String
+      filePublicId: String
+      fileBytes: Int
+      fileFormat: String
+      fileOriginalName: String
+    ): HrLibraryDocument!
     deleteHrLibraryDocument(id: Int!): Boolean!
     upsertHrShiftTemplate(input: HrShiftTemplateInput!): HrShiftTemplate!
     deleteHrShiftTemplate(id: Int!): Boolean!
@@ -603,6 +613,51 @@ export function createHrPhaseBResolvers({
             fileOriginalName: String(fileOriginalName || "").trim(),
             uploadedBy: actorName,
           },
+        });
+      },
+      updateHrLibraryDocument: async (
+        _,
+        {
+          id,
+          title,
+          description,
+          fileSecureUrl,
+          filePublicId,
+          fileBytes,
+          fileFormat,
+          fileOriginalName,
+        },
+        context,
+      ) => {
+        assertHr(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const row = await prisma.hr_library_document.findFirst({
+          where: { id: Number(id), HotelName },
+        });
+        if (!row) throw new Error("Document not found");
+        const t = String(title || "").trim();
+        if (!t) throw new Error("Title is required");
+        const data = {
+          title: t,
+          description: String(description || "").trim(),
+        };
+        const url = fileSecureUrl != null ? String(fileSecureUrl).trim() : "";
+        if (url) {
+          data.fileSecureUrl = url;
+          if (filePublicId != null) {
+            data.filePublicId = String(filePublicId || "").trim();
+          }
+          if (fileBytes != null) data.fileBytes = Number(fileBytes) || 0;
+          if (fileFormat != null) {
+            data.fileFormat = String(fileFormat || "").trim();
+          }
+          if (fileOriginalName != null) {
+            data.fileOriginalName = String(fileOriginalName || "").trim();
+          }
+        }
+        return prisma.hr_library_document.update({
+          where: { id: row.id },
+          data,
         });
       },
       deleteHrLibraryDocument: async (_, { id }, context) => {
