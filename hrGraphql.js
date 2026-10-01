@@ -112,6 +112,7 @@ export const hrTypeDefsBlock = `
     gender: String!
     education: String!
     personalTin: String!
+    yearsExperience: Int!
     medicalNote: String!
     createdAt: DateTime!
     updatedAt: DateTime!
@@ -483,6 +484,7 @@ export const hrMutationFields = `
       gender: String
       education: String
       personalTin: String
+      yearsExperience: Int
       medicalNote: String
     ): HrEmployee!
     updateHrEmployee(
@@ -506,6 +508,7 @@ export const hrMutationFields = `
       gender: String
       education: String
       personalTin: String
+      yearsExperience: Int
       medicalNote: String
     ): HrEmployee!
     terminateHrEmployee(id: Int!, endDate: String): HrEmployee!
@@ -1751,6 +1754,7 @@ export function createHrResolvers({
           gender,
           education,
           personalTin,
+          yearsExperience,
           medicalNote,
         },
         context,
@@ -1775,6 +1779,10 @@ export function createHrResolvers({
           });
           if (!team) throw new Error("Team not found");
         }
+        const years = Math.max(
+          0,
+          Math.min(80, Math.floor(Number(yearsExperience) || 0)),
+        );
 
         const employee = await prisma.hr_employee.create({
           data: {
@@ -1798,6 +1806,7 @@ export function createHrResolvers({
             gender: String(gender ?? "").trim(),
             education: String(education ?? "").trim(),
             personalTin: String(personalTin ?? "").trim(),
+            yearsExperience: years,
             medicalNote: String(medicalNote ?? "").trim(),
           },
         });
@@ -1842,6 +1851,7 @@ export function createHrResolvers({
           gender,
           education,
           personalTin,
+          yearsExperience,
           medicalNote,
         },
         context,
@@ -1908,6 +1918,12 @@ export function createHrResolvers({
         if (gender != null) data.gender = String(gender).trim();
         if (education != null) data.education = String(education).trim();
         if (personalTin != null) data.personalTin = String(personalTin).trim();
+        if (yearsExperience != null) {
+          data.yearsExperience = Math.max(
+            0,
+            Math.min(80, Math.floor(Number(yearsExperience) || 0)),
+          );
+        }
         if (medicalNote != null) data.medicalNote = String(medicalNote).trim();
         if (credentialUserName != null) {
           data.credentialUserName = String(credentialUserName).trim();

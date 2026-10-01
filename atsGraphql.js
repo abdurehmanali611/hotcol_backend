@@ -876,6 +876,14 @@ export function createAtsResolvers({
             credentialUserId: null,
             credentialUserName: "",
             notes: noteBits.join("\n"),
+            education: String(existing.educationLevel || "").trim(),
+            yearsExperience: Math.max(
+              0,
+              Math.min(
+                80,
+                Math.floor(Number(existing.yearsExperience) || 0),
+              ),
+            ),
           },
         });
 

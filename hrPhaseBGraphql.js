@@ -269,9 +269,11 @@ export const hrPhaseBTypeDefsBlock = `
     gender: String
     education: String
     personalTin: String
+    yearsExperience: Int
     bankName: String
     accountNumber: String
     notes: String
+    medicalNote: String
   }
 
   input HrShiftTemplateInput {
@@ -1267,9 +1269,14 @@ export function createHrPhaseBResolvers({
             gender: String(e.gender || "").trim(),
             education: String(e.education || "").trim(),
             personalTin: String(e.personalTin || "").trim(),
+            yearsExperience: Math.max(
+              0,
+              Math.min(80, Math.floor(Number(e.yearsExperience) || 0)),
+            ),
             bankName: String(e.bankName || "").trim(),
             accountNumber: String(e.accountNumber || "").trim(),
             notes: String(e.notes || "").trim(),
+            medicalNote: String(e.medicalNote || "").trim(),
             status: "active",
           }))
           .filter((e) => e.fullName);

@@ -1486,6 +1486,8 @@ model hr_employee {
   gender          String    @default("")
   education       String    @default("")
   personalTin     String    @default("")
+  /// Years of experience (0 = not set)
+  yearsExperience Int       @default(0)
   /// VARCHAR so MySQL can default existing employee rows to ""
   medicalNote     String    @default("") @db.VarChar(4000)
   createdAt       DateTime  @default(now())
