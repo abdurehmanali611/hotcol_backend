@@ -263,6 +263,8 @@ export const hrPhaseBTypeDefsBlock = `
     email: String
     department: String
     jobTitle: String
+    orgPosition: String
+    teamId: Int
     wageType: String
     baseSalaryETB: Float
     hireDate: String
@@ -1263,6 +1265,14 @@ export function createHrPhaseBResolvers({
             email: String(e.email || "").trim(),
             department: String(e.department || "").trim(),
             jobTitle: String(e.jobTitle || "").trim(),
+            orgPosition:
+              String(e.orgPosition || "").trim() === "leader"
+                ? "leader"
+                : "employee",
+            teamId:
+              e.teamId != null && Number(e.teamId) > 0
+                ? Number(e.teamId)
+                : null,
             wageType: String(e.wageType || "monthly").trim() || "monthly",
             baseSalaryETB: Number(e.baseSalaryETB) || 0,
             hireDate: String(e.hireDate || "").trim(),
