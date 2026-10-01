@@ -571,6 +571,15 @@ export const hrMutationFields = `
       endTime: String
       notes: String
     ): HrShift!
+    updateHrShift(
+      id: Int!
+      employeeId: Int
+      workDate: String
+      department: String
+      startTime: String
+      endTime: String
+      notes: String
+    ): HrShift!
     deleteHrShift(id: Int!): Boolean!
 
     createHrDocument(
@@ -2765,6 +2774,51 @@ export function createHrResolvers({
             endTime: String(endTime ?? "17:00").trim() || "17:00",
             notes: String(notes ?? "").trim(),
           },
+        });
+      },
+
+      updateHrShift: async (
+        _,
+        { id, employeeId, workDate, department, startTime, endTime, notes },
+        context,
+      ) => {
+        assertHrAccess(context);
+        const shift = await prisma.hr_shift.findUnique({
+          where: { id: Number(id) },
+        });
+        if (!shift || !tenantHotelReadMatches(context, shift.HotelName)) {
+          throw new Error("Shift not found");
+        }
+        const data = {};
+        if (employeeId != null) {
+          const employee = await loadEmployeeInTenantOrThrow(
+            context,
+            employeeId,
+          );
+          data.employeeId = employee.id;
+          data.HotelName = employee.HotelName;
+        }
+        if (workDate != null && String(workDate).trim() !== "") {
+          data.workDate = assertYmd(workDate, "workDate");
+        }
+        if (department !== undefined) {
+          data.department = String(department ?? "").trim();
+        }
+        if (startTime !== undefined) {
+          data.startTime =
+            String(startTime ?? "").trim() || shift.startTime || "08:00";
+        }
+        if (endTime !== undefined) {
+          data.endTime =
+            String(endTime ?? "").trim() || shift.endTime || "17:00";
+        }
+        if (notes !== undefined) {
+          data.notes = String(notes ?? "").trim();
+        }
+        return prisma.hr_shift.update({
+          where: { id: shift.id },
+          data,
+          include: { employee: true },
         });
       },
 
