@@ -188,7 +188,9 @@ export function resolveLineRuleAmountETB(rule, baseSalaryETB) {
 
 /**
  * Build earnings/deductions for one employee in a payroll From–To window.
- * Integrates: common line rules, recorded incidents, unpaid leave, attendance-linked types.
+ * Integrates: common line rules, recorded incidents, unpaid leave, attendance-linked types,
+ * approved bonuses, approved advances, approved overtime in-range, and active loan installments.
+ * Benefits are intentionally excluded from payroll.
  */
 export function buildIntegratedPayLines({
   employee,
@@ -201,6 +203,10 @@ export function buildIntegratedPayLines({
   attendanceByDate = new Map(),
   leaveDates = new Set(),
   attendanceLinkedTypes = [],
+  bonuses = [],
+  advances = [],
+  overtimeRequests = [],
+  loans = [],
 }) {
   const base = Number(employee.baseSalaryETB) || 0;
   const wt = String(employee.wageType || "monthly").trim();
@@ -309,6 +315,75 @@ export function buildIntegratedPayLines({
     }
   }
 
+  /** @type {number[]} */
+  const appliedBonusIds = [];
+  for (const bonus of bonuses) {
+    const amount = round2(Number(bonus.amountETB) || 0);
+    if (amount <= 0) continue;
+    const label = String(bonus.label || "").trim() || "Bonus";
+    earnings.push({
+      label: `Bonus · ${label}`,
+      amountETB: amount,
+    });
+    if (bonus.id != null) appliedBonusIds.push(Number(bonus.id));
+  }
+
+  /** @type {number[]} */
+  const appliedAdvanceIds = [];
+  for (const advance of advances) {
+    const amount = round2(Number(advance.amountETB) || 0);
+    if (amount <= 0) continue;
+    const reason = String(advance.reason || "").trim().slice(0, 40);
+    earnings.push({
+      label: reason ? `Advance · ${reason}` : "Salary advance",
+      amountETB: amount,
+    });
+    if (advance.id != null) appliedAdvanceIds.push(Number(advance.id));
+  }
+
+  /** @type {number[]} */
+  const appliedOvertimeIds = [];
+  let overtimeETB = 0;
+  for (const ot of overtimeRequests) {
+    const ymd = String(ot.workYmd || "").trim();
+    if (ymd && (ymd < fromYmd || ymd > toYmd)) continue;
+    const amount = round2(Number(ot.amountETB) || 0);
+    if (amount <= 0) continue;
+    const hours = Number(ot.hours) || 0;
+    const hoursNote = hours > 0 ? ` · ${hours}h` : "";
+    const dayNote = ymd ? ` · ${ymd}` : "";
+    earnings.push({
+      label: `Overtime${dayNote}${hoursNote}`,
+      amountETB: amount,
+    });
+    overtimeETB = round2(overtimeETB + amount);
+    if (ot.id != null) appliedOvertimeIds.push(Number(ot.id));
+  }
+
+  /** @type {Array<{ id: number, deductETB: number, nextRemainingETB: number, closed: boolean }>} */
+  const appliedLoanUpdates = [];
+  for (const loan of loans) {
+    const remaining = round2(Number(loan.remainingETB) || 0);
+    if (remaining <= 0) continue;
+    const installment = round2(Number(loan.installmentETB) || 0);
+    if (installment <= 0) continue;
+    const deduct = round2(Math.min(installment, remaining));
+    if (deduct <= 0) continue;
+    const nextRemaining = round2(Math.max(0, remaining - deduct));
+    deductions.push({
+      label: `Loan installment${loan.reason ? ` · ${String(loan.reason).trim().slice(0, 40)}` : ""}`,
+      amountETB: deduct,
+    });
+    if (loan.id != null) {
+      appliedLoanUpdates.push({
+        id: Number(loan.id),
+        deductETB: deduct,
+        nextRemainingETB: nextRemaining,
+        closed: nextRemaining <= 0,
+      });
+    }
+  }
+
   const totalEarningsETB = round2(
     earnings.reduce((s, r) => s + r.amountETB, 0),
   );
@@ -323,6 +398,11 @@ export function buildIntegratedPayLines({
     totalEarningsETB,
     totalDeductionsETB,
     netPayETB: round2(totalEarningsETB - totalDeductionsETB),
+    overtimeETB,
+    appliedBonusIds,
+    appliedAdvanceIds,
+    appliedOvertimeIds,
+    appliedLoanUpdates,
   };
 }
 

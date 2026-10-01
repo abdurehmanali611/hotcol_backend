@@ -2306,7 +2306,7 @@ model hr_overtime_request {
   hours        Float    @default(0)
   amountETB    Float    @default(0)
   reason       String   @db.Text
-  /// pending | approved | rejected
+  /// pending | approved | rejected | paid
   status       String   @default("pending")
   requestedBy  String   @default("")
   decidedBy    String   @default("")

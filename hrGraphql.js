@@ -1109,8 +1109,17 @@ async function runCreateHrPayrollPeriod(
   );
 
   const employeeIdList = employees.map((e) => e.id);
-  const [incidents, leaveRequests, leaveTypes, attendanceRows, incidentTypes] =
-    await Promise.all([
+  const [
+    incidents,
+    leaveRequests,
+    leaveTypes,
+    attendanceRows,
+    incidentTypes,
+    bonuses,
+    advances,
+    overtimeRequests,
+    loans,
+  ] = await Promise.all([
       prisma.hr_incident.findMany({
         where: {
           HotelName,
@@ -1137,6 +1146,36 @@ async function runCreateHrPayrollPeriod(
       }),
       prisma.hr_incident_type.findMany({
         where: { HotelName, active: true },
+      }),
+      prisma.hr_bonus.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          status: "approved",
+        },
+      }),
+      prisma.hr_advance_request.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          status: "approved",
+        },
+      }),
+      prisma.hr_overtime_request.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          status: "approved",
+          workYmd: { gte: from, lte: to },
+        },
+      }),
+      prisma.hr_loan.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          status: "active",
+          remainingETB: { gt: 0 },
+        },
       }),
     ]);
 
@@ -1200,6 +1239,19 @@ async function runCreateHrPayrollPeriod(
         lineRuleMatchesSalary(rule, Number(employee.baseSalaryETB) || 0),
       );
 
+      const empBonuses = bonuses.filter(
+        (b) => Number(b.employeeId) === Number(employee.id),
+      );
+      const empAdvances = advances.filter(
+        (a) => Number(a.employeeId) === Number(employee.id),
+      );
+      const empOvertime = overtimeRequests.filter(
+        (o) => Number(o.employeeId) === Number(employee.id),
+      );
+      const empLoans = loans.filter(
+        (l) => Number(l.employeeId) === Number(employee.id),
+      );
+
       const built = buildIntegratedPayLines({
         employee,
         fromYmd: from,
@@ -1211,6 +1263,10 @@ async function runCreateHrPayrollPeriod(
         attendanceByDate,
         leaveDates,
         attendanceLinkedTypes,
+        bonuses: empBonuses,
+        advances: empAdvances,
+        overtimeRequests: empOvertime,
+        loans: empLoans,
       });
       const number = payslipNumberFor(employee.id, created.id, seq++);
       const weeksNote =
@@ -1235,7 +1291,7 @@ async function runCreateHrPayrollPeriod(
           bankName: employee.bankName || "",
           accountNumber: employee.accountNumber || "",
           basePayETB: built.gross,
-          overtimeETB: 0,
+          overtimeETB: built.overtimeETB || 0,
           tipsETB: 0,
           deductionsETB: built.totalDeductionsETB,
           netPayETB: built.netPayETB,
@@ -1248,6 +1304,46 @@ async function runCreateHrPayrollPeriod(
           notes: weeksNote,
         },
       });
+
+      if (built.appliedBonusIds?.length) {
+        await tx.hr_bonus.updateMany({
+          where: {
+            id: { in: built.appliedBonusIds },
+            HotelName,
+            status: "approved",
+          },
+          data: { status: "paid" },
+        });
+      }
+      if (built.appliedAdvanceIds?.length) {
+        await tx.hr_advance_request.updateMany({
+          where: {
+            id: { in: built.appliedAdvanceIds },
+            HotelName,
+            status: "approved",
+          },
+          data: { status: "paid" },
+        });
+      }
+      if (built.appliedOvertimeIds?.length) {
+        await tx.hr_overtime_request.updateMany({
+          where: {
+            id: { in: built.appliedOvertimeIds },
+            HotelName,
+            status: "approved",
+          },
+          data: { status: "paid" },
+        });
+      }
+      for (const loanUp of built.appliedLoanUpdates || []) {
+        await tx.hr_loan.update({
+          where: { id: loanUp.id },
+          data: {
+            remainingETB: loanUp.nextRemainingETB,
+            status: loanUp.closed ? "closed" : "active",
+          },
+        });
+      }
     }
     return created;
   });
