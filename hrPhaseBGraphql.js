@@ -655,7 +655,7 @@ export function createHrPhaseBResolvers({
         { templateId, employeeIds, fromYmd, toYmd },
         context,
       ) => {
-        assertManager(context);
+        assertHrOrManager(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const tpl = await prisma.hr_shift_template.findFirst({
           where: { id: Number(templateId), HotelName, active: true },
