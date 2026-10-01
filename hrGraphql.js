@@ -2455,48 +2455,48 @@ export function createHrResolvers({
           actor: { role: actorRole, name: actorName },
           note,
           onFinalApprove: async (leave) => {
-            await prisma.$transaction(async (tx) => {
-              const typeRow = await tx.hr_leave_type.findFirst({
-                where: {
+        await prisma.$transaction(async (tx) => {
+          const typeRow = await tx.hr_leave_type.findFirst({
+            where: {
                   HotelName: leave.HotelName,
                   code: leave.leaveType,
-                },
-              });
-              const deductPaid = typeRow
-                ? Boolean(typeRow.paid)
+            },
+          });
+          const deductPaid = typeRow
+            ? Boolean(typeRow.paid)
                 : ["annual", "sick"].includes(leave.leaveType);
               if (deductPaid) {
-                const balance = await tx.hr_leave_balance.findUnique({
-                  where: {
-                    employeeId_leaveType: {
+            const balance = await tx.hr_leave_balance.findUnique({
+              where: {
+                employeeId_leaveType: {
                       employeeId: leave.employeeId,
                       leaveType: leave.leaveType,
-                    },
-                  },
-                });
-                const nextBalance = round2(
+                },
+              },
+            });
+            const nextBalance = round2(
                   (balance ? Number(balance.balanceDays) : 0) -
                     Number(leave.days),
-                );
-                await tx.hr_leave_balance.upsert({
-                  where: {
-                    employeeId_leaveType: {
+            );
+            await tx.hr_leave_balance.upsert({
+              where: {
+                employeeId_leaveType: {
                       employeeId: leave.employeeId,
                       leaveType: leave.leaveType,
-                    },
-                  },
-                  create: {
+                },
+              },
+              create: {
                     HotelName: leave.HotelName,
                     employeeId: leave.employeeId,
                     leaveType: leave.leaveType,
-                    balanceDays: nextBalance,
-                  },
-                  update: { balanceDays: nextBalance },
-                });
-              }
+                balanceDays: nextBalance,
+              },
+              update: { balanceDays: nextBalance },
+            });
+          }
               await syncEmployeeLeaveStatus(tx, leave.employeeId);
-              await markAttendanceOnLeave(
-                tx,
+            await markAttendanceOnLeave(
+              tx,
                 leave.employee,
                 leave.fromYmd,
                 leave.toYmd,
@@ -2547,9 +2547,58 @@ export function createHrResolvers({
           },
         });
 
+        const pad2 = (n) => String(n).padStart(2, "0");
+        const hmNow = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+        const yest = (() => {
+          const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          d.setDate(d.getDate() - 1);
+          return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+        })();
+        const normalizeHm = (raw) => {
+          const s = String(raw || "").trim();
+          const m = s.match(/^(\d{1,2}):(\d{2})/);
+          if (!m) return "";
+          return `${pad2(Math.min(23, Math.max(0, Number(m[1]))))}:${pad2(Math.min(59, Math.max(0, Number(m[2]))))}`;
+        };
+        const shiftCoversNow = (shift) => {
+          const start = normalizeHm(shift.startTime);
+          const end = normalizeHm(shift.endTime);
+          if (!start || !end) return false;
+          const overnight = end < start;
+          if (shift.workDate === workDate) {
+            if (overnight) return hmNow >= start;
+            return hmNow >= start && hmNow <= end;
+          }
+          if (overnight && shift.workDate === yest) {
+            return hmNow <= end;
+          }
+          return false;
+        };
+
         if (act === "in") {
           if (existing?.clockInAt) {
             throw new Error("Already clocked in today");
+          }
+          const scheduledToday = await prisma.hr_shift.findMany({
+            where: {
+              HotelName: employee.HotelName,
+              employeeId: employee.id,
+              workDate: { in: [workDate, yest] },
+            },
+            select: { workDate: true, startTime: true, endTime: true },
+          });
+          const hasShiftToday = scheduledToday.some((shift) => {
+            if (shift.workDate === workDate) return true;
+            const start = normalizeHm(shift.startTime);
+            const end = normalizeHm(shift.endTime);
+            return Boolean(
+              shift.workDate === yest && start && end && end < start,
+            );
+          });
+          if (hasShiftToday && !scheduledToday.some(shiftCoversNow)) {
+            throw new Error(
+              "Employee has no shift covering the current day and time",
+            );
           }
           return prisma.hr_attendance.upsert({
             where: {
@@ -2789,25 +2838,25 @@ export function createHrResolvers({
           });
           const named = namedMonthFromPayRange(from, to);
           const existingStub = await prisma.hr_payroll_period.findUnique({
-            where: {
+          where: {
               HotelName_fromYmd_toYmd: {
                 HotelName,
                 fromYmd: from,
                 toYmd: to,
               },
-            },
-          });
+          },
+        });
           if (existingStub) {
             const st = String(existingStub.status || "").trim();
             if (st === "pending_generate") {
               await prisma.hr_payslip.deleteMany({
                 where: { periodId: existingStub.id },
               });
-              await prisma.hr_payroll_period.delete({
+            await prisma.hr_payroll_period.delete({
                 where: { id: existingStub.id },
-              });
-            } else {
-              throw new Error(
+            });
+          } else {
+            throw new Error(
                 "A payroll run already exists for this From–To range.",
               );
             }
@@ -2903,18 +2952,18 @@ export function createHrResolvers({
         }
 
         await prisma.hr_payslip.updateMany({
-          where: {
+              where: {
             id: { in: rows.map((r) => r.id) },
             paymentStatus: "unpaid",
           },
-          data: {
+            data: {
             paymentStatus: "awaiting_finance",
             hrMarkedPaidAt: new Date(),
             hrMarkedPaidBy: actorName,
             managerApprovedAt: null,
             managerApprovedBy: "",
-          },
-        });
+            },
+          });
 
         const periodIds = [...new Set(rows.map((r) => r.periodId))];
         for (const periodId of periodIds) {
@@ -2970,14 +3019,14 @@ export function createHrResolvers({
         }
 
         if (approve) {
-          await prisma.hr_payslip.updateMany({
+        await prisma.hr_payslip.updateMany({
             where: { id: { in: rows.map((r) => r.id) } },
-            data: {
-              paymentStatus: "marked_paid",
+          data: {
+            paymentStatus: "marked_paid",
               managerApprovedAt: new Date(),
               managerApprovedBy: actorName,
-            },
-          });
+          },
+        });
         } else {
           await prisma.hr_payslip.updateMany({
             where: { id: { in: rows.map((r) => r.id) } },
@@ -2996,16 +3045,16 @@ export function createHrResolvers({
           if (approve) {
             // All slips marked paid → ready for Manager Close (do not auto-close)
             const pending = await prisma.hr_payslip.count({
-              where: {
-                periodId,
+            where: {
+              periodId,
                 paymentStatus: {
                   in: ["unpaid", "awaiting_finance"],
                 },
-              },
-            });
+            },
+          });
             if (pending === 0) {
-              await prisma.hr_payroll_period.update({
-                where: { id: periodId },
+            await prisma.hr_payroll_period.update({
+              where: { id: periodId },
                 data: {
                   status: "awaiting_manager",
                   closedAt: null,
@@ -3039,7 +3088,7 @@ export function createHrResolvers({
         if (actorRole === "Finance") {
           await assertCanDecidePayslipPayment(context);
         } else {
-          assertLeaveManager(context);
+        assertLeaveManager(context);
         }
         const { actorName } = actorFromContext(context);
         const ids = (Array.isArray(payslipIds) ? payslipIds : [])
