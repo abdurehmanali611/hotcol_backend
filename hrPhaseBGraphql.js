@@ -528,7 +528,13 @@ export function createHrPhaseBResolvers({
           },
           orderBy: { employeeName: "asc" },
         });
-        return slips.map((s) => ({
+        return slips
+          .filter((s) => {
+            const bank = String(s.bankName ?? "").trim();
+            const account = String(s.accountNumber ?? "").trim();
+            return Boolean(bank && account);
+          })
+          .map((s) => ({
           payslipId: s.id,
           employeeId: s.employeeId,
           employeeName: s.employeeName,

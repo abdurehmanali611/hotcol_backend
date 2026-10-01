@@ -305,16 +305,6 @@ export const hrTypeDefsBlock = `
     period: HrPayrollPeriod
   }
 
-  type HrBankExportRow {
-    payslipId: Int!
-    employeeId: Int!
-    employeeName: String!
-    bankName: String!
-    accountNumber: String!
-    netPayETB: Float!
-    payslipNumber: String!
-  }
-
   type HrPayrollLineRule {
     id: Int!
     HotelName: String!
@@ -464,7 +454,6 @@ export const hrQueryFields = `
     hrDocuments(employeeId: Int): [HrDocument!]!
     hrPayrollPeriods: [HrPayrollPeriod!]!
     hrPayslips(periodId: Int, paymentStatus: String): [HrPayslip!]!
-    hrPayrollBankExport(periodId: Int!): [HrBankExportRow!]!
     hrPayrollLineRules: [HrPayrollLineRule!]!
     hrWagePayWindows: [HrWagePayWindow!]!
     hrIncidents(employeeId: Int): [HrIncident!]!
@@ -1631,38 +1620,6 @@ export function createHrResolvers({
           include: { employee: true, period: true },
           orderBy: [{ periodId: "desc" }, { employeeId: "asc" }],
         });
-      },
-
-      hrPayrollBankExport: async (_, { periodId }, context) => {
-        await assertHrOrFinancePayrollRead(context);
-        const period = await prisma.hr_payroll_period.findUnique({
-          where: { id: Number(periodId) },
-        });
-        if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
-          throw new Error("Payroll period not found");
-        }
-        const slips = await prisma.hr_payslip.findMany({
-          where: {
-            ...tenantHotelReadWhere(context),
-            periodId: period.id,
-          },
-          orderBy: [{ employeeId: "asc" }, { id: "asc" }],
-        });
-        return slips
-          .filter((s) => {
-            const bank = String(s.bankName ?? "").trim();
-            const account = String(s.accountNumber ?? "").trim();
-            return Boolean(bank && account);
-          })
-          .map((s) => ({
-            payslipId: s.id,
-            employeeId: s.employeeId,
-            employeeName: s.employeeName || "",
-            bankName: s.bankName || "",
-            accountNumber: s.accountNumber || "",
-            netPayETB: Number(s.netPayETB) || 0,
-            payslipNumber: s.payslipNumber || "",
-          }));
       },
 
       hrPayrollLineRules: async (_, __, context) => {
