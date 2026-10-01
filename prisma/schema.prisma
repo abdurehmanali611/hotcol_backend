@@ -1768,8 +1768,17 @@ model hr_payroll_line_rule {
   amountETB  Float    @default(0)
   /// always | day_range
   whenMode   String   @default("always")
+  /// Legacy day-of-month (kept for older rows)
   fromDay    Int?
   toDay      Int?
+  /// Calendar activation window when whenMode = day_range (YYYY-MM-DD)
+  fromYmd    String   @default("")
+  toYmd      String   @default("")
+  /// When true, % applies only if salary is in [fromAmountETB, toAmountETB)
+  customized Boolean  @default(false)
+  fromAmountETB Float @default(0)
+  /// Null / omit = no upper bound
+  toAmountETB Float?
   active     Boolean  @default(true)
   sortOrder  Int      @default(0)
   createdAt  DateTime @default(now())

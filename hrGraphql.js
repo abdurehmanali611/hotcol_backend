@@ -17,7 +17,6 @@ import {
   eachYmdInRange,
   inclusiveDayCount,
 } from "./hrPayrollHelpers.js";
-import { appendStatutoryDeductions } from "./hrStatutoryBands.js";
 import {
   issueUniquePortalOtp,
   clearPortalOtpLoginFields,
@@ -315,6 +314,11 @@ export const hrTypeDefsBlock = `
     whenMode: String!
     fromDay: Int
     toDay: Int
+    fromYmd: String!
+    toYmd: String!
+    customized: Boolean!
+    fromAmountETB: Float!
+    toAmountETB: Float
     active: Boolean!
     sortOrder: Int!
   }
@@ -327,6 +331,11 @@ export const hrTypeDefsBlock = `
     whenMode: String
     fromDay: Int
     toDay: Int
+    fromYmd: String
+    toYmd: String
+    customized: Boolean
+    fromAmountETB: Float
+    toAmountETB: Float
     active: Boolean
   }
 
@@ -867,12 +876,21 @@ function dayOfYmd(ymd) {
 
 /**
  * Whether a common payroll line rule applies to a From–To window.
- * day_range mode uses calendar day-of-month on the endpoints.
+ * day_range: prefer calendar fromYmd/toYmd (overlap with pay window);
+ * falls back to legacy day-of-month on endpoints.
  */
 function lineRuleApplies(rule, fromYmd, toYmd) {
   if (rule?.active === false) return false;
   const mode = String(rule?.whenMode || "always").trim();
   if (mode !== "day_range") return true;
+
+  const ruleFrom = String(rule.fromYmd || "").trim();
+  const ruleTo = String(rule.toYmd || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ruleFrom) && /^\d{4}-\d{2}-\d{2}$/.test(ruleTo)) {
+    // Inclusive overlap with payroll [fromYmd, toYmd]
+    return !(toYmd < ruleFrom || fromYmd > ruleTo);
+  }
+
   const fd = Number(rule.fromDay);
   const td = Number(rule.toDay);
   if (!Number.isFinite(fd) || !Number.isFinite(td)) return true;
@@ -885,6 +903,16 @@ function lineRuleApplies(rule, fromYmd, toYmd) {
     (toD >= lo && toD <= hi) ||
     (fromD <= lo && toD >= hi)
   );
+}
+
+/** Customized band: salary in [fromAmountETB, toAmountETB) — no upper if toAmount null. */
+function lineRuleMatchesSalary(rule, salaryETB) {
+  if (!rule?.customized) return true;
+  const s = Number(salaryETB) || 0;
+  const from = Number(rule.fromAmountETB) || 0;
+  if (s < from) return false;
+  if (rule.toAmountETB == null || rule.toAmountETB === "") return true;
+  return s < Number(rule.toAmountETB);
 }
 
 function slugLeaveTypeCode(value) {
@@ -1045,11 +1073,6 @@ async function runCreateHrPayrollPeriod(
     lineRuleApplies(rule, from, to),
   );
 
-  const statBands = await prisma.hr_payroll_stat_band.findMany({
-    where: { HotelName, active: true },
-    orderBy: [{ kind: "asc" }, { fromETB: "asc" }],
-  });
-
   const employeeIdList = employees.map((e) => e.id);
   const [incidents, leaveRequests, leaveTypes, attendanceRows, incidentTypes] =
     await Promise.all([
@@ -1137,11 +1160,15 @@ async function runCreateHrPayrollPeriod(
         attendanceByDate.set(row.workDate, row.status);
       }
 
+      const employeeRules = appliedRules.filter((rule) =>
+        lineRuleMatchesSalary(rule, Number(employee.baseSalaryETB) || 0),
+      );
+
       const built = buildIntegratedPayLines({
         employee,
         fromYmd: from,
         toYmd: to,
-        appliedRules,
+        appliedRules: employeeRules,
         incidents: empIncidents,
         unpaidLeaves,
         leaveTypeLabels,
@@ -1149,17 +1176,6 @@ async function runCreateHrPayrollPeriod(
         leaveDates,
         attendanceLinkedTypes,
       });
-      const deductions = appendStatutoryDeductions(
-        built.deductions,
-        statBands,
-        built.gross,
-        to,
-      );
-      const totalDeductionsETB = Math.round(
-        deductions.reduce((s, r) => s + (Number(r.amountETB) || 0), 0) * 100,
-      ) / 100;
-      const netPayETB =
-        Math.round((built.totalEarningsETB - totalDeductionsETB) * 100) / 100;
       const number = payslipNumberFor(employee.id, created.id, seq++);
       const weeksNote =
         String(employee.wageType || "").trim() === "weekly" &&
@@ -1185,13 +1201,13 @@ async function runCreateHrPayrollPeriod(
           basePayETB: built.gross,
           overtimeETB: 0,
           tipsETB: 0,
-          deductionsETB: totalDeductionsETB,
-          netPayETB,
+          deductionsETB: built.totalDeductionsETB,
+          netPayETB: built.netPayETB,
           grossSalaryETB: built.gross,
           totalEarningsETB: built.totalEarningsETB,
-          totalDeductionsETB,
+          totalDeductionsETB: built.totalDeductionsETB,
           earningsJson: JSON.stringify(built.earnings),
-          deductionsJson: JSON.stringify(deductions),
+          deductionsJson: JSON.stringify(built.deductions),
           paymentStatus: "unpaid",
           notes: weeksNote,
         },
@@ -3116,22 +3132,39 @@ export function createHrResolvers({
           if (!PAYROLL_LINE_KINDS.has(kind)) return;
           let whenMode = String(row?.whenMode ?? "always").trim() || "always";
           if (whenMode !== "day_range") whenMode = "always";
-          let fromDay =
-            row?.fromDay != null && row.fromDay !== ""
-              ? Number(row.fromDay)
-              : null;
-          let toDay =
-            row?.toDay != null && row.toDay !== "" ? Number(row.toDay) : null;
+          let fromYmd = String(row?.fromYmd ?? "").trim();
+          let toYmd = String(row?.toYmd ?? "").trim();
+          let fromDay = null;
+          let toDay = null;
           if (whenMode === "day_range") {
-            if (!Number.isFinite(fromDay) || fromDay < 1 || fromDay > 31) {
-              fromDay = 1;
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(fromYmd) || !/^\d{4}-\d{2}-\d{2}$/.test(toYmd)) {
+              throw new Error(
+                `Day range for "${label}" needs initial and final calendar dates`,
+              );
             }
-            if (!Number.isFinite(toDay) || toDay < 1 || toDay > 31) {
-              toDay = 31;
+            if (toYmd < fromYmd) {
+              throw new Error(
+                `Day range for "${label}": final date must not be before initial`,
+              );
             }
           } else {
-            fromDay = null;
-            toDay = null;
+            fromYmd = "";
+            toYmd = "";
+          }
+          const customized = Boolean(row?.customized);
+          const fromAmountETB = Math.max(0, Number(row?.fromAmountETB) || 0);
+          let toAmountETB = null;
+          if (
+            customized &&
+            row?.toAmountETB != null &&
+            String(row.toAmountETB).trim() !== ""
+          ) {
+            toAmountETB = Number(row.toAmountETB);
+            if (!Number.isFinite(toAmountETB) || toAmountETB <= fromAmountETB) {
+              throw new Error(
+                `Customized "${label}": final amount must be greater than initial`,
+              );
+            }
           }
           rows.push({
             kind,
@@ -3144,6 +3177,11 @@ export function createHrResolvers({
             whenMode,
             fromDay,
             toDay,
+            fromYmd,
+            toYmd,
+            customized,
+            fromAmountETB: customized ? fromAmountETB : 0,
+            toAmountETB: customized ? toAmountETB : null,
             active: row?.active !== false,
             sortOrder: index,
           });
