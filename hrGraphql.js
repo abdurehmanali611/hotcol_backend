@@ -16,6 +16,7 @@ import {
   buildIntegratedPayLines,
   eachYmdInRange,
   inclusiveDayCount,
+  isHrEmployeePayrollReady,
 } from "./hrPayrollHelpers.js";
 import {
   issueUniquePortalOtp,
@@ -304,6 +305,16 @@ export const hrTypeDefsBlock = `
     period: HrPayrollPeriod
   }
 
+  type HrBankExportRow {
+    payslipId: Int!
+    employeeId: Int!
+    employeeName: String!
+    bankName: String!
+    accountNumber: String!
+    netPayETB: Float!
+    payslipNumber: String!
+  }
+
   type HrPayrollLineRule {
     id: Int!
     HotelName: String!
@@ -453,6 +464,7 @@ export const hrQueryFields = `
     hrDocuments(employeeId: Int): [HrDocument!]!
     hrPayrollPeriods: [HrPayrollPeriod!]!
     hrPayslips(periodId: Int, paymentStatus: String): [HrPayslip!]!
+    hrPayrollBankExport(periodId: Int!): [HrBankExportRow!]!
     hrPayrollLineRules: [HrPayrollLineRule!]!
     hrWagePayWindows: [HrWagePayWindow!]!
     hrIncidents(employeeId: Int): [HrIncident!]!
@@ -1065,6 +1077,28 @@ async function runCreateHrPayrollPeriod(
     throw new Error("No eligible employees for this payroll run");
   }
 
+  const notReady = employees.filter((e) => !isHrEmployeePayrollReady(e));
+  employees = employees.filter((e) => isHrEmployeePayrollReady(e));
+  if (!employees.length) {
+    throw new Error(
+      `No eligible employees for this payroll run (${notReady.length} skipped — missing bank or salary)`,
+    );
+  }
+  if (idFilter.length && notReady.length) {
+    const names = notReady
+      .map((e) => String(e.fullName || "").trim() || `#${e.id}`)
+      .slice(0, 3)
+      .join(", ");
+    throw new Error(
+      `Cannot generate payroll — missing bank name, account, or salary > 0${names ? ` (${names}${notReady.length > 3 ? "…" : ""})` : ""}`,
+    );
+  }
+
+  const skipNote =
+    notReady.length > 0
+      ? `Skipped ${notReady.length} employee${notReady.length === 1 ? "" : "s"} missing bank or salary.`
+      : "";
+
   const lineRules = await prisma.hr_payroll_line_rule.findMany({
     where: { HotelName, active: true },
     orderBy: [{ sortOrder: "asc" }, { label: "asc" }],
@@ -1118,6 +1152,7 @@ async function runCreateHrPayrollPeriod(
   );
 
   const period = await prisma.$transaction(async (tx) => {
+    const userNotes = String(notes ?? "").trim();
     const created = await tx.hr_payroll_period.create({
       data: {
         HotelName,
@@ -1126,7 +1161,7 @@ async function runCreateHrPayrollPeriod(
         fromYmd: from,
         toYmd: to,
         status: "open",
-        notes: String(notes ?? "").trim(),
+        notes: [userNotes, skipNote].filter(Boolean).join(" "),
         createdBy: actorName,
       },
     });
@@ -1596,6 +1631,38 @@ export function createHrResolvers({
           include: { employee: true, period: true },
           orderBy: [{ periodId: "desc" }, { employeeId: "asc" }],
         });
+      },
+
+      hrPayrollBankExport: async (_, { periodId }, context) => {
+        await assertHrOrFinancePayrollRead(context);
+        const period = await prisma.hr_payroll_period.findUnique({
+          where: { id: Number(periodId) },
+        });
+        if (!period || !tenantHotelReadMatches(context, period.HotelName)) {
+          throw new Error("Payroll period not found");
+        }
+        const slips = await prisma.hr_payslip.findMany({
+          where: {
+            ...tenantHotelReadWhere(context),
+            periodId: period.id,
+          },
+          orderBy: [{ employeeId: "asc" }, { id: "asc" }],
+        });
+        return slips
+          .filter((s) => {
+            const bank = String(s.bankName ?? "").trim();
+            const account = String(s.accountNumber ?? "").trim();
+            return Boolean(bank && account);
+          })
+          .map((s) => ({
+            payslipId: s.id,
+            employeeId: s.employeeId,
+            employeeName: s.employeeName || "",
+            bankName: s.bankName || "",
+            accountNumber: s.accountNumber || "",
+            netPayETB: Number(s.netPayETB) || 0,
+            payslipNumber: s.payslipNumber || "",
+          }));
       },
 
       hrPayrollLineRules: async (_, __, context) => {
