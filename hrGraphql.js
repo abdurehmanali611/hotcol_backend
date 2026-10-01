@@ -17,6 +17,7 @@ import {
   eachYmdInRange,
   inclusiveDayCount,
 } from "./hrPayrollHelpers.js";
+import { appendStatutoryDeductions } from "./hrStatutoryBands.js";
 import {
   issueUniquePortalOtp,
   clearPortalOtpLoginFields,
@@ -108,6 +109,10 @@ export const hrTypeDefsBlock = `
     portalOtpIssuedAt: DateTime
     portalFirstLoginAt: DateTime
     profileImageUrl: String!
+    gender: String!
+    education: String!
+    personalTin: String!
+    medicalNote: String!
     createdAt: DateTime!
     updatedAt: DateTime!
   }
@@ -465,6 +470,10 @@ export const hrMutationFields = `
       credentialUserId: Int
       credentialUserName: String
       notes: String
+      gender: String
+      education: String
+      personalTin: String
+      medicalNote: String
     ): HrEmployee!
     updateHrEmployee(
       id: Int!
@@ -484,6 +493,10 @@ export const hrMutationFields = `
       credentialUserId: Int
       credentialUserName: String
       notes: String
+      gender: String
+      education: String
+      personalTin: String
+      medicalNote: String
     ): HrEmployee!
     terminateHrEmployee(id: Int!, endDate: String): HrEmployee!
     deleteHrEmployee(id: Int!): Boolean!
@@ -1032,6 +1045,11 @@ async function runCreateHrPayrollPeriod(
     lineRuleApplies(rule, from, to),
   );
 
+  const statBands = await prisma.hr_payroll_stat_band.findMany({
+    where: { HotelName, active: true },
+    orderBy: [{ kind: "asc" }, { fromETB: "asc" }],
+  });
+
   const employeeIdList = employees.map((e) => e.id);
   const [incidents, leaveRequests, leaveTypes, attendanceRows, incidentTypes] =
     await Promise.all([
@@ -1131,6 +1149,17 @@ async function runCreateHrPayrollPeriod(
         leaveDates,
         attendanceLinkedTypes,
       });
+      const deductions = appendStatutoryDeductions(
+        built.deductions,
+        statBands,
+        built.gross,
+        to,
+      );
+      const totalDeductionsETB = Math.round(
+        deductions.reduce((s, r) => s + (Number(r.amountETB) || 0), 0) * 100,
+      ) / 100;
+      const netPayETB =
+        Math.round((built.totalEarningsETB - totalDeductionsETB) * 100) / 100;
       const number = payslipNumberFor(employee.id, created.id, seq++);
       const weeksNote =
         String(employee.wageType || "").trim() === "weekly" &&
@@ -1156,13 +1185,13 @@ async function runCreateHrPayrollPeriod(
           basePayETB: built.gross,
           overtimeETB: 0,
           tipsETB: 0,
-          deductionsETB: built.totalDeductionsETB,
-          netPayETB: built.netPayETB,
+          deductionsETB: totalDeductionsETB,
+          netPayETB,
           grossSalaryETB: built.gross,
           totalEarningsETB: built.totalEarningsETB,
-          totalDeductionsETB: built.totalDeductionsETB,
+          totalDeductionsETB,
           earningsJson: JSON.stringify(built.earnings),
-          deductionsJson: JSON.stringify(built.deductions),
+          deductionsJson: JSON.stringify(deductions),
           paymentStatus: "unpaid",
           notes: weeksNote,
         },
@@ -1679,6 +1708,10 @@ export function createHrResolvers({
           bankName,
           accountNumber,
           notes,
+          gender,
+          education,
+          personalTin,
+          medicalNote,
         },
         context,
       ) => {
@@ -1722,6 +1755,10 @@ export function createHrResolvers({
             credentialUserId: null,
             credentialUserName: "",
             notes: String(notes ?? "").trim(),
+            gender: String(gender ?? "").trim(),
+            education: String(education ?? "").trim(),
+            personalTin: String(personalTin ?? "").trim(),
+            medicalNote: String(medicalNote ?? "").trim(),
           },
         });
 
@@ -1762,6 +1799,10 @@ export function createHrResolvers({
           credentialUserId,
           credentialUserName,
           notes,
+          gender,
+          education,
+          personalTin,
+          medicalNote,
         },
         context,
       ) => {
@@ -1820,6 +1861,14 @@ export function createHrResolvers({
           data.credentialUserId =
             credentialUserId != null ? Number(credentialUserId) : null;
         }
+        if (credentialUserName != null) {
+          data.credentialUserName = String(credentialUserName).trim();
+        }
+        if (notes != null) data.notes = String(notes).trim();
+        if (gender != null) data.gender = String(gender).trim();
+        if (education != null) data.education = String(education).trim();
+        if (personalTin != null) data.personalTin = String(personalTin).trim();
+        if (medicalNote != null) data.medicalNote = String(medicalNote).trim();
         if (credentialUserName != null) {
           data.credentialUserName = String(credentialUserName).trim();
         }

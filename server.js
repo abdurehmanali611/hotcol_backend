@@ -113,6 +113,12 @@ import {
   createHrResolvers,
 } from "./hrGraphql.js";
 import {
+  hrPhaseBTypeDefsBlock,
+  hrPhaseBQueryFields,
+  hrPhaseBMutationFields,
+  createHrPhaseBResolvers,
+} from "./hrPhaseBGraphql.js";
+import {
   atsTypeDefsBlock,
   atsQueryFields,
   atsMutationFields,
@@ -1358,6 +1364,7 @@ const typeDefs = gql`
   ${lodgingTypeDefsBlock}
 
   ${hrTypeDefsBlock}
+  ${hrPhaseBTypeDefsBlock}
 
   ${atsTypeDefsBlock}
 
@@ -1408,6 +1415,7 @@ const typeDefs = gql`
     salesAgents: [SalesAgent!]!
     ${lodgingQueryFields}
     ${hrQueryFields}
+    ${hrPhaseBQueryFields}
     ${atsQueryFields}
     ${hrChatQueryFields}
     ${crystalNameQueryFields}
@@ -2005,6 +2013,7 @@ const typeDefs = gql`
 
     ${lodgingMutationFields}
     ${hrMutationFields}
+    ${hrPhaseBMutationFields}
     ${atsMutationFields}
     ${hrChatMutationFields}
     ${crystalNameMutationFields}
@@ -3189,6 +3198,15 @@ const hrResolvers = createHrResolvers({
   assertAuthenticated,
 });
 
+const hrPhaseBResolvers = createHrPhaseBResolvers({
+  prisma,
+  tenantScopeFromContext,
+  assertRole,
+  assertAdminOrManager,
+  assertAuthenticated,
+  tenantHotelReadMatches,
+});
+
 const atsResolvers = createAtsResolvers({
   prisma,
   tenantScopeFromContext,
@@ -3299,6 +3317,7 @@ const resolvers = {
   Query: {
     ...lodgingResolvers.Query,
     ...hrResolvers.Query,
+    ...hrPhaseBResolvers.Query,
     ...atsResolvers.Query,
     ...hrChatResolvers.Query,
     ...crystalNameResolvers.Query,
@@ -9029,6 +9048,7 @@ const resolvers = {
 
     ...lodgingResolvers.Mutation,
     ...hrResolvers.Mutation,
+    ...hrPhaseBResolvers.Mutation,
     ...atsResolvers.Mutation,
     ...hrChatResolvers.Mutation,
     ...crystalNameResolvers.Mutation,
