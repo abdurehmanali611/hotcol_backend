@@ -186,6 +186,7 @@ export const hrPhaseBTypeDefsBlock = `
     toDept: String!
     fromTitle: String!
     toTitle: String!
+    toOrgPosition: String!
     status: String!
     createdBy: String!
     createdAt: DateTime!
@@ -377,6 +378,7 @@ export const hrPhaseBMutationFields = `
       toDept: String
       fromTitle: String
       toTitle: String
+      toOrgPosition: String
     ): HrCareerAction!
     decideHrCareerAction(id: Int!, approve: Boolean!): HrCareerAction!
     createHrDisciplinaryAction(employeeId: Int!, title: String!, detail: String): HrDisciplinaryAction!
@@ -1084,7 +1086,16 @@ export function createHrPhaseBResolvers({
       },
       createHrCareerAction: async (
         _,
-        { employeeId, kind, detail, fromDept, toDept, fromTitle, toTitle },
+        {
+          employeeId,
+          kind,
+          detail,
+          fromDept,
+          toDept,
+          fromTitle,
+          toTitle,
+          toOrgPosition,
+        },
         context,
       ) => {
         assertHr(context);
@@ -1094,6 +1105,10 @@ export function createHrPhaseBResolvers({
         if (k !== "promotion" && k !== "transfer") {
           throw new Error("kind must be promotion or transfer");
         }
+        const pos =
+          String(toOrgPosition || "employee").trim().toLowerCase() === "leader"
+            ? "leader"
+            : "employee";
         return prisma.hr_career_action.create({
           data: {
             HotelName,
@@ -1104,6 +1119,7 @@ export function createHrPhaseBResolvers({
             toDept: String(toDept || "").trim(),
             fromTitle: String(fromTitle || "").trim(),
             toTitle: String(toTitle || "").trim(),
+            toOrgPosition: pos,
             status: "pending",
             createdBy: actorName,
           },
@@ -1126,6 +1142,10 @@ export function createHrPhaseBResolvers({
           const data = {};
           if (row.toDept) data.department = row.toDept;
           if (row.toTitle) data.jobTitle = row.toTitle;
+          const pos = String(row.toOrgPosition || "").trim().toLowerCase();
+          if (pos === "leader" || pos === "employee") {
+            data.orgPosition = pos;
+          }
           if (Object.keys(data).length) {
             await tx.hr_employee.update({
               where: { id: row.employeeId },

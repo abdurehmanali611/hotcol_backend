@@ -2437,6 +2437,8 @@ model hr_career_action {
   toDept      String   @default("")
   fromTitle   String   @default("")
   toTitle     String   @default("")
+  /// leader | employee (applied on Manager approve)
+  toOrgPosition String @default("employee")
   /// pending | approved | rejected | applied
   status      String   @default("pending")
   createdBy   String   @default("")
