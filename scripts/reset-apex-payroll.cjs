@@ -2,7 +2,12 @@
  * One-off: reset Apex Hotel HR payroll runs for retesting.
  */
 require("dotenv").config();
-const mysql = require("mysql2/promise");
+const path = require("path");
+const mysql = require(
+  require.resolve("mysql2/promise", {
+    paths: [path.join(__dirname, "..", "node_modules", "prisma")],
+  }),
+);
 
 async function main() {
   const url = process.env.DATABASE_URL;
@@ -10,22 +15,23 @@ async function main() {
 
   const conn = await mysql.createConnection(url);
   try {
-    const [hotelRows] = await conn.query(`
-      SELECT HotelName FROM hr_payroll_period WHERE HotelName LIKE '%apex%' COLLATE utf8mb4_general_ci
-      UNION
-      SELECT HotelName FROM hr_payslip WHERE HotelName LIKE '%apex%' COLLATE utf8mb4_general_ci
-      UNION
-      SELECT HotelName FROM hr_employee WHERE HotelName LIKE '%apex%' COLLATE utf8mb4_general_ci
-      LIMIT 20
-    `);
-    const names = [...new Set(hotelRows.map((r) => r.HotelName))];
-    if (!names.length) {
-      console.error("No Apex Hotel found");
+    // HotelName in HR tables is the tenant TIN, not the display name.
+    const [tenantRows] = await conn.query(
+      `SELECT tinNumber, hotelDisplayName FROM tenant_account
+       WHERE hotelDisplayName = ? COLLATE utf8mb4_general_ci
+       LIMIT 1`,
+      ["Apex Hotel"],
+    );
+    if (!tenantRows.length) {
+      console.error("No tenant_account row for Apex Hotel");
       process.exit(1);
     }
-    const hotelName = names[0];
-    console.log("Resetting payroll for:", hotelName);
-    if (names.length > 1) console.log("Other apex matches ignored:", names.slice(1));
+    const hotelName = tenantRows[0].tinNumber;
+    console.log(
+      "Resetting payroll for:",
+      tenantRows[0].hotelDisplayName,
+      `(HotelName/TIN ${hotelName})`,
+    );
 
     const [periods] = await conn.query(
       "SELECT id, fromYmd, toYmd, status FROM hr_payroll_period WHERE HotelName = ?",
