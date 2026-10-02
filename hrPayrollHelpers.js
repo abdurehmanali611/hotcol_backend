@@ -388,14 +388,17 @@ export function buildIntegratedPayLines({
     if (id != null && usedOvertimeIds.has(id)) continue;
     if (String(ot.status || "approved").trim() === "paid") continue;
     const ymd = String(ot.workYmd || "").trim();
-    if (ymd && (ymd < fromYmd || ymd > toYmd)) continue;
+    // Include approved OT even when workYmd is outside the From–To window so it
+    // is not stranded the way bonuses/advances are never date-gated.
     const amount = round2(Number(ot.amountETB) || 0);
     if (amount <= 0) continue;
     const hours = Number(ot.hours) || 0;
     const hoursNote = hours > 0 ? ` · ${hours}h` : "";
     const dayNote = ymd ? ` · ${ymd}` : "";
+    const outOfRange =
+      ymd && fromYmd && toYmd && (ymd < fromYmd || ymd > toYmd);
     earnings.push({
-      label: `Overtime${dayNote}${hoursNote}`,
+      label: `Overtime${dayNote}${hoursNote}${outOfRange ? " · prior" : ""}`,
       amountETB: amount,
       sourceKind: "overtime",
       sourceId: id,
@@ -418,8 +421,10 @@ export function buildIntegratedPayLines({
     if (loanPeriodKey && usedLoanKeys.has(loanPeriodKey)) continue;
     const remaining = round2(Number(loan.remainingETB) || 0);
     if (remaining <= 0) continue;
-    const installment = round2(Number(loan.installmentETB) || 0);
-    if (installment <= 0) continue;
+    // If installment was never set, deduct the full remaining balance this run
+    // (same as a single-payment loan) instead of silently skipping.
+    const rawInstallment = round2(Number(loan.installmentETB) || 0);
+    const installment = rawInstallment > 0 ? rawInstallment : remaining;
     const deduct = round2(Math.min(installment, remaining));
     if (deduct <= 0) continue;
     const nextRemaining = round2(Math.max(0, remaining - deduct));

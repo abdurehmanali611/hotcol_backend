@@ -65,7 +65,33 @@ async function main() {
       [hotelName],
     );
     const [otRes] = await conn.query(
-      "UPDATE hr_overtime_request SET status = 'approved' WHERE HotelName = ? AND status = 'paid'",
+      `UPDATE hr_overtime_request
+       SET status = 'approved'
+       WHERE HotelName = ? AND status = 'paid'`,
+      [hotelName],
+    );
+    // Restore loans so the next payroll can deduct installments again.
+    const [loanRes] = await conn.query(
+      `UPDATE hr_loan
+       SET status = 'active',
+           remainingETB = principalETB,
+           installmentETB = CASE
+             WHEN installmentETB IS NULL OR installmentETB <= 0 THEN principalETB
+             ELSE installmentETB
+           END
+       WHERE HotelName = ? AND status IN ('active', 'closed', 'pending')`,
+      [hotelName],
+    );
+    // Promote pending OT that managers already meant to use — only restore paid→approved;
+    // also ensure pending stays for re-approval if user wants. Here only paid→approved.
+    const [otApproved] = await conn.query(
+      `SELECT id, workYmd, amountETB, status FROM hr_overtime_request
+       WHERE HotelName = ? AND status IN ('approved', 'paid')`,
+      [hotelName],
+    );
+    const [loanRows] = await conn.query(
+      `SELECT id, principalETB, remainingETB, installmentETB, status FROM hr_loan
+       WHERE HotelName = ?`,
       [hotelName],
     );
 
@@ -79,7 +105,9 @@ async function main() {
       bonusesRestored: bonusRes.affectedRows,
       advancesRestored: advRes.affectedRows,
       overtimeRestored: otRes.affectedRows,
-      note: "Loan remainingETB not restored",
+      loansRestored: loanRes.affectedRows,
+      overtimeNow: otApproved,
+      loansNow: loanRows,
     });
   } finally {
     await conn.end();

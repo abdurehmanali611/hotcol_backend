@@ -1206,7 +1206,9 @@ async function runCreateHrPayrollPeriod(
           HotelName,
           employeeId: { in: employeeIdList },
           status: "approved",
-          workYmd: { gte: from, lte: to },
+          // Same as bonus/advance: include all approved unpaid OT.
+          // workYmd is shown on the payslip line; do not drop OT outside the From–To window
+          // or approved overtime never lands on payroll when the period dates differ.
         },
       }),
       prisma.hr_loan.findMany({

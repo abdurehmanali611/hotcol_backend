@@ -356,6 +356,7 @@ export const hrPhaseBMutationFields = `
       active: Boolean
       items: [HrChecklistTemplateItemInput!]!
     ): HrChecklistTemplate!
+    deleteHrChecklistTemplate(id: Int!): Boolean!
     startHrChecklistRun(employeeId: Int!, kind: String!): HrChecklistRun!
     toggleHrChecklistRunItem(id: Int!, done: Boolean!, note: String): HrChecklistRunItem!
     completeHrChecklistRun(id: Int!): HrChecklistRun!
@@ -803,8 +804,26 @@ export function createHrPhaseBResolvers({
           });
         });
       },
+      deleteHrChecklistTemplate: async (_, { id }, context) => {
+        assertManager(context);
+        const HotelName = requireTenant(context, tenantScopeFromContext);
+        const row = await prisma.hr_checklist_template.findFirst({
+          where: { id: Number(id), HotelName },
+        });
+        if (!row) throw new Error("Checklist template not found");
+        const runCount = await prisma.hr_checklist_run.count({
+          where: { templateId: row.id, HotelName },
+        });
+        if (runCount > 0) {
+          throw new Error(
+            "Cannot delete a template that already has checklist runs. Edit it instead.",
+          );
+        }
+        await prisma.hr_checklist_template.delete({ where: { id: row.id } });
+        return true;
+      },
       startHrChecklistRun: async (_, { employeeId, kind }, context) => {
-        assertHrOrManager(context);
+        assertHr(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const k = String(kind || "").trim();
         const template = await prisma.hr_checklist_template.findFirst({
@@ -845,7 +864,7 @@ export function createHrPhaseBResolvers({
         });
       },
       toggleHrChecklistRunItem: async (_, { id, done, note }, context) => {
-        assertHrOrManager(context);
+        assertHr(context);
         const { actorName } = actorFromContext(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const item = await prisma.hr_checklist_run_item.findUnique({
@@ -866,7 +885,7 @@ export function createHrPhaseBResolvers({
         });
       },
       completeHrChecklistRun: async (_, { id }, context) => {
-        assertHrOrManager(context);
+        assertHr(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const run = await prisma.hr_checklist_run.findFirst({
           where: { id: Number(id), HotelName },
@@ -1021,7 +1040,22 @@ export function createHrPhaseBResolvers({
         });
         return prisma.hr_loan.update({
           where: { id: row.id },
-          data: decidePending(row, approve, actorName, "active"),
+          data: {
+            ...decidePending(row, approve, actorName, "active"),
+            // Ensure approved loans always have a positive installment for payroll.
+            ...(approve
+              ? {
+                  installmentETB:
+                    Number(row.installmentETB) > 0
+                      ? Number(row.installmentETB)
+                      : Number(row.remainingETB) || Number(row.principalETB) || 0,
+                  remainingETB:
+                    Number(row.remainingETB) > 0
+                      ? Number(row.remainingETB)
+                      : Number(row.principalETB) || 0,
+                }
+              : {}),
+          },
         });
       },
       createHrBonus: async (_, { employeeId, label, amountETB }, context) => {
