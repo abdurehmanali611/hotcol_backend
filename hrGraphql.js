@@ -938,6 +938,42 @@ function slugLeaveTypeCode(value) {
 }
 
 /**
+ * Collect compensation source ids already present on existing payslips
+ * so the same bonus / advance / OT cannot be paid twice.
+ * @param {Array<{ earningsJson?: string, deductionsJson?: string, periodId?: number }>} slips
+ */
+function collectUsedCompensationFromPayslips(slips) {
+  const bonusIds = new Set();
+  const advanceIds = new Set();
+  const overtimeIds = new Set();
+  const loanPeriodKeys = new Set();
+  for (const slip of slips || []) {
+    const periodId = Number(slip.periodId) || null;
+    for (const raw of [slip.earningsJson, slip.deductionsJson]) {
+      let rows = [];
+      try {
+        rows = JSON.parse(raw || "[]");
+      } catch {
+        rows = [];
+      }
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows) {
+        const kind = String(row?.sourceKind || "").trim();
+        const id = Number(row?.sourceId);
+        if (!kind || !Number.isFinite(id) || id <= 0) continue;
+        if (kind === "bonus") bonusIds.add(id);
+        else if (kind === "advance") advanceIds.add(id);
+        else if (kind === "overtime") overtimeIds.add(id);
+        else if (kind === "loan" && periodId != null) {
+          loanPeriodKeys.add(`${id}:${periodId}`);
+        }
+      }
+    }
+  }
+  return { bonusIds, advanceIds, overtimeIds, loanPeriodKeys };
+}
+
+/**
  * Shared payroll generate used by Manager-direct create and pending approval.
  */
 async function runCreateHrPayrollPeriod(
@@ -1119,6 +1155,10 @@ async function runCreateHrPayrollPeriod(
     advances,
     overtimeRequests,
     loans,
+    priorPayslips,
+    paidBonuses,
+    paidAdvances,
+    paidOvertime,
   ] = await Promise.all([
       prisma.hr_incident.findMany({
         where: {
@@ -1177,8 +1217,57 @@ async function runCreateHrPayrollPeriod(
           remainingETB: { gt: 0 },
         },
       }),
+      prisma.hr_payslip.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+        },
+        select: {
+          periodId: true,
+          earningsJson: true,
+          deductionsJson: true,
+        },
+      }),
+      prisma.hr_bonus.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          status: "paid",
+        },
+        select: { id: true },
+      }),
+      prisma.hr_advance_request.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          status: "paid",
+        },
+        select: { id: true },
+      }),
+      prisma.hr_overtime_request.findMany({
+        where: {
+          HotelName,
+          employeeId: { in: employeeIdList },
+          status: "paid",
+        },
+        select: { id: true },
+      }),
     ]);
 
+  const usedFromSlips = collectUsedCompensationFromPayslips(priorPayslips);
+  const alreadyUsedBonusIds = new Set([
+    ...usedFromSlips.bonusIds,
+    ...paidBonuses.map((r) => Number(r.id)),
+  ]);
+  const alreadyUsedAdvanceIds = new Set([
+    ...usedFromSlips.advanceIds,
+    ...paidAdvances.map((r) => Number(r.id)),
+  ]);
+  const alreadyUsedOvertimeIds = new Set([
+    ...usedFromSlips.overtimeIds,
+    ...paidOvertime.map((r) => Number(r.id)),
+  ]);
+  const alreadyUsedLoanPeriodKeys = new Set(usedFromSlips.loanPeriodKeys);
   const leaveTypesByCode = Object.fromEntries(
     leaveTypes.map((t) => [t.code, t]),
   );
@@ -1240,13 +1329,19 @@ async function runCreateHrPayrollPeriod(
       );
 
       const empBonuses = bonuses.filter(
-        (b) => Number(b.employeeId) === Number(employee.id),
+        (b) =>
+          Number(b.employeeId) === Number(employee.id) &&
+          !alreadyUsedBonusIds.has(Number(b.id)),
       );
       const empAdvances = advances.filter(
-        (a) => Number(a.employeeId) === Number(employee.id),
+        (a) =>
+          Number(a.employeeId) === Number(employee.id) &&
+          !alreadyUsedAdvanceIds.has(Number(a.id)),
       );
       const empOvertime = overtimeRequests.filter(
-        (o) => Number(o.employeeId) === Number(employee.id),
+        (o) =>
+          Number(o.employeeId) === Number(employee.id) &&
+          !alreadyUsedOvertimeIds.has(Number(o.id)),
       );
       const empLoans = loans.filter(
         (l) => Number(l.employeeId) === Number(employee.id),
@@ -1267,6 +1362,11 @@ async function runCreateHrPayrollPeriod(
         advances: empAdvances,
         overtimeRequests: empOvertime,
         loans: empLoans,
+        alreadyUsedBonusIds,
+        alreadyUsedAdvanceIds,
+        alreadyUsedOvertimeIds,
+        alreadyUsedLoanPeriodKeys,
+        payrollPeriodId: created.id,
       });
       const number = payslipNumberFor(employee.id, created.id, seq++);
       const weeksNote =
@@ -1314,6 +1414,7 @@ async function runCreateHrPayrollPeriod(
           },
           data: { status: "paid" },
         });
+        for (const id of built.appliedBonusIds) alreadyUsedBonusIds.add(id);
       }
       if (built.appliedAdvanceIds?.length) {
         await tx.hr_advance_request.updateMany({
@@ -1324,6 +1425,7 @@ async function runCreateHrPayrollPeriod(
           },
           data: { status: "paid" },
         });
+        for (const id of built.appliedAdvanceIds) alreadyUsedAdvanceIds.add(id);
       }
       if (built.appliedOvertimeIds?.length) {
         await tx.hr_overtime_request.updateMany({
@@ -1334,6 +1436,9 @@ async function runCreateHrPayrollPeriod(
           },
           data: { status: "paid" },
         });
+        for (const id of built.appliedOvertimeIds) {
+          alreadyUsedOvertimeIds.add(id);
+        }
       }
       for (const loanUp of built.appliedLoanUpdates || []) {
         await tx.hr_loan.update({
@@ -1343,6 +1448,7 @@ async function runCreateHrPayrollPeriod(
             status: loanUp.closed ? "closed" : "active",
           },
         });
+        alreadyUsedLoanPeriodKeys.add(`${loanUp.id}:${created.id}`);
       }
     }
     return created;

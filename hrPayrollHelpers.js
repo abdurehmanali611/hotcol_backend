@@ -191,6 +191,8 @@ export function resolveLineRuleAmountETB(rule, baseSalaryETB) {
  * Integrates: common line rules, recorded incidents, unpaid leave, attendance-linked types,
  * approved bonuses, approved advances, approved overtime in-range, and active loan installments.
  * Benefits are intentionally excluded from payroll.
+ * Bonus / advance / OT rows already used on a past payslip (or status paid) are skipped.
+ * Loans may recur across periods as installments; the same loan is not charged twice in one period.
  */
 export function buildIntegratedPayLines({
   employee,
@@ -207,6 +209,11 @@ export function buildIntegratedPayLines({
   advances = [],
   overtimeRequests = [],
   loans = [],
+  alreadyUsedBonusIds = null,
+  alreadyUsedAdvanceIds = null,
+  alreadyUsedOvertimeIds = null,
+  alreadyUsedLoanPeriodKeys = null,
+  payrollPeriodId = null,
 }) {
   const base = Number(employee.baseSalaryETB) || 0;
   const wt = String(employee.wageType || "monthly").trim();
@@ -315,36 +322,71 @@ export function buildIntegratedPayLines({
     }
   }
 
+  /**
+   * One bonus / advance / OT row may only appear on one payroll.
+   * Callers pass alreadyUsed* sets from past payslips + paid status.
+   * Loans intentionally recur as installments until remainingETB hits 0.
+   */
+  const usedBonusIds = alreadyUsedBonusIds instanceof Set ? alreadyUsedBonusIds : new Set();
+  const usedAdvanceIds =
+    alreadyUsedAdvanceIds instanceof Set ? alreadyUsedAdvanceIds : new Set();
+  const usedOvertimeIds =
+    alreadyUsedOvertimeIds instanceof Set ? alreadyUsedOvertimeIds : new Set();
+  /** Loan id → periodId already charged this installment cycle (same period only). */
+  const usedLoanKeys =
+    alreadyUsedLoanPeriodKeys instanceof Set
+      ? alreadyUsedLoanPeriodKeys
+      : new Set();
+
   /** @type {number[]} */
   const appliedBonusIds = [];
   for (const bonus of bonuses) {
+    const id = bonus.id != null ? Number(bonus.id) : null;
+    if (id != null && usedBonusIds.has(id)) continue;
+    if (String(bonus.status || "approved").trim() === "paid") continue;
     const amount = round2(Number(bonus.amountETB) || 0);
     if (amount <= 0) continue;
     const label = String(bonus.label || "").trim() || "Bonus";
     earnings.push({
       label: `Bonus · ${label}`,
       amountETB: amount,
+      sourceKind: "bonus",
+      sourceId: id,
     });
-    if (bonus.id != null) appliedBonusIds.push(Number(bonus.id));
+    if (id != null) {
+      appliedBonusIds.push(id);
+      usedBonusIds.add(id);
+    }
   }
 
   /** @type {number[]} */
   const appliedAdvanceIds = [];
   for (const advance of advances) {
+    const id = advance.id != null ? Number(advance.id) : null;
+    if (id != null && usedAdvanceIds.has(id)) continue;
+    if (String(advance.status || "approved").trim() === "paid") continue;
     const amount = round2(Number(advance.amountETB) || 0);
     if (amount <= 0) continue;
     const reason = String(advance.reason || "").trim().slice(0, 40);
     earnings.push({
       label: reason ? `Advance · ${reason}` : "Salary advance",
       amountETB: amount,
+      sourceKind: "advance",
+      sourceId: id,
     });
-    if (advance.id != null) appliedAdvanceIds.push(Number(advance.id));
+    if (id != null) {
+      appliedAdvanceIds.push(id);
+      usedAdvanceIds.add(id);
+    }
   }
 
   /** @type {number[]} */
   const appliedOvertimeIds = [];
   let overtimeETB = 0;
   for (const ot of overtimeRequests) {
+    const id = ot.id != null ? Number(ot.id) : null;
+    if (id != null && usedOvertimeIds.has(id)) continue;
+    if (String(ot.status || "approved").trim() === "paid") continue;
     const ymd = String(ot.workYmd || "").trim();
     if (ymd && (ymd < fromYmd || ymd > toYmd)) continue;
     const amount = round2(Number(ot.amountETB) || 0);
@@ -355,14 +397,25 @@ export function buildIntegratedPayLines({
     earnings.push({
       label: `Overtime${dayNote}${hoursNote}`,
       amountETB: amount,
+      sourceKind: "overtime",
+      sourceId: id,
     });
     overtimeETB = round2(overtimeETB + amount);
-    if (ot.id != null) appliedOvertimeIds.push(Number(ot.id));
+    if (id != null) {
+      appliedOvertimeIds.push(id);
+      usedOvertimeIds.add(id);
+    }
   }
 
   /** @type {Array<{ id: number, deductETB: number, nextRemainingETB: number, closed: boolean }>} */
   const appliedLoanUpdates = [];
   for (const loan of loans) {
+    const id = loan.id != null ? Number(loan.id) : null;
+    const loanPeriodKey =
+      id != null && payrollPeriodId != null
+        ? `${id}:${payrollPeriodId}`
+        : null;
+    if (loanPeriodKey && usedLoanKeys.has(loanPeriodKey)) continue;
     const remaining = round2(Number(loan.remainingETB) || 0);
     if (remaining <= 0) continue;
     const installment = round2(Number(loan.installmentETB) || 0);
@@ -373,14 +426,17 @@ export function buildIntegratedPayLines({
     deductions.push({
       label: `Loan installment${loan.reason ? ` · ${String(loan.reason).trim().slice(0, 40)}` : ""}`,
       amountETB: deduct,
+      sourceKind: "loan",
+      sourceId: id,
     });
-    if (loan.id != null) {
+    if (id != null) {
       appliedLoanUpdates.push({
-        id: Number(loan.id),
+        id,
         deductETB: deduct,
         nextRemainingETB: nextRemaining,
         closed: nextRemaining <= 0,
       });
+      if (loanPeriodKey) usedLoanKeys.add(loanPeriodKey);
     }
   }
 
