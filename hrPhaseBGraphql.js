@@ -95,6 +95,10 @@ export const hrPhaseBTypeDefsBlock = `
     kind: String!
     name: String!
     active: Boolean!
+    required: Boolean!
+    department: String!
+    jobTitle: String!
+    teamId: Int
     items: [HrChecklistTemplateItem!]!
   }
 
@@ -354,6 +358,10 @@ export const hrPhaseBMutationFields = `
       kind: String!
       name: String!
       active: Boolean
+      required: Boolean
+      department: String
+      jobTitle: String
+      teamId: Int
       items: [HrChecklistTemplateItemInput!]!
     ): HrChecklistTemplate!
     deleteHrChecklistTemplate(id: Int!): Boolean!
@@ -754,7 +762,7 @@ export function createHrPhaseBResolvers({
       },
       saveHrChecklistTemplate: async (
         _,
-        { id, kind, name, active, items },
+        { id, kind, name, active, required, department, jobTitle, teamId, items },
         context,
       ) => {
         assertManager(context);
@@ -771,6 +779,16 @@ export function createHrPhaseBResolvers({
         })).filter((it) => it.label);
         if (!itemRows.length) throw new Error("Add at least one checklist item");
 
+        const scope = {
+          required: required !== false,
+          department: String(department || "").trim(),
+          jobTitle: String(jobTitle || "").trim(),
+          teamId:
+            teamId == null || teamId === "" || Number(teamId) <= 0
+              ? null
+              : Number(teamId),
+        };
+
         return prisma.$transaction(async (tx) => {
           let template;
           if (id) {
@@ -780,6 +798,7 @@ export function createHrPhaseBResolvers({
                 name: String(name || "").trim() || k,
                 active: active !== false,
                 kind: k,
+                ...scope,
               },
             });
             await tx.hr_checklist_template_item.deleteMany({
@@ -792,6 +811,7 @@ export function createHrPhaseBResolvers({
                 kind: k,
                 name: String(name || "").trim() || k,
                 active: active !== false,
+                ...scope,
               },
             });
           }
@@ -826,18 +846,58 @@ export function createHrPhaseBResolvers({
         assertHr(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const k = String(kind || "").trim();
-        const template = await prisma.hr_checklist_template.findFirst({
-          where: { HotelName, kind: k, active: true },
-          include: { items: { orderBy: { sortOrder: "asc" } } },
-          orderBy: { updatedAt: "desc" },
-        });
-        if (!template?.items?.length) {
-          throw new Error(`No active ${k} checklist template`);
-        }
         const emp = await prisma.hr_employee.findFirst({
           where: { id: Number(employeeId), HotelName },
         });
         if (!emp) throw new Error("Employee not found");
+
+        const templates = await prisma.hr_checklist_template.findMany({
+          where: { HotelName, kind: k, active: true },
+          include: { items: { orderBy: { sortOrder: "asc" } } },
+        });
+
+        const empDept = String(emp.department || "").trim();
+        const empTitle = String(emp.jobTitle || "").trim();
+        const empTeamId = emp.teamId == null ? null : Number(emp.teamId);
+
+        const matches = templates.filter((t) => {
+          if (!t.items?.length) return false;
+          const tDept = String(t.department || "").trim();
+          const tTitle = String(t.jobTitle || "").trim();
+          const tTeamId = t.teamId == null ? null : Number(t.teamId);
+          if (tDept && tDept !== empDept) return false;
+          if (tTitle && tTitle !== empTitle) return false;
+          if (tTeamId != null && tTeamId !== empTeamId) return false;
+          return true;
+        });
+
+        const specificity = (t) => {
+          let s = 0;
+          if (t.teamId != null) s += 4;
+          if (String(t.jobTitle || "").trim()) s += 2;
+          if (String(t.department || "").trim()) s += 1;
+          if (t.required) s += 0.5;
+          return s;
+        };
+
+        matches.sort((a, b) => {
+          const diff = specificity(b) - specificity(a);
+          if (diff !== 0) return diff;
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+        });
+
+        const template = matches[0];
+        if (!template?.items?.length) {
+          const scopeHint = [
+            empDept ? `department ${empDept}` : "no department",
+            empTitle ? `position ${empTitle}` : "no position",
+            empTeamId != null ? `team #${empTeamId}` : "no team",
+          ].join(", ");
+          throw new Error(
+            `No active ${k} checklist template matches this employee (${scopeHint}). Create a template for that department/position/team, or a broader template with empty scope.`,
+          );
+        }
+
         return prisma.$transaction(async (tx) => {
           const run = await tx.hr_checklist_run.create({
             data: {
@@ -1316,7 +1376,7 @@ export function createHrPhaseBResolvers({
         });
       },
       createHrAsset: async (_, { label, serialNo, notes }, context) => {
-        assertHr(context);
+        assertManager(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const { actorName } = actorFromContext(context);
         return prisma.hr_asset.create({
@@ -1331,7 +1391,7 @@ export function createHrPhaseBResolvers({
         });
       },
       issueHrAsset: async (_, { id, employeeId, issuedYmd }, context) => {
-        assertHr(context);
+        assertHrOrManager(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const row = await prisma.hr_asset.findFirst({
           where: { id: Number(id), HotelName },
@@ -1348,7 +1408,7 @@ export function createHrPhaseBResolvers({
         });
       },
       returnHrAsset: async (_, { id, returnedYmd }, context) => {
-        assertHr(context);
+        assertHrOrManager(context);
         const HotelName = requireTenant(context, tenantScopeFromContext);
         const row = await prisma.hr_asset.findFirst({
           where: { id: Number(id), HotelName },

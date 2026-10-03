@@ -2340,19 +2340,29 @@ model hr_shift_template {
 }
 
 model hr_checklist_template {
-  id        Int      @id @default(autoincrement())
-  HotelName String
+  id          Int      @id @default(autoincrement())
+  HotelName   String
   /// onboarding | exit
-  kind      String
-  name      String
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  kind        String
+  name        String
+  active      Boolean  @default(true)
+  /// When true, matching employees are expected to complete this checklist
+  required    Boolean  @default(true)
+  /// Department code; empty = all departments
+  department  String   @default("")
+  /// Job title / position; empty = all positions
+  jobTitle    String   @default("")
+  /// Optional team under department; null = any team
+  teamId      Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   items hr_checklist_template_item[]
   runs  hr_checklist_run[]
 
   @@index([HotelName, kind])
+  @@index([HotelName, department])
+  @@index([teamId])
 }
 
 model hr_checklist_template_item {
