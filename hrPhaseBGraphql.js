@@ -190,6 +190,7 @@ export const hrPhaseBTypeDefsBlock = `
     toDept: String!
     fromTitle: String!
     toTitle: String!
+    toTeamId: Int
     toOrgPosition: String!
     status: String!
     createdBy: String!
@@ -387,6 +388,7 @@ export const hrPhaseBMutationFields = `
       toDept: String
       fromTitle: String
       toTitle: String
+      toTeamId: Int
       toOrgPosition: String
     ): HrCareerAction!
     decideHrCareerAction(id: Int!, approve: Boolean!): HrCareerAction!
@@ -1188,6 +1190,7 @@ export function createHrPhaseBResolvers({
           toDept,
           fromTitle,
           toTitle,
+          toTeamId,
           toOrgPosition,
         },
         context,
@@ -1213,6 +1216,10 @@ export function createHrPhaseBResolvers({
             toDept: String(toDept || "").trim(),
             fromTitle: String(fromTitle || "").trim(),
             toTitle: String(toTitle || "").trim(),
+            toTeamId:
+              toTeamId == null || Number(toTeamId) <= 0
+                ? null
+                : Number(toTeamId),
             toOrgPosition: pos,
             status: "pending",
             createdBy: actorName,
@@ -1236,6 +1243,9 @@ export function createHrPhaseBResolvers({
           const data = {};
           if (row.toDept) data.department = row.toDept;
           if (row.toTitle) data.jobTitle = row.toTitle;
+          if (row.toTeamId != null && Number(row.toTeamId) > 0) {
+            data.teamId = Number(row.toTeamId);
+          }
           const pos = String(row.toOrgPosition || "").trim().toLowerCase();
           if (pos === "leader" || pos === "employee") {
             data.orgPosition = pos;

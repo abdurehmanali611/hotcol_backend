@@ -2447,6 +2447,8 @@ model hr_career_action {
   toDept      String   @default("")
   fromTitle   String   @default("")
   toTitle     String   @default("")
+  /// target team applied on Manager approve (null = keep current team)
+  toTeamId    Int?
   /// leader | employee (applied on Manager approve)
   toOrgPosition String @default("employee")
   /// pending | approved | rejected | applied
