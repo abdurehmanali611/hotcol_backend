@@ -2931,7 +2931,12 @@ export function createLodgingResolvers({
             HotelName,
             status: { in: ["checked_in", "checked_out"] },
             arrivalAt: { lte: to },
-            departureAt: { gte: from },
+            // Checked-in stays count as in-house even if their expected
+            // departure passed (overdue checkout) — matches lodgingActiveStays.
+            OR: [
+              { status: "checked_in" },
+              { status: "checked_out", departureAt: { gte: from } },
+            ],
           },
           include: {
             rooms: { include: { room: true } },
