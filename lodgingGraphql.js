@@ -2954,7 +2954,19 @@ export function createLodgingResolvers({
 
         for (const stay of stays) {
           const arr = startOfLocalDay(stay.arrivalAt);
-          const dep = startOfLocalDay(stay.departureAt);
+          // For stays still checked in, the guest physically occupies the room
+          // through tonight even if the expected departure has passed — use
+          // "tomorrow" as the effective end so today and overdue nights count.
+          const effectiveDep =
+            stay.status === "checked_in"
+              ? new Date(
+                  Math.max(
+                    startOfLocalDay(stay.departureAt).getTime(),
+                    startOfLocalDay(new Date()).getTime() + dayMs,
+                  ),
+                )
+              : startOfLocalDay(stay.departureAt);
+          const dep = effectiveDep;
           const overlapStart = Math.max(arr.getTime(), rangeStart.getTime());
           const overlapEnd = Math.min(
             dep.getTime(),
