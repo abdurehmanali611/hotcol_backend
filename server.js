@@ -7956,7 +7956,7 @@ const resolvers = {
       const updated = await prisma.itemRegistration.update({
         where: { id },
         data: {
-          approvalStatus: ITEM_REG_VOID,
+          approvalStatus: "REJECTED_FINANCE",
           rejectionReason,
         },
       });
@@ -7983,7 +7983,7 @@ const resolvers = {
         unique,
         { approvalStatus: "PENDING_FINANCE" },
         {
-          approvalStatus: ITEM_REG_VOID,
+          approvalStatus: "REJECTED_FINANCE",
           rejectionReason,
         },
       );
