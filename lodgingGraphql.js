@@ -2333,8 +2333,10 @@ export function createLodgingResolvers({
           select: { roomId: true },
         });
         const busy = new Set(inProgress.map((a) => a.roomId));
-        // Rooms with open cleaning/maintenance stay off the queue until done.
-        return rooms.filter((r) => !busy.has(r.id));
+        // Keep occupied rooms visible so their in-stay tasks remain manageable.
+        return rooms.filter(
+          (room) => room.status === "occupied" || !busy.has(room.id),
+        );
       },
 
       lodgingHoldableRooms: async (
@@ -5137,6 +5139,20 @@ export function createLodgingResolvers({
           : [];
         if (names.length === 0) {
           throw new Error("At least one assignee is required");
+        }
+        if (room.status === "occupied") {
+          const existingOpen = await prisma.lodging_cm_assignment.count({
+            where: {
+              roomId: room.id,
+              status: "open",
+              workKind: { in: ["cleaning", "maintenance"] },
+            },
+          });
+          if (existingOpen > 0) {
+            throw new Error(
+              "This occupied room already has open work — edit the existing assignment instead",
+            );
+          }
         }
         if (
           wk === "cleaning" &&
