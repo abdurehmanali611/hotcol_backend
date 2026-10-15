@@ -2316,7 +2316,9 @@ export function createLodgingResolvers({
         const rooms = await prisma.lodging_room.findMany({
           where: {
             ...scope,
-            status: { in: ["vacant_dirty", "on_maintenance", "inspected"] },
+            status: {
+              in: ["vacant_dirty", "on_maintenance", "inspected", "occupied"],
+            },
           },
           orderBy: [{ status: "asc" }, { roomNumber: "asc" }],
         });
@@ -5136,11 +5138,14 @@ export function createLodgingResolvers({
         if (names.length === 0) {
           throw new Error("At least one assignee is required");
         }
-        if (wk === "maintenance" && room.status === "occupied") {
-          throw new Error("Occupied rooms cannot enter maintenance");
-        }
-        if (wk === "cleaning" && room.status !== "vacant_dirty") {
-          throw new Error("Cleaning can only be assigned on vacant dirty rooms");
+        if (
+          wk === "cleaning" &&
+          room.status !== "vacant_dirty" &&
+          room.status !== "occupied"
+        ) {
+          throw new Error(
+            "Cleaning can only be assigned on vacant dirty or occupied rooms",
+          );
         }
         if (wk === "cleaning") {
           const existingOpen = await prisma.lodging_cm_assignment.count({
@@ -5176,7 +5181,7 @@ export function createLodgingResolvers({
           createdIds.push(row.id);
         }
 
-        if (wk === "maintenance") {
+        if (wk === "maintenance" && room.status !== "occupied") {
           const endAt =
             statusExpectedEndAt != null
               ? new Date(statusExpectedEndAt)
@@ -5192,7 +5197,11 @@ export function createLodgingResolvers({
               updatedBy: actorName,
             },
           });
-        } else if (wk === "cleaning" && statusExpectedEndAt != null) {
+        } else if (
+          wk === "cleaning" &&
+          room.status !== "occupied" &&
+          statusExpectedEndAt != null
+        ) {
           const endAt = new Date(statusExpectedEndAt);
           if (!Number.isNaN(endAt.getTime())) {
             await prisma.lodging_room.update({
@@ -5244,14 +5253,22 @@ export function createLodgingResolvers({
         }
         const roomStatus = String(row.room?.status || "").toLowerCase();
         const workKind = String(row.workKind || "").toLowerCase();
-        if (workKind === "cleaning" && roomStatus !== "vacant_dirty") {
+        if (
+          workKind === "cleaning" &&
+          roomStatus !== "vacant_dirty" &&
+          roomStatus !== "occupied"
+        ) {
           throw new Error(
-            "Cleaning assignments can only be edited while the room is vacant dirty",
+            "Cleaning assignments can only be edited while the room is vacant dirty or occupied",
           );
         }
-        if (workKind === "maintenance" && roomStatus !== "on_maintenance") {
+        if (
+          workKind === "maintenance" &&
+          roomStatus !== "on_maintenance" &&
+          roomStatus !== "occupied"
+        ) {
           throw new Error(
-            "Maintenance assignments can only be edited while the room is on maintenance",
+            "Maintenance assignments can only be edited while the room is on maintenance or occupied",
           );
         }
 
@@ -5279,16 +5296,18 @@ export function createLodgingResolvers({
           if (endAt && Number.isNaN(endAt.getTime())) {
             throw new Error("Invalid expected ready date");
           }
-          await prisma.lodging_room.update({
-            where: { id: row.roomId },
-            data: {
-              statusExpectedEndAt: endAt,
-              ...(workKind === "maintenance"
-                ? { maintenanceUntil: endAt }
-                : {}),
-              updatedBy: actorName,
-            },
-          });
+          if (roomStatus !== "occupied") {
+            await prisma.lodging_room.update({
+              where: { id: row.roomId },
+              data: {
+                statusExpectedEndAt: endAt,
+                ...(workKind === "maintenance"
+                  ? { maintenanceUntil: endAt }
+                  : {}),
+                updatedBy: actorName,
+              },
+            });
+          }
         }
 
         await logLodgingAction(prisma, {
@@ -5332,14 +5351,22 @@ export function createLodgingResolvers({
         const wk = String(workKind || "").trim().toLowerCase();
         if (!CM_WORK_KINDS.has(wk)) throw new Error("Invalid workKind");
         const roomStatus = String(room.status || "").toLowerCase();
-        if (wk === "cleaning" && roomStatus !== "vacant_dirty") {
+        if (
+          wk === "cleaning" &&
+          roomStatus !== "vacant_dirty" &&
+          roomStatus !== "occupied"
+        ) {
           throw new Error(
-            "Cleaning assignees can only be edited while the room is vacant dirty",
+            "Cleaning assignees can only be edited while the room is vacant dirty or occupied",
           );
         }
-        if (wk === "maintenance" && roomStatus !== "on_maintenance") {
+        if (
+          wk === "maintenance" &&
+          roomStatus !== "on_maintenance" &&
+          roomStatus !== "occupied"
+        ) {
           throw new Error(
-            "Maintenance assignees can only be edited while the room is on maintenance",
+            "Maintenance assignees can only be edited while the room is on maintenance or occupied",
           );
         }
 
@@ -5437,14 +5464,16 @@ export function createLodgingResolvers({
           if (endAt && Number.isNaN(endAt.getTime())) {
             throw new Error("Invalid expected ready date");
           }
-          await prisma.lodging_room.update({
-            where: { id: room.id },
-            data: {
-              statusExpectedEndAt: endAt,
-              ...(wk === "maintenance" ? { maintenanceUntil: endAt } : {}),
-              updatedBy: actorName,
-            },
-          });
+          if (roomStatus !== "occupied") {
+            await prisma.lodging_room.update({
+              where: { id: room.id },
+              data: {
+                statusExpectedEndAt: endAt,
+                ...(wk === "maintenance" ? { maintenanceUntil: endAt } : {}),
+                updatedBy: actorName,
+              },
+            });
+          }
         }
 
         await logLodgingAction(prisma, {
