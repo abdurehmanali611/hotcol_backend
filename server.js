@@ -84,7 +84,7 @@ import {
   resolveActiveSalesAgentId,
 } from "./lib/salesAgents.js";
 import {
-  HOTEL_DEPARTMENTS,
+  MANAGEABLE_DEPARTMENTS,
   REGISTRATION_RECEIVED_BY_DEPARTMENTS,
   REQUESTED_BY_DEPARTMENTS,
   departmentLabel,
@@ -6543,7 +6543,7 @@ const resolvers = {
         .map((part) => part.trim())
         .filter(Boolean)
         .join(", ");
-      if (!HOTEL_DEPARTMENTS.includes(dept)) {
+      if (!MANAGEABLE_DEPARTMENTS.includes(dept)) {
         throw new Error("Invalid department");
       }
       if (name.length < 2) {
@@ -6563,7 +6563,7 @@ const resolvers = {
     deleteDepartmentLeader: async (_, { department }, context) => {
       assertRole(context, ["Manager"]);
       const dept = String(department ?? "").trim();
-      if (!HOTEL_DEPARTMENTS.includes(dept)) {
+      if (!MANAGEABLE_DEPARTMENTS.includes(dept)) {
         throw new Error("Invalid department");
       }
       const tenant = tenantScopeFromContext(context);
